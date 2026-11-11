@@ -14,6 +14,8 @@ dist/
 *.tsbuildinfo
 apps/desktop/dist/
 apps/*/dist/
+apps/desktop/vite.config.js
+apps/desktop/vite.config.d.ts
 
 # Tauri
 src-tauri/target/

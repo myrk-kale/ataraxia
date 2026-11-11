@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +27,30 @@ jobs:
       - name: Install JS workspace
         run: pnpm install
 
-      - name: Frontend placeholders
+      - name: Lint / typecheck / build
         run: |
           pnpm lint
           pnpm typecheck
           pnpm build
 
-      - name: Rust toolchain file present
-        run: test -f rust-toolchain.toml
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Spec present
-        run: test -f Concierge_SPEC_v1.1.md
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check and test
+        run: |
+          cargo fmt --check
+          cargo test
+          cargo check
