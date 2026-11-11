@@ -1,0 +1,1 @@
+{"name":"@concierge/desktop","private":true,"version":"0.0.0","type":"module","scripts":{"dev":"node ./scripts/placeholder.mjs dev","build":"node ./scripts/placeholder.mjs build","lint":"node ./scripts/placeholder.mjs lint","typecheck":"node ./scripts/placeholder.mjs typecheck"}}

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install JS workspace
+        run: pnpm install
+
+      - name: Frontend placeholders
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm build
+
+      - name: Rust toolchain file present
+        run: test -f rust-toolchain.toml
+
+      - name: Spec present
+        run: test -f Concierge_SPEC_v1.1.md

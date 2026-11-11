@@ -1,0 +1,16 @@
+{
+  "name": "concierge",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Desktop environment for agent-assisted software development",
+  "packageManager": "pnpm@11.1.2",
+  "scripts": {
+    "dev": "pnpm --filter @concierge/desktop dev",
+    "build": "pnpm --filter @concierge/desktop build",
+    "lint": "pnpm --filter @concierge/desktop lint",
+    "typecheck": "pnpm --filter @concierge/desktop typecheck"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
