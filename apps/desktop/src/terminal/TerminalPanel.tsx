@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
 import {
   decodeTerminalBytes,
@@ -16,9 +16,39 @@ import {
 type TerminalPanelProps = {
   worktreeId: string;
   cwd: string;
+  context: string;
+  theme: "light" | "dark";
+  onClose: () => void;
 };
 
-export function TerminalPanel({ worktreeId, cwd }: TerminalPanelProps) {
+const MIN_HEIGHT = 150;
+const DEFAULT_HEIGHT = 245;
+
+const XTERM_THEMES = {
+  light: {
+    background: "#fafaf9",
+    foreground: "#50564f",
+    cursor: "#7465a6",
+    selectionBackground: "rgba(143, 126, 190, 0.23)",
+  },
+  dark: {
+    background: "#111211",
+    foreground: "#d9dbd6",
+    cursor: "#a99cd8",
+    selectionBackground: "rgba(169, 156, 216, 0.28)",
+  },
+} as const;
+
+export function TerminalPanel({
+  worktreeId,
+  cwd,
+  context,
+  theme,
+  onClose,
+}: TerminalPanelProps) {
+  const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -37,10 +67,7 @@ export function TerminalPanel({ worktreeId, cwd }: TerminalPanelProps) {
       fontFamily:
         'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 12,
-      theme: {
-        background: "#111113",
-        foreground: "#e8e8ea",
-      },
+      theme: { ...XTERM_THEMES[themeRef.current] },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -129,15 +156,66 @@ export function TerminalPanel({ worktreeId, cwd }: TerminalPanelProps) {
     };
   }, [worktreeId, cwd]);
 
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) {
+      term.options.theme = { ...XTERM_THEMES[theme] };
+    }
+  }, [theme]);
+
+  // Drag the top edge to resize; pointer capture keeps the drag alive outside the grip.
+  function onGripDown(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const grip = event.currentTarget;
+    grip.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = height;
+    const max = Math.round(window.innerHeight * 0.68);
+    function onMove(move: globalThis.PointerEvent) {
+      const next = startHeight + (startY - move.clientY);
+      setHeight(Math.min(max, Math.max(MIN_HEIGHT, next)));
+    }
+    function onUp(up: globalThis.PointerEvent) {
+      grip.releasePointerCapture(up.pointerId);
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+    }
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+  }
+
+  const background = XTERM_THEMES[theme].background;
+
   return (
-    <section className="flex h-48 flex-col border-t border-foreground/10 bg-[#111113]">
-      <div className="flex items-center justify-between px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-foreground/45">
-        <span>Terminal</span>
-        <span className="normal-case tracking-normal text-foreground/55">
-          {shortPath(cwd)} · {status}
-        </span>
+    <section
+      aria-label="Terminal"
+      className="relative flex flex-none flex-col overflow-hidden border-t border-cg-line-strong"
+      style={{ height, background }}
+    >
+      <div
+        aria-hidden="true"
+        className="group relative h-[5px] flex-none cursor-ns-resize"
+        onPointerDown={onGripDown}
+      >
+        <span className="absolute top-0 left-1/2 h-0.5 w-11 -translate-x-1/2 rounded-sm bg-cg-line-strong group-hover:bg-cg-muted" />
       </div>
-      <div ref={hostRef} className="min-h-0 flex-1 px-2 pb-2" />
+      <header className="flex h-[39px] flex-none items-center gap-3.5 border-b border-cg-line px-6">
+        <span className="text-micro font-bold tracking-[1px] text-cg-muted-strong">TERMINAL</span>
+        <span className="min-w-0 truncate text-micro text-cg-muted">
+          {context} · {shortPath(cwd)} · {status}
+        </span>
+        <span className="flex-1" />
+        <span className="font-mono text-micro text-cg-muted">Ctrl + `</span>
+        <button
+          aria-label="Close terminal"
+          className="grid h-[25px] w-[25px] place-items-center text-[20px] leading-none text-cg-muted hover:text-cg-ink"
+          type="button"
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </header>
+      <div ref={hostRef} className="min-h-0 flex-1 px-6 pt-2 pb-2" />
     </section>
   );
 }

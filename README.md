@@ -44,10 +44,11 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Frontend only:
+Frontend only (the browser gets a built-in Tauri mock, dev builds only, so the UI renders with sample data):
 
 ```bash
 pnpm dev
+# http://localhost:1420/?state=empty|fresh|permission|working|restored previews other chat states
 ```
 
 Rust checks:

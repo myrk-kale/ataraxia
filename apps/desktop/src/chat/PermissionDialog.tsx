@@ -1,6 +1,6 @@
-import { Button } from "@heroui/react";
 import { useEffect, useRef } from "react";
 import type { PendingPermission } from "../lib/agent";
+import { Button } from "../ui/Button";
 
 export function PermissionDialog({
   pending,
@@ -28,25 +28,30 @@ export function PermissionDialog({
     <dialog
       ref={ref}
       aria-labelledby="permission-title"
-      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-xl border border-foreground/15 bg-background p-5 text-foreground shadow-xl backdrop:bg-black/40"
+      className="m-auto w-[min(30rem,calc(100vw-2rem))] rounded-[15px] border border-cg-line-strong bg-cg-panel p-0 text-cg-ink shadow-cg-float backdrop:bg-[var(--cg-backdrop)] backdrop:backdrop-blur-[3px]"
       onCancel={(event) => event.preventDefault()}
     >
       {pending ? (
-        <div className="space-y-4">
+        <div className="space-y-5 px-8 py-7">
           <div>
-            <h2 id="permission-title" className="text-base font-medium">
+            <span className="text-micro font-bold tracking-[1.15px] text-cg-muted-strong uppercase">
               Permission needed
+            </span>
+            <h2
+              id="permission-title"
+              className="mt-2.5 text-[17px] leading-snug font-semibold tracking-[-0.4px]"
+            >
+              {pending.detail}
             </h2>
-            <p className="mt-1 text-sm text-foreground/70">{pending.detail}</p>
           </div>
-          <p className="rounded-md bg-foreground/5 px-3 py-2 font-mono text-xs">
+          <p className="rounded-[9px] bg-cg-tint px-3.5 py-3 font-mono text-small text-cg-muted-strong">
             {pending.toolName}
           </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onPress={() => onResolve(false)}>
+          <div className="flex justify-end gap-2.5">
+            <Button className="min-w-[100px]" onClick={() => onResolve(false)}>
               Deny
             </Button>
-            <Button variant="primary" onPress={() => onResolve(true)}>
+            <Button className="min-w-[100px]" variant="primary" onClick={() => onResolve(true)}>
               Approve
             </Button>
           </div>

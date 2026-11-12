@@ -10,9 +10,9 @@ import {
 } from "./toolSummary";
 
 const DIFF_CLASS: Record<DiffLine["kind"], string> = {
-  add: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  remove: "bg-red-500/15 text-red-700 dark:text-red-300",
-  context: "text-foreground/60",
+  add: "bg-cg-add-bg text-cg-add-fg",
+  remove: "bg-cg-del-bg text-cg-del-fg",
+  context: "text-cg-muted-strong",
 };
 
 const DIFF_MARK: Record<DiffLine["kind"], string> = {
@@ -23,23 +23,23 @@ const DIFF_MARK: Record<DiffLine["kind"], string> = {
 
 function StatusIcon({ status }: { status: ToolItem["status"] }) {
   if (status === "running") {
-    return <Loader2 aria-label="running" className="animate-spin" size={14} />;
+    return <Loader2 aria-label="running" className="animate-spin text-cg-muted" size={14} />;
   }
   if (status === "done") {
     return (
       <Check
         aria-label="done"
-        className="text-emerald-600 dark:text-emerald-400"
+        className="text-cg-green"
         size={14}
       />
     );
   }
-  return <X aria-label="failed" className="text-red-600 dark:text-red-400" size={14} />;
+  return <X aria-label="failed" className="text-cg-red" size={14} />;
 }
 
 function Label({ children }: { children: string }) {
   return (
-    <div className="mb-1 text-[11px] tracking-wide text-foreground/40 uppercase">
+    <div className="mb-1 text-nano font-bold tracking-[1px] text-cg-muted uppercase">
       {children}
     </div>
   );
@@ -48,7 +48,7 @@ function Label({ children }: { children: string }) {
 function Block({ text, className }: { text: string; className?: string }) {
   return (
     <pre
-      className={`max-h-64 overflow-auto rounded-md bg-foreground/[0.05] p-2 font-mono text-xs leading-5 whitespace-pre-wrap ${className ?? ""}`}
+      className={`max-h-64 overflow-auto rounded-md bg-cg-tint p-2.5 font-mono text-small leading-5 whitespace-pre-wrap ${className ?? ""}`}
     >
       {text}
     </pre>
@@ -57,7 +57,7 @@ function Block({ text, className }: { text: string; className?: string }) {
 
 function DiffBlock({ lines }: { lines: DiffLine[] }) {
   return (
-    <pre className="max-h-64 overflow-auto rounded-md bg-foreground/[0.05] py-1 font-mono text-xs leading-5">
+    <pre className="max-h-64 overflow-auto rounded-lg bg-cg-tint py-1.5 font-mono text-small leading-5">
       {lines.map((line, index) => (
         <div key={index} className={`px-2 whitespace-pre-wrap ${DIFF_CLASS[line.kind]}`}>
           {DIFF_MARK[line.kind]} {line.text}
@@ -98,7 +98,7 @@ function InputView({ input }: { input: string }) {
               {long ? (
                 <Block text={text} />
               ) : (
-                <div className="font-mono text-xs break-all">{text}</div>
+                <div className="font-mono text-small break-all">{text}</div>
               )}
             </div>
           );
@@ -135,7 +135,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       aria-label="Copy output"
-      className="rounded p-1 text-foreground/50 hover:bg-foreground/10 hover:text-foreground"
+      className="rounded p-1 text-cg-muted hover:bg-cg-tint hover:text-cg-ink"
       type="button"
       onClick={() => {
         void copy();
@@ -149,15 +149,15 @@ function CopyButton({ text }: { text: string }) {
 export function ToolCard({ tool }: { tool: ToolItem }) {
   const summary = toolSummary(tool.input);
   return (
-    <details className="group rounded-lg border border-foreground/10 bg-foreground/[0.03] text-sm">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
+    <details className="group rounded-[11px] border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 [&::-webkit-details-marker]:hidden">
         <ChevronRight
-          className="shrink-0 text-foreground/40 transition-transform group-open:rotate-90"
+          className="shrink-0 text-cg-muted transition-transform group-open:rotate-90"
           size={14}
         />
-        <span className="shrink-0 font-mono text-xs font-medium">{tool.name}</span>
+        <span className="shrink-0 font-mono text-small font-semibold">{tool.name}</span>
         {summary ? (
-          <span className="min-w-0 truncate font-mono text-xs text-foreground/50">
+          <span className="min-w-0 truncate font-mono text-small text-cg-muted">
             {summary}
           </span>
         ) : null}
@@ -165,7 +165,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
           <StatusIcon status={tool.status} />
         </span>
       </summary>
-      <div className="space-y-3 border-t border-foreground/10 px-3 py-3">
+      <div className="space-y-3 border-t border-cg-line px-3.5 py-3">
         <InputView input={tool.input} />
         {tool.output !== null && tool.output.length > 0 ? (
           <div>
@@ -174,13 +174,13 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
               <CopyButton text={tool.output} />
             </div>
             <Block
-              className={tool.status === "failed" ? "text-red-700 dark:text-red-300" : ""}
+              className={tool.status === "failed" ? "text-cg-del-fg" : ""}
               text={tool.output}
             />
           </div>
         ) : null}
         {tool.status === "running" && tool.output === null ? (
-          <p className="text-xs text-foreground/50">Waiting for the result…</p>
+          <p className="text-small text-cg-muted">Waiting for the result…</p>
         ) : null}
       </div>
     </details>

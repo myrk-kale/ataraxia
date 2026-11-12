@@ -1,5 +1,4 @@
-import { Button } from "@heroui/react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ArrowUp, Square } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -20,6 +19,8 @@ import {
   PROVIDER_LABELS,
 } from "../lib/agent";
 import type { ChatSession, SessionStatus } from "../lib/workspace";
+import { toBlocks } from "./blocks";
+import { Hero } from "./Hero";
 import { Markdown } from "./Markdown";
 import { PermissionDialog } from "./PermissionDialog";
 import { ToolCard } from "./ToolCard";
@@ -33,36 +34,19 @@ const SUGGESTIONS = [
   "Summarize the most recent commits",
 ];
 
-const STATUS_LABEL: Record<SessionStatus, string> = {
-  idle: "Idle",
-  starting: "Starting",
-  ready: "Ready",
-  working: "Working",
-  "waiting-permission": "Needs approval",
-  stopping: "Stopping",
-  stopped: "Stopped",
-  failed: "Failed",
-};
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function StatusDot({ status }: { status: SessionStatus }) {
-  const color =
-    status === "working" || status === "starting"
-      ? "bg-amber-500 animate-pulse"
-      : status === "waiting-permission"
-        ? "bg-sky-500 animate-pulse"
-        : status === "failed"
-          ? "bg-red-500"
-          : status === "ready"
-            ? "bg-emerald-500"
-            : "bg-foreground/30";
-  return <span aria-hidden="true" className={`h-2 w-2 rounded-full ${color}`} />;
-}
-
-export function ChatPanel({ session }: { session: ChatSession }) {
+export function ChatPanel({
+  session,
+  contextLabel,
+  onStatus,
+}: {
+  session: ChatSession;
+  contextLabel: string | null;
+  onStatus?: (status: SessionStatus) => void;
+}) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [draft, setDraft] = useState("");
@@ -119,6 +103,12 @@ export function ChatPanel({ session }: { session: ChatSession }) {
       element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_PX)}px`;
     }
   }, [draft]);
+
+  useEffect(() => {
+    if (state.loaded) {
+      onStatus?.(state.status);
+    }
+  }, [state.status, state.loaded, onStatus]);
 
   const busy = state.status === "working" || state.status === "waiting-permission";
   const canSend = state.loaded && !busy && draft.trim().length > 0;
@@ -188,55 +178,90 @@ export function ChatPanel({ session }: { session: ChatSession }) {
     }
   }
 
-  const restoredDividerAfter = state.restoredCount > 0 ? state.restoredCount - 1 : -1;
   const restoredNotice = (
     <div
       key="restored"
-      className="my-1 flex items-center gap-3 text-xs text-foreground/45"
+      className="flex items-center gap-3 text-small text-cg-muted"
       role="note"
     >
-      <span className="h-px flex-1 bg-foreground/15" />
+      <span className="h-px flex-1 bg-cg-line" />
       <span>Earlier messages are shown for reference; the agent starts fresh.</span>
-      <span className="h-px flex-1 bg-foreground/15" />
+      <span className="h-px flex-1 bg-cg-line" />
     </div>
   );
 
-  return (
-    <section className="flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
-      <header className="flex items-center gap-2 border-b border-foreground/10 px-6 py-2 text-xs text-foreground/60">
-        <span className="truncate font-medium text-foreground/80">{session.title}</span>
-        <span className="rounded-full bg-foreground/10 px-2 py-0.5">
-          {PROVIDER_LABELS[session.provider]}
-        </span>
-        <span className="ml-auto flex items-center gap-1.5" role="status">
-          <StatusDot status={state.status} />
-          {STATUS_LABEL[state.status]}
-        </span>
-      </header>
+  const restoredSplit = state.restoredCount > 0 ? state.restoredCount : -1;
+  const blocks = toBlocks(state.items, restoredSplit);
+  const providerLabel = PROVIDER_LABELS[session.provider];
 
-      <div className="relative min-h-0 flex-1">
+  // The divider sits before the first item produced by the running agent process.
+  let seen = 0;
+  const rendered = blocks.flatMap((block) => {
+    const count = block.kind === "agent" ? block.items.length : 1;
+    const startsAfterRestore = restoredSplit > 0 && seen === restoredSplit;
+    seen += count;
+
+    const node =
+      block.kind === "user" ? (
         <div
-          ref={scrollRef}
-          className="h-full overflow-y-auto px-6 py-4"
-          onScroll={onScroll}
+          key={block.key}
+          className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.75] whitespace-pre-wrap"
         >
-          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+          {block.item.text}
+        </div>
+      ) : (
+        <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
+          <div className="flex items-center gap-2 text-small text-cg-muted">
+            <span aria-hidden="true" className="text-cg-accent">
+              ✳
+            </span>
+            <strong className="font-semibold text-cg-ink">{providerLabel}</strong>
+          </div>
+          {block.items.map((item) =>
+            item.kind === "tool" ? (
+              <ToolCard key={item.callId} tool={item} />
+            ) : (
+              <div key={item.id} className="text-body leading-[1.75]">
+                <Markdown text={item.text} />
+              </div>
+            ),
+          )}
+        </div>
+      );
+    return startsAfterRestore ? [restoredNotice, node] : [node];
+  });
+
+  return (
+    <section
+      className="cg-page-in flex h-full min-h-0 flex-col"
+      onKeyDown={onPanelKeyDown}
+    >
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
+          <div className="mx-auto flex max-w-[780px] flex-col gap-[33px] px-8 pt-[35px] pb-20">
+            {state.loaded && state.items.length > 0 ? (
+              <div className="flex items-center gap-2 text-small text-cg-muted">
+                <span className="text-micro font-bold tracking-[1.15px] uppercase">
+                  Coding session
+                </span>
+                <span aria-hidden="true">·</span>
+                <strong className="truncate font-semibold text-cg-ink">{session.title}</strong>
+              </div>
+            ) : null}
+
             {!state.loaded ? (
-              <p className="py-16 text-center text-sm text-foreground/50">
-                Starting {PROVIDER_LABELS[session.provider]}…
+              <p className="py-16 text-center text-small text-cg-muted">
+                Starting {providerLabel}…
               </p>
             ) : null}
 
             {state.loaded && state.items.length === 0 ? (
-              <div className="flex flex-col items-center gap-4 py-16 text-center">
-                <p className="text-sm text-foreground/60">
-                  Ask {PROVIDER_LABELS[session.provider]} about this worktree.
-                </p>
-                <div className="flex flex-wrap justify-center gap-2">
+              <Hero contextLabel={contextLabel}>
+                <div className="mt-8 flex flex-wrap justify-center gap-2">
                   {SUGGESTIONS.map((suggestion) => (
                     <button
                       key={suggestion}
-                      className="rounded-full border border-foreground/15 px-3 py-1 text-xs hover:bg-foreground/5"
+                      className="rounded-lg border border-cg-line px-3 py-2 text-small text-cg-muted-strong hover:border-cg-line-strong hover:text-cg-ink"
                       type="button"
                       onClick={() => {
                         setDraft(suggestion);
@@ -247,34 +272,17 @@ export function ChatPanel({ session }: { session: ChatSession }) {
                     </button>
                   ))}
                 </div>
-              </div>
+              </Hero>
             ) : null}
 
-            {state.items.flatMap((item, index) => {
-              const node =
-                item.kind === "tool" ? (
-                  <ToolCard key={item.callId} tool={item} />
-                ) : item.role === "user" ? (
-                  <div
-                    key={item.id}
-                    className="max-w-[85%] self-end rounded-2xl bg-foreground/10 px-4 py-2 text-sm whitespace-pre-wrap"
-                  >
-                    {item.text}
-                  </div>
-                ) : (
-                  <div key={item.id} className="text-sm leading-6">
-                    <Markdown text={item.text} />
-                  </div>
-                );
-              return index === restoredDividerAfter ? [node, restoredNotice] : [node];
-            })}
+            {rendered}
 
             {busy ? (
-              <p className="flex items-center gap-2 text-xs text-foreground/50">
+              <p className="-mt-5 flex items-center gap-2 text-small text-cg-muted">
                 <span className="flex gap-1" aria-hidden="true">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/40" />
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/40 [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/40 [animation-delay:300ms]" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
                 </span>
                 {state.status === "waiting-permission"
                   ? "Waiting for your approval"
@@ -287,7 +295,7 @@ export function ChatPanel({ session }: { session: ChatSession }) {
         {!atBottom ? (
           <button
             aria-label="Jump to latest"
-            className="absolute right-6 bottom-3 flex items-center gap-1 rounded-full border border-foreground/15 bg-background px-3 py-1 text-xs shadow-md hover:bg-foreground/5"
+            className="absolute right-6 bottom-3 flex items-center gap-1 rounded-full border border-cg-line-strong bg-cg-panel px-3 py-1 text-small text-cg-muted-strong shadow-md hover:text-cg-ink"
             type="button"
             onClick={jumpToLatest}
           >
@@ -300,11 +308,11 @@ export function ChatPanel({ session }: { session: ChatSession }) {
       {state.error ? (
         <div
           role="alert"
-          className="mx-6 mb-2 flex items-center justify-between rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400"
+          className="mx-auto mb-2 flex w-full max-w-[780px] items-center justify-between rounded-[9px] bg-cg-del-bg px-3.5 py-2.5 text-small text-cg-del-fg"
         >
           <span className="min-w-0 break-words">{state.error}</span>
           <button
-            className="ml-3 shrink-0 text-xs underline"
+            className="ml-3 shrink-0 text-micro underline"
             type="button"
             onClick={() => dispatch({ type: "dismissError" })}
           >
@@ -314,33 +322,56 @@ export function ChatPanel({ session }: { session: ChatSession }) {
       ) : null}
 
       <form
-        className="border-t border-foreground/10 px-6 py-3"
+        className="mx-auto w-full max-w-[840px] flex-none px-[30px] pt-[9px] pb-[23px]"
         onSubmit={(event) => {
           event.preventDefault();
           void send();
         }}
       >
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
+        <div className="rounded-[14px] border border-cg-line-strong bg-cg-panel px-4 py-3.5 shadow-[0_5px_15px_rgba(31,36,32,0.025)] focus-within:border-cg-muted">
           <textarea
             ref={composerRef}
             aria-label="Message"
-            className="max-h-40 min-h-10 flex-1 resize-none rounded-lg border border-foreground/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-foreground/40"
+            className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted/70"
             disabled={!state.loaded}
-            placeholder="Message the agent — Enter to send, Shift+Enter for a new line"
-            rows={1}
+            placeholder={`Ask ${providerLabel} to change something…`}
+            rows={2}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onComposerKeyDown}
           />
-          {busy ? (
-            <Button variant="secondary" onPress={cancelTurn}>
-              Stop
-            </Button>
-          ) : (
-            <Button type="submit" variant="primary" isDisabled={!canSend}>
-              Send
-            </Button>
-          )}
+          <div className="mt-1 flex items-center justify-between text-small text-cg-muted">
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden="true" className="text-cg-accent">
+                ✳
+              </span>
+              {providerLabel}
+            </span>
+            <div className="flex items-center gap-3">
+              <span>
+                {busy ? "Esc to stop" : "Enter to send · Shift+Enter for a new line"}
+              </span>
+              {busy ? (
+                <button
+                  aria-label="Stop"
+                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
+                  type="button"
+                  onClick={cancelTurn}
+                >
+                  <Square fill="currentColor" size={11} />
+                </button>
+              ) : (
+                <button
+                  aria-label="Send message"
+                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover disabled:opacity-40"
+                  disabled={!canSend}
+                  type="submit"
+                >
+                  <ArrowUp size={15} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </form>
 

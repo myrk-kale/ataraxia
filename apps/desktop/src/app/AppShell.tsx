@@ -1,13 +1,17 @@
-import { Button } from "@heroui/react";
-import { Moon, Sun, TerminalSquare } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { MessageCircle, Moon, Plus, Sun, TerminalSquare } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { agentListProviders, type ProviderDescriptor } from "../lib/agent";
 import { invoke } from "@tauri-apps/api/core";
-import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
-import { useThemeMode } from "./theme";
+import {
+  agentListProviders,
+  PROVIDER_LABELS,
+  type ProviderDescriptor,
+} from "../lib/agent";
 import { ChatPanel } from "../chat/ChatPanel";
+import { NewContext } from "../chat/NewContext";
 import { TerminalPanel } from "../terminal/TerminalPanel";
+import { Button } from "../ui/Button";
+import { QuietSelect } from "../ui/QuietSelect";
 import {
   emptyWorkspace,
   workspaceBootstrap,
@@ -17,10 +21,18 @@ import {
   workspaceSelectRepository,
   workspaceSelectWorktree,
   type ProviderKind,
+  type SessionStatus,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
+import { EdgeNav } from "./EdgeNav";
+import { SessionsPanel } from "./SessionsPanel";
+import { StatusPill } from "./StatusPill";
+import { Toast } from "./Toast";
+import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
+import { useThemeMode } from "./theme";
 
 const PROVIDER_STORAGE_KEY = "concierge.newChatProvider";
+const OPEN_FOLDER = "__open-folder__";
 
 function readStoredProvider(): ProviderKind {
   try {
@@ -50,17 +62,15 @@ function shortPath(path: string): string {
 function SpacePlaceholder({ spaceId }: { spaceId: SpaceId }) {
   const space = SPACES.find((item) => item.id === spaceId)!;
   return (
-    <section className="flex h-full flex-col justify-center gap-3 px-10">
-      <p className="text-sm uppercase tracking-[0.18em] text-foreground/50">
+    <section className="cg-page-in mx-auto mt-[16vh] flex max-w-[650px] flex-col items-center gap-3 px-[30px] text-center">
+      <p className="text-micro font-bold tracking-[1.15px] text-cg-muted-strong uppercase">
         {space.label}
       </p>
-      <h1 className="max-w-2xl text-3xl font-medium tracking-tight text-foreground">
+      <h1 className="text-[25px] leading-tight font-semibold tracking-[-0.8px] text-cg-ink">
         {space.blurb}
       </h1>
-      <p className="max-w-xl text-sm leading-6 text-foreground/60">
-        {spaceId === "chat"
-          ? "Crie ou selecione um chat para começar."
-          : "Placeholder do espaço. A navegação e o chrome já seguem a SPEC; o conteúdo chega nas próximas PRs."}
+      <p className="text-small leading-6 text-cg-muted">
+        Este espaço já segue a navegação e o visual do protótipo. O conteúdo chega nas próximas PRs.
       </p>
     </section>
   );
@@ -68,30 +78,26 @@ function SpacePlaceholder({ spaceId }: { spaceId: SpaceId }) {
 
 export function AppShell() {
   const [space, setSpace] = useState<SpaceId>("chat");
-  const [coreStatus, setCoreStatus] = useState("checking…");
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
   const [preferredProvider, setPreferredProvider] = useState<ProviderKind>(
     readStoredProvider,
   );
+  const [chatStatus, setChatStatus] = useState<SessionStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { theme, toggleTheme } = useThemeMode();
 
   useEffect(() => {
     let cancelled = false;
-    invoke<string>("core_status")
-      .then((status) => {
-        if (!cancelled) {
-          setCoreStatus(status);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setCoreStatus(err instanceof Error ? err.message : "core unavailable");
-        }
-      });
+    // The core check only matters when it fails; a healthy core stays silent.
+    invoke<string>("core_status").catch((err: unknown) => {
+      if (!cancelled) {
+        setError(err instanceof Error ? err.message : "core unavailable");
+      }
+    });
     agentListProviders()
       .then((items) => {
         if (!cancelled) {
@@ -177,6 +183,11 @@ export function AppShell() {
     [workspace],
   );
 
+  const sessionId = selectedSession?.id ?? null;
+  useEffect(() => {
+    setChatStatus(null);
+  }, [sessionId]);
+
   async function runWorkspace(
     action: () => Promise<WorkspaceSnapshot>,
   ): Promise<void> {
@@ -208,6 +219,7 @@ export function AppShell() {
       setError("Select a repository and worktree first");
       return;
     }
+    setSessionsOpen(false);
     await runWorkspace(() =>
       workspaceCreateSession(
         selectedRepository.id,
@@ -219,42 +231,45 @@ export function AppShell() {
     setSpace("chat");
   }
 
+  const closeSessions = useCallback(() => setSessionsOpen(false), []);
+  const contextLabel = selectedRepository
+    ? [selectedRepository.name, selectedWorktree?.branch ?? null]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+  const spaceLabel = SPACES.find((item) => item.id === space)!.label;
+  const canCreate = Boolean(selectedRepository && selectedWorktree) && !busy;
+
   return (
-    <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="flex h-12 items-center gap-3 border-b border-foreground/10 px-4">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium tracking-tight">
-            Concierge
-          </div>
-          <div className="truncate text-xs text-foreground/50">
-            {error ?? coreStatus}
-          </div>
-        </div>
-
-        <div className="hidden items-center gap-2 md:flex">
-          <Button
-            size="sm"
-            variant="ghost"
-            isDisabled={busy}
-            onPress={() => {
-              void onOpenRepository();
-            }}
-          >
-            {selectedRepository ? selectedRepository.name : "repository"}
-          </Button>
-
-          {workspace.repositories.length > 1 ? (
-            <select
+    <div className="relative flex h-full flex-col bg-cg-panel text-cg-ink">
+      <header className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line px-[29px]">
+        <div className="flex min-w-0 items-center gap-2.5 text-[12px] font-semibold whitespace-nowrap">
+          {workspace.repositories.length === 0 ? (
+            <button
+              className="rounded-[5px] py-1.5 text-cg-ink hover:text-cg-accent"
+              disabled={busy}
+              type="button"
+              onClick={() => {
+                void onOpenRepository();
+              }}
+            >
+              Open repository
+            </button>
+          ) : (
+            <QuietSelect
               aria-label="Repository"
-              className="h-8 max-w-40 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
+              className="max-w-[210px] text-[12px] font-semibold text-cg-ink"
               disabled={busy}
               value={workspace.selected_repository_id ?? ""}
               onChange={(event) => {
                 const value = event.target.value;
-                if (!value) {
+                if (value === OPEN_FOLDER) {
+                  void onOpenRepository();
                   return;
                 }
-                void runWorkspace(() => workspaceSelectRepository(value));
+                if (value) {
+                  void runWorkspace(() => workspaceSelectRepository(value));
+                }
               }}
             >
               {workspace.repositories.map((repo) => (
@@ -262,20 +277,24 @@ export function AppShell() {
                   {repo.name}
                 </option>
               ))}
-            </select>
-          ) : null}
+              <option value={OPEN_FOLDER}>Open folder…</option>
+            </QuietSelect>
+          )}
 
-          <select
+          <span aria-hidden="true" className="text-cg-line-strong">
+            /
+          </span>
+
+          <QuietSelect
             aria-label="Worktree"
-            className="h-8 max-w-48 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
+            className="max-w-[175px] text-small font-medium text-cg-muted-strong"
             disabled={!selectedRepository || workspace.worktrees.length === 0 || busy}
             value={workspace.selected_worktree_id ?? ""}
             onChange={(event) => {
               const value = event.target.value;
-              if (!value) {
-                return;
+              if (value) {
+                void runWorkspace(() => workspaceSelectWorktree(value));
               }
-              void runWorkspace(() => workspaceSelectWorktree(value));
             }}
           >
             {workspace.worktrees.length === 0 ? (
@@ -286,12 +305,20 @@ export function AppShell() {
                 {worktree.branch ?? shortPath(worktree.path)}
               </option>
             ))}
-          </select>
+          </QuietSelect>
 
-          <select
+          <span aria-hidden="true" className="text-cg-line-strong">
+            /
+          </span>
+          <span>{spaceLabel}</span>
+        </div>
+
+        <div className="flex flex-none items-center gap-[9px]">
+          <QuietSelect
             aria-label="Provider"
-            className="h-8 max-w-36 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
+            className="max-w-[130px] text-small text-cg-muted-strong"
             disabled={busy || providers.length === 0}
+            title="Provider for new chats"
             value={provider}
             onChange={(event) => onProviderChange(event.target.value as ProviderKind)}
           >
@@ -306,109 +333,109 @@ export function AppShell() {
                 {item.available ? "" : " (unavailable)"}
               </option>
             ))}
-          </select>
+          </QuietSelect>
 
           <Button
-            size="sm"
-            variant="secondary"
-            isDisabled={!selectedRepository || !selectedWorktree || busy}
-            onPress={() => {
+            aria-label="New chat"
+            disabled={!canCreate}
+            title="New chat"
+            variant="icon"
+            onClick={() => {
               void onNewChat();
             }}
           >
-            New chat
+            <Plus size={16} />
           </Button>
-
-          <select
-            aria-label="Sessions"
-            className="h-8 max-w-48 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
-            disabled={!selectedRepository || busy}
-            value={workspace.selected_session_id ?? ""}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (!value) {
-                return;
-              }
-              void runWorkspace(async () => {
-                const snapshot = await workspaceOpenSession(value);
-                setSpace("chat");
-                return snapshot;
-              });
-            }}
-          >
-            <option value="">
-              {workspace.sessions.length === 0 ? "No sessions" : "Sessions"}
-            </option>
-            {workspace.sessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.title}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-center gap-1">
           <Button
-            isIconOnly
+            aria-label="Sessions in this repository"
+            aria-pressed={sessionsOpen}
+            data-sessions-toggle
+            disabled={!selectedRepository}
+            title="Sessions in this repository"
+            variant="icon"
+            onClick={() => setSessionsOpen((current) => !current)}
+          >
+            <MessageCircle size={16} />
+          </Button>
+          <Button
             aria-label="Toggle terminal"
-            size="sm"
-            variant={terminalOpen ? "secondary" : "ghost"}
-            isDisabled={!selectedWorktree}
-            onPress={() => setTerminalOpen((openPanel) => !openPanel)}
+            aria-pressed={terminalOpen}
+            disabled={!selectedWorktree}
+            title="Terminal (Ctrl + `)"
+            variant="icon"
+            onClick={() => setTerminalOpen((openPanel) => !openPanel)}
           >
             <TerminalSquare size={16} />
           </Button>
           <Button
-            isIconOnly
             aria-label="Toggle theme"
-            size="sm"
-            variant="ghost"
-            onPress={toggleTheme}
+            title="Toggle theme"
+            variant="icon"
+            onClick={toggleTheme}
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </Button>
+          <StatusPill status={selectedSession ? (chatStatus ?? selectedSession.status) : null} />
         </div>
       </header>
 
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1 pr-[37px]">
         {space === "chat" && selectedSession ? (
-          <ChatPanel key={selectedSession.id} session={selectedSession} />
+          <ChatPanel
+            key={selectedSession.id}
+            contextLabel={contextLabel}
+            session={selectedSession}
+            onStatus={setChatStatus}
+          />
+        ) : space === "chat" ? (
+          <NewContext
+            busy={busy}
+            canCreate={canCreate}
+            contextLabel={contextLabel}
+            hasRepository={Boolean(selectedRepository)}
+            providerLabel={PROVIDER_LABELS[provider]}
+            onNewChat={() => {
+              void onNewChat();
+            }}
+            onOpenRepository={() => {
+              void onOpenRepository();
+            }}
+          />
         ) : (
           <SpacePlaceholder spaceId={space} />
         )}
 
-        <nav
-          aria-label="Spaces"
-          className="absolute top-1/2 right-3 flex -translate-y-1/2 flex-col gap-2"
-        >
-          {SPACES.map((item) => {
-            const selected = item.id === space;
-            return (
-              <button
-                key={item.id}
-                aria-current={selected ? "page" : undefined}
-                aria-label={item.label}
-                className={
-                  selected
-                    ? "h-2.5 w-2.5 rounded-full bg-foreground"
-                    : "h-2.5 w-2.5 rounded-full bg-foreground/25 hover:bg-foreground/50"
-                }
-                title={item.label}
-                type="button"
-                onClick={() => setSpace(item.id)}
-              />
-            );
-          })}
-        </nav>
+        {sessionsOpen ? (
+          <SessionsPanel
+            selectedId={workspace.selected_session_id}
+            sessions={workspace.sessions}
+            worktrees={workspace.worktrees}
+            onClose={closeSessions}
+            onSelect={(id) => {
+              setSessionsOpen(false);
+              void runWorkspace(async () => {
+                const snapshot = await workspaceOpenSession(id);
+                setSpace("chat");
+                return snapshot;
+              });
+            }}
+          />
+        ) : null}
       </div>
 
       {terminalOpen && selectedWorktree ? (
         <TerminalPanel
           key={selectedWorktree.id}
-          worktreeId={selectedWorktree.id}
+          context={contextLabel ?? shortPath(selectedWorktree.path)}
           cwd={selectedWorktree.path}
+          theme={theme}
+          worktreeId={selectedWorktree.id}
+          onClose={() => setTerminalOpen(false)}
         />
       ) : null}
+
+      <EdgeNav space={space} onSelect={setSpace} />
+      <Toast message={error} onDismiss={() => setError(null)} />
     </div>
   );
 }
