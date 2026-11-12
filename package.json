@@ -9,9 +9,9 @@
     "build": "pnpm --filter @concierge/desktop build",
     "lint": "pnpm --filter @concierge/desktop lint",
     "typecheck": "pnpm --filter @concierge/desktop typecheck",
-    "tauri": "pnpm --filter @concierge/desktop exec tauri",
-    "tauri:dev": "pnpm --filter @concierge/desktop exec tauri dev",
-    "tauri:build": "pnpm --filter @concierge/desktop exec tauri build",
+    "tauri": "cd src-tauri && ../apps/desktop/node_modules/.bin/tauri",
+    "tauri:dev": "pnpm tauri dev",
+    "tauri:build": "pnpm tauri build",
     "test": "pnpm --filter @concierge/desktop test"
   },
   "engines": {

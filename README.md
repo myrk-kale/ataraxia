@@ -20,6 +20,8 @@ Shell, workspace persistence, a retractable real PTY terminal, and the Chat spac
   - Claude Code → custom stream-json (`--permission-prompt-tool stdio`)
   - Codex → custom app-server
   - Provider CLIs are found on `PATH` plus common install dirs; override with `CONCIERGE_OPENCODE_BIN`, `CONCIERGE_CLAUDE_BIN`, `CONCIERGE_CODEX_BIN`
+  - Claude Code starts with `--permission-mode auto`; set `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode (e.g. `acceptEdits`), or to an empty value to use your own Claude settings
+  - Codex starts with `on-request` approvals, the `workspace-write` sandbox and `approvalsReviewer: auto_review` (a reviewer agent decides eligible requests); set `CONCIERGE_CODEX_APPROVALS_REVIEWER=user` to be asked for everything, or empty to use your own Codex config
 
 ## Workspace layout
 
@@ -39,7 +41,7 @@ Prerequisites:
 
 ```bash
 pnpm install
-pnpm --filter @concierge/desktop exec tauri dev
+pnpm tauri:dev
 ```
 
 Frontend only:

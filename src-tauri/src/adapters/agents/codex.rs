@@ -5,7 +5,7 @@
 //! requests answered with a `decision`.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -25,6 +25,8 @@ use crate::domain::{
 
 const BINARY_NAME: &str = "codex";
 const OVERRIDE_ENV: &str = "CONCIERGE_CODEX_BIN";
+const APPROVALS_REVIEWER_ENV: &str = "CONCIERGE_CODEX_APPROVALS_REVIEWER";
+const DEFAULT_APPROVALS_REVIEWER: &str = "auto_review";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -64,6 +66,29 @@ impl CodexBackend {
                 }),
         }
     }
+}
+
+/// Who reviews approval requests: `auto_review` (a reviewer agent decides, the default) or
+/// `user` (every request reaches the modal). `CONCIERGE_CODEX_APPROVALS_REVIEWER` overrides it;
+/// an empty value defers to the user's own Codex config.
+fn approvals_reviewer() -> Option<String> {
+    match std::env::var(APPROVALS_REVIEWER_ENV) {
+        Ok(value) if value.trim().is_empty() => None,
+        Ok(value) => Some(value.trim().to_string()),
+        Err(_) => Some(DEFAULT_APPROVALS_REVIEWER.to_string()),
+    }
+}
+
+fn thread_start_params(cwd: &Path, reviewer: Option<&str>) -> Value {
+    let mut params = json!({
+        "cwd": cwd.to_string_lossy(),
+        "approvalPolicy": "on-request",
+        "sandbox": "workspace-write"
+    });
+    if let Some(reviewer) = reviewer {
+        params["approvalsReviewer"] = json!(reviewer);
+    }
+    params
 }
 
 impl Default for CodexBackend {
@@ -117,11 +142,7 @@ impl AgentBackend for CodexBackend {
             client.notify_bare("initialized")?;
             let started = client.request(
                 "thread/start",
-                json!({
-                    "cwd": ctx.cwd.to_string_lossy(),
-                    "approvalPolicy": "on-request",
-                    "sandbox": "workspace-write"
-                }),
+                thread_start_params(&ctx.cwd, approvals_reviewer().as_deref()),
                 Some(HANDSHAKE_TIMEOUT),
             )?;
             let thread_id = started
@@ -636,6 +657,16 @@ fn item_result(item: &Value) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thread_start_routes_approvals_to_the_reviewer() {
+        let params = thread_start_params(Path::new("/work"), Some("auto_review"));
+        assert_eq!(params["approvalsReviewer"], "auto_review");
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "workspace-write");
+        let manual = thread_start_params(Path::new("/work"), None);
+        assert!(manual.get("approvalsReviewer").is_none());
+    }
+
     use std::sync::mpsc::{self, Receiver};
     use std::time::Instant;
 
