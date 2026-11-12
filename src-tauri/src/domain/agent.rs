@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     Fake,
+    // kebab-case would spell this "open-code"; the UI, the database and `as_str` use "opencode".
+    #[serde(rename = "opencode")]
     OpenCode,
     Claude,
     Codex,
@@ -140,4 +142,32 @@ pub struct ProviderDescriptor {
     pub available: bool,
     pub detail: Option<String>,
     pub settings: ProviderSettings,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [ProviderKind; 4] = [
+        ProviderKind::Fake,
+        ProviderKind::OpenCode,
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+    ];
+
+    #[test]
+    fn json_names_match_the_ones_the_ui_and_database_use() {
+        for kind in ALL {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            let back: ProviderKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, kind);
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+        // The UI sends this spelling when creating or switching an OpenCode chat.
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"opencode\"").expect("opencode"),
+            ProviderKind::OpenCode
+        );
+    }
 }

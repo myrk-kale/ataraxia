@@ -251,7 +251,7 @@ export function ChatPanel({
     </div>
   );
 
-  const providerLabel = PROVIDER_LABELS[session.provider];
+  const providerLabel = PROVIDER_LABELS[session.provider] ?? session.provider;
 
   // The divider sits before the first item produced by the running agent process.
   function renderItems(items: ChatItem[], restoredSplit: number, author: string) {
