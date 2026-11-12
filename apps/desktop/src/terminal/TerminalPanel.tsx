@@ -20,7 +20,7 @@ type TerminalPanelProps = {
   onClose: () => void;
 };
 
-const TERMINAL_FONT = '"Monaspace Krypton"';
+const TERMINAL_FONT = '"Geist Mono Variable"';
 const TERMINAL_FONT_STACK = `${TERMINAL_FONT}, "MesloLGS NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
 const TERMINAL_FONT_SIZE = 13;
 const MIN_HEIGHT = 150;
