@@ -8,7 +8,10 @@
     "dev": "pnpm --filter @concierge/desktop dev",
     "build": "pnpm --filter @concierge/desktop build",
     "lint": "pnpm --filter @concierge/desktop lint",
-    "typecheck": "pnpm --filter @concierge/desktop typecheck"
+    "typecheck": "pnpm --filter @concierge/desktop typecheck",
+    "tauri": "pnpm --filter @concierge/desktop exec tauri",
+    "tauri:dev": "pnpm --filter @concierge/desktop exec tauri dev",
+    "tauri:build": "pnpm --filter @concierge/desktop exec tauri build"
   },
   "engines": {
     "node": ">=22"

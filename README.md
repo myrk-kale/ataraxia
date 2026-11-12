@@ -6,15 +6,15 @@ Concierge integrates coding agents (Claude Code, Codex, OpenCode) into a keyboar
 
 ## Status
 
-Greenfield. The product direction lives in [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
+Scaffold in progress. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
 
 - [Interactive prototype](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 
 ## Architecture
 
 - **Frontend:** React + HeroUI v3 + Tailwind CSS v4 (`apps/desktop`)
-- **Desktop shell:** Tauri
-- **Core:** single Rust crate under `src-tauri`, hexagonal layout (`domain` / `ports` / `app` / `adapters`)
+- **Desktop shell:** Tauri 2 (`src-tauri`)
+- **Core:** single Rust crate, hexagonal layout (`domain` / `ports` / `app` / `adapters`)
 - **Agent connectors:** Orca-shaped ports in Rust
   - OpenCode → ACP
   - Claude Code → custom stream-json / Agent SDK bridge
@@ -23,8 +23,8 @@ Greenfield. The product direction lives in [`Concierge_SPEC_v1.1.md`](./Concierg
 ## Workspace layout
 
 ```text
-apps/desktop/   # React UI
-src-tauri/      # Rust core + Tauri (coming next)
+apps/desktop/   # React UI (HeroUI)
+src-tauri/      # Rust core + Tauri (one crate)
 ```
 
 ## Development
@@ -33,20 +33,31 @@ Prerequisites:
 
 - Node.js 22+
 - pnpm 11+
-- Rust stable (`rust-toolchain.toml`)
+- Rust 1.85+ (`cargo` / `rustc` on `PATH`; Homebrew Rust works if rustup cannot reach `static.rust-lang.org`)
 - Tauri system dependencies for your OS
 
 ```bash
 pnpm install
+pnpm --filter @concierge/desktop exec tauri dev
+```
+
+Frontend only:
+
+```bash
 pnpm dev
 ```
 
-Rust toolchain is pinned by `rust-toolchain.toml`. After installing rustup:
+Rust checks:
 
 ```bash
-rustup show
-cargo --version
+cd src-tauri && cargo test && cargo check
 ```
+
+## Shortcuts (shell scaffold)
+
+- `Shift + ←/→` — previous/next space
+- `Ctrl/Cmd + J` or `Ctrl/Cmd + \`` — toggle terminal panel placeholder
+- Theme toggle in the header
 
 ## License
 
