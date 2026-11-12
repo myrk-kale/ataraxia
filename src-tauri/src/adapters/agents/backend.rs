@@ -1,0 +1,65 @@
+//! Provider-facing seam used by [`super::host::AgentHost`].
+//!
+//! A backend owns the process/protocol for one provider session and reports
+//! what happened as [`BackendEvent`]s. The host turns those into transcript
+//! state, session status and outbound [`crate::domain::AgentEvent`]s.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::domain::ids::{SessionId, TurnId};
+use crate::domain::{PermissionDecision, PermissionRequestId, Result, ToolCallId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendEvent {
+    Delta {
+        turn_id: TurnId,
+        text: String,
+    },
+    Tool {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        name: String,
+        input: String,
+    },
+    ToolResult {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        output: String,
+        ok: bool,
+    },
+    Permission {
+        turn_id: TurnId,
+        request_id: PermissionRequestId,
+        tool_name: String,
+        detail: String,
+    },
+    TurnDone {
+        turn_id: TurnId,
+        ok: bool,
+    },
+    Error {
+        message: String,
+    },
+}
+
+pub type Emitter = Arc<dyn Fn(BackendEvent) + Send + Sync>;
+
+pub struct BackendContext {
+    pub session_id: SessionId,
+    pub cwd: PathBuf,
+    pub emit: Emitter,
+}
+
+pub trait AgentBackend: Send + Sync {
+    fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>>;
+}
+
+/// A live provider session. Methods take `&self`; implementations use interior mutability.
+pub trait BackendSession: Send + Sync {
+    fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()>;
+    /// Must lead to exactly one `TurnDone { ok: false }` for the active turn.
+    fn cancel(&self) -> Result<()>;
+    fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()>;
+    fn shutdown(&self);
+}

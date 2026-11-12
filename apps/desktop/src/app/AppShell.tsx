@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
+import { ChatPanel } from "../chat/ChatPanel";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import {
   emptyWorkspace,
@@ -14,7 +15,6 @@ import {
   workspaceOpenSession,
   workspaceSelectRepository,
   workspaceSelectWorktree,
-  type ChatSession,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
 
@@ -26,13 +26,7 @@ function shortPath(path: string): string {
   return parts.slice(-2).join("/");
 }
 
-function SpacePlaceholder({
-  spaceId,
-  session,
-}: {
-  spaceId: SpaceId;
-  session: ChatSession | null;
-}) {
+function SpacePlaceholder({ spaceId }: { spaceId: SpaceId }) {
   const space = SPACES.find((item) => item.id === spaceId)!;
   return (
     <section className="flex h-full flex-col justify-center gap-3 px-10">
@@ -40,11 +34,11 @@ function SpacePlaceholder({
         {space.label}
       </p>
       <h1 className="max-w-2xl text-3xl font-medium tracking-tight text-foreground">
-        {spaceId === "chat" && session ? session.title : space.blurb}
+        {space.blurb}
       </h1>
       <p className="max-w-xl text-sm leading-6 text-foreground/60">
-        {spaceId === "chat" && session
-          ? `Sessão ${session.provider} · ${session.status}. O runtime do agente chega nas próximas PRs.`
+        {spaceId === "chat"
+          ? "Crie ou selecione um chat para começar."
           : "Placeholder do espaço. A navegação e o chrome já seguem a SPEC; o conteúdo chega nas próximas PRs."}
       </p>
     </section>
@@ -305,7 +299,11 @@ export function AppShell() {
       </header>
 
       <div className="relative min-h-0 flex-1">
-        <SpacePlaceholder spaceId={space} session={selectedSession} />
+        {space === "chat" && selectedSession ? (
+          <ChatPanel key={selectedSession.id} session={selectedSession} />
+        ) : (
+          <SpacePlaceholder spaceId={space} />
+        )}
 
         <nav
           aria-label="Spaces"

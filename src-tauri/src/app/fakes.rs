@@ -4,12 +4,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
 };
-use crate::ports::{AgentRuntime, Fs, Git, PtyHost, Store};
+use crate::ports::{Fs, Git, PtyHost, Store};
 
 #[derive(Debug, Default)]
 pub struct FakeGit {
@@ -89,6 +88,15 @@ pub struct FakeStore {
     worktrees: Mutex<Vec<Worktree>>,
     sessions: Mutex<Vec<ChatSession>>,
     preferences: Mutex<HashMap<String, String>>,
+}
+
+impl FakeStore {
+    pub fn healthy() -> Self {
+        Self {
+            healthy: true,
+            ..Self::default()
+        }
+    }
 }
 
 impl Store for FakeStore {
@@ -225,6 +233,22 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    fn update_session_status(
+        &self,
+        id: SessionId,
+        status: crate::domain::SessionStatus,
+        updated_at: &str,
+    ) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let session = sessions
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        session.status = status;
+        session.updated_at = updated_at.to_string();
+        Ok(())
+    }
+
     fn get_preference(&self, key: &str) -> Result<Option<String>> {
         Ok(self.preferences.lock().expect("prefs").get(key).cloned())
     }
@@ -305,31 +329,5 @@ impl PtyHost for FakePty {
         let mut sessions = self.sessions.lock().expect("sessions");
         sessions.retain(|_, session_id| session_id != id);
         Ok(())
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct FakeAgentRuntime;
-
-impl AgentRuntime for FakeAgentRuntime {
-    fn providers(&self) -> Vec<ProviderDescriptor> {
-        vec![ProviderDescriptor {
-            kind: ProviderKind::Fake,
-            display_name: "Fake".into(),
-            capabilities: CapabilityMatrix::fake(),
-        }]
-    }
-
-    fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix> {
-        match provider {
-            ProviderKind::Fake => Ok(CapabilityMatrix::fake()),
-            other => Err(Error::new(
-                ErrorCode::Unsupported,
-                format!(
-                    "provider {} is not registered in the fake runtime",
-                    other.as_str()
-                ),
-            )),
-        }
     }
 }

@@ -6,12 +6,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
-use crate::domain::{ChatSession, RepoInfo, Repository, Result, Worktree, WorktreeInfo};
+use crate::domain::{
+    AgentEvent, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository, Result,
+    SessionStatus, Worktree, WorktreeInfo,
+};
 
 /// Uniform agent surface for Claude / Codex / OpenCode / fakes.
 pub trait AgentRuntime: Send + Sync {
     fn providers(&self) -> Vec<ProviderDescriptor>;
     fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix>;
+
+    fn start_session(&self, session: &ChatSession) -> Result<()>;
+    fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId>;
+    fn cancel(&self, session_id: &SessionId, turn_id: Option<&TurnId>) -> Result<()>;
+    fn resolve_permission(
+        &self,
+        session_id: &SessionId,
+        decision: PermissionDecision,
+    ) -> Result<()>;
+    fn snapshot(&self, session_id: &SessionId) -> Result<ChatSnapshot>;
+}
+
+/// Outbound channel for agent events (Tauri `emit` in production, a recorder in tests).
+pub trait EventSink: Send + Sync {
+    fn emit_agent(&self, event: AgentEvent);
 }
 
 pub trait Git: Send + Sync {
@@ -44,6 +62,12 @@ pub trait Store: Send + Sync {
     fn list_sessions(&self, repository_id: RepositoryId) -> Result<Vec<ChatSession>>;
     fn get_session(&self, id: SessionId) -> Result<Option<ChatSession>>;
     fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()>;
+    fn update_session_status(
+        &self,
+        id: SessionId,
+        status: SessionStatus,
+        updated_at: &str,
+    ) -> Result<()>;
 
     fn get_preference(&self, key: &str) -> Result<Option<String>>;
     fn set_preference(&self, key: &str, value: &str) -> Result<()>;
