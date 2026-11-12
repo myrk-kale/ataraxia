@@ -48,7 +48,7 @@ export function Axolotl() {
   return (
     <div aria-hidden="true" className="flex justify-center" data-wave-surface>
       <pre
-        className="cg-axolotl m-0 font-mono text-[clamp(6px,0.62vw,9px)] leading-[0.94] whitespace-pre text-cg-ink select-none"
+        className="cg-axolotl m-0 font-mono text-[clamp(5px,0.46vw,6.8px)] leading-[0.94] whitespace-pre text-cg-ink select-none"
         data-eyes={closed ? "closed" : "open"}
         data-wave-surface
       >

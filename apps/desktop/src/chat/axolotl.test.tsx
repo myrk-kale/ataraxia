@@ -1,60 +1,55 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Axolotl } from "./Axolotl";
-import {
-  AXOLOTL_CLOSED_ART,
-  AXOLOTL_ART,
-  AXOLOTL_ROWS,
-  closeEyes,
-  EYE_CELLS,
-} from "./axolotlArt";
+import { AXOLOTL_ART, AXOLOTL_CLOSED_ART, AXOLOTL_CLOSED_ROWS, AXOLOTL_ROWS } from "./axolotlArt";
 import { BLINK_MS, isDoubleBlink, nextBlinkDelay } from "./blink";
 import { Hero } from "./Hero";
 
+const BRAILLE = (char: string) => char >= "⠀" && char <= "⣿";
+
 describe("axolotl art", () => {
   it("is a rectangle of braille characters", () => {
-    expect(AXOLOTL_ROWS).toHaveLength(30);
+    expect(AXOLOTL_ROWS.length).toBeGreaterThan(20);
     const widths = new Set(AXOLOTL_ROWS.map((row) => [...row].length));
     expect(widths.size).toBe(1);
     for (const row of AXOLOTL_ROWS) {
-      expect([...row].every((char) => char >= "⠀" && char <= "⣿")).toBe(true);
+      expect([...row].every(BRAILLE)).toBe(true);
     }
-    expect(AXOLOTL_ART.split("\n")).toHaveLength(30);
+    expect(AXOLOTL_ART.split("\n")).toHaveLength(AXOLOTL_ROWS.length);
   });
 });
 
 describe("blinking", () => {
-  const BLANK = "\u2800";
-
-  it("only the eye cells hold art in the open face", () => {
-    for (const [row, from, to] of EYE_CELLS) {
-      for (let col = from; col <= to; col += 1) {
-        expect([...AXOLOTL_ROWS[row]][col]).not.toBe(BLANK);
-      }
-    }
-  });
-
-  it("closing the eyes changes nothing outside the eye rows and keeps the size", () => {
-    const closed = closeEyes(AXOLOTL_ROWS);
-    expect(closed).toHaveLength(AXOLOTL_ROWS.length);
-    const eyeRows = new Set(EYE_CELLS.map(([row]) => row));
-    closed.forEach((row, index) => {
+  it("the closed frame has the same size as the open one", () => {
+    expect(AXOLOTL_CLOSED_ROWS).toHaveLength(AXOLOTL_ROWS.length);
+    AXOLOTL_CLOSED_ROWS.forEach((row, index) => {
       expect([...row]).toHaveLength([...AXOLOTL_ROWS[index]].length);
-      if (!eyeRows.has(index)) {
-        expect(row).toBe(AXOLOTL_ROWS[index]);
-      }
+      expect([...row].every(BRAILLE)).toBe(true);
     });
     expect(AXOLOTL_CLOSED_ART).not.toBe(AXOLOTL_ART);
   });
 
-  it("replaces each eye with a thin lid line and clears the rest of it", () => {
-    const closed = closeEyes(AXOLOTL_ROWS).map((row) => [...row]);
-    expect(closed[10].slice(19, 22).join("")).toBe("\u2824\u2824\u2824");
-    expect(closed[10].slice(36, 39).join("")).toBe("\u2824\u2824\u2824");
-    expect(closed[9].slice(20, 23).join("")).toBe(BLANK.repeat(3));
-    expect(closed[11].slice(36, 38).join("")).toBe(BLANK.repeat(2));
-    // The cheek outline right next to the right eye is left alone.
-    expect(closed[9].slice(42, 44).join("")).toBe([...AXOLOTL_ROWS[9]].slice(42, 44).join(""));
+  it("only the eye area changes, so the rest of the picture does not flicker", () => {
+    const changedRows: number[] = [];
+    let changed = 0;
+    let total = 0;
+    AXOLOTL_ROWS.forEach((row, index) => {
+      const closed = [...AXOLOTL_CLOSED_ROWS[index]];
+      [...row].forEach((char, col) => {
+        total += 1;
+        if (char !== closed[col]) {
+          changed += 1;
+          if (!changedRows.includes(index)) {
+            changedRows.push(index);
+          }
+        }
+      });
+    });
+    expect(changed).toBeGreaterThan(0);
+    expect(changed / total).toBeLessThan(0.03);
+    // The eyes sit in the upper half and span only a few rows.
+    expect(Math.max(...changedRows) - Math.min(...changedRows)).toBeLessThanOrEqual(8);
+    expect(Math.max(...changedRows)).toBeLessThan(AXOLOTL_ROWS.length / 2);
   });
 
   it("waits a few seconds between blinks and now and then blinks twice", () => {
