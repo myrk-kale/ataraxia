@@ -20,6 +20,9 @@ type TerminalPanelProps = {
   onClose: () => void;
 };
 
+const TERMINAL_FONT = '"Monaspace Krypton"';
+const TERMINAL_FONT_STACK = `${TERMINAL_FONT}, "MesloLGS NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
+const TERMINAL_FONT_SIZE = 13;
 const MIN_HEIGHT = 150;
 const DEFAULT_HEIGHT = 245;
 
@@ -52,18 +55,34 @@ export function TerminalPanel({
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<PtySessionId | null>(null);
 
+  // xterm measures its cell size when it opens, so the web font has to be loaded first.
+  const [fontReady, setFontReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    document.fonts
+      .load(`${TERMINAL_FONT_SIZE}px ${TERMINAL_FONT}`)
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setFontReady(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) {
+    if (!host || !fontReady) {
       return;
     }
 
     const term = new Terminal({
       convertEol: true,
       cursorBlink: true,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-      fontSize: 12,
+      fontFamily: TERMINAL_FONT_STACK,
+      fontSize: TERMINAL_FONT_SIZE,
       theme: { ...XTERM_THEMES[themeRef.current] },
     });
     const fit = new FitAddon();
@@ -152,7 +171,7 @@ export function TerminalPanel({
       fitRef.current = null;
       // Keep PTY alive on hide; do not kill here.
     };
-  }, [worktreeId, cwd]);
+  }, [worktreeId, cwd, fontReady]);
 
   useEffect(() => {
     const term = termRef.current;

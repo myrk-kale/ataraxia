@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource/monaspace-krypton": "^5.3.0",
     "@heroui/react": "^3.2.7",
     "@heroui/styles": "^3.2.7",
     "@tauri-apps/api": "^2.12.4",

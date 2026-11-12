@@ -39,7 +39,7 @@ export function PermissionDialog({
             </span>
             <h2
               id="permission-title"
-              className="mt-2.5 text-[17px] leading-snug font-semibold tracking-[-0.4px]"
+              className="mt-2.5 text-title leading-snug font-semibold tracking-[-0.3px]"
             >
               {pending.detail}
             </h2>

@@ -74,7 +74,7 @@ export function SessionsPanel({
       </div>
       <div className="overflow-auto px-2.5 pt-3.5 pb-5">
         {sessions.length === 0 ? (
-          <p className="px-4 py-7 text-center text-[12px] text-cg-muted">
+          <p className="px-4 py-7 text-center text-ui text-cg-muted">
             No sessions in this repository yet.
           </p>
         ) : (
@@ -101,7 +101,7 @@ export function SessionsPanel({
                       }`}
                     />
                     <span className="min-w-0 flex-1">
-                      <strong className="block truncate text-[12px] font-semibold">
+                      <strong className="block truncate text-ui font-semibold">
                         {session.title}
                       </strong>
                       <small className="mt-1.5 block text-micro text-cg-muted">

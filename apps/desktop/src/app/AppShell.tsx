@@ -30,7 +30,6 @@ import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
 
 const PROVIDER_STORAGE_KEY = "concierge.newChatProvider";
-const OPEN_FOLDER = "__open-folder__";
 
 function readStoredProvider(): ProviderKind {
   try {
@@ -64,7 +63,7 @@ function SpacePlaceholder({ spaceId }: { spaceId: SpaceId }) {
       <p className="text-micro font-bold tracking-[1.15px] text-cg-muted-strong uppercase">
         {space.label}
       </p>
-      <h1 className="text-[25px] leading-tight font-semibold tracking-[-0.8px] text-cg-ink">
+      <h1 className="text-display leading-tight font-semibold tracking-[-0.6px] text-cg-ink">
         {space.blurb}
       </h1>
       <p className="text-small leading-6 text-cg-muted">
@@ -239,7 +238,7 @@ export function AppShell() {
   return (
     <div className="relative flex h-full flex-col bg-cg-panel text-cg-ink">
       <header className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line px-[29px]">
-        <div className="flex min-w-0 items-center gap-2.5 text-[12px] font-semibold whitespace-nowrap">
+        <div className="flex min-w-0 items-center gap-2.5 text-ui font-semibold whitespace-nowrap">
           {workspace.repositories.length === 0 ? (
             <button
               className="rounded-[5px] py-1.5 text-cg-ink hover:text-cg-accent"
@@ -254,27 +253,15 @@ export function AppShell() {
           ) : (
             <QuietSelect
               aria-label="Repository"
-              className="max-w-[210px] text-[12px] font-semibold text-cg-ink"
+              actions={[{ label: "Open folder…", onSelect: () => void onOpenRepository() }]}
+              className="max-w-[210px] text-ui font-semibold text-cg-ink"
               disabled={busy}
+              options={workspace.repositories.map((repo) => ({ value: repo.id, label: repo.name }))}
               value={workspace.selected_repository_id ?? ""}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (value === OPEN_FOLDER) {
-                  void onOpenRepository();
-                  return;
-                }
-                if (value) {
-                  void runWorkspace(() => workspaceSelectRepository(value));
-                }
+              onChange={(value) => {
+                void runWorkspace(() => workspaceSelectRepository(value));
               }}
-            >
-              {workspace.repositories.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.name}
-                </option>
-              ))}
-              <option value={OPEN_FOLDER}>Open folder…</option>
-            </QuietSelect>
+            />
           )}
 
           <span aria-hidden="true" className="text-cg-line-strong">
@@ -283,25 +270,18 @@ export function AppShell() {
 
           <QuietSelect
             aria-label="Worktree"
-            className="max-w-[175px] text-small font-medium text-cg-muted-strong"
+            className="max-w-[175px] text-ui font-medium text-cg-muted-strong"
             disabled={!selectedRepository || workspace.worktrees.length === 0 || busy}
+            options={workspace.worktrees.map((worktree) => ({
+              value: worktree.id,
+              label: worktree.branch ?? shortPath(worktree.path),
+            }))}
+            placeholder="worktree"
             value={workspace.selected_worktree_id ?? ""}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (value) {
-                void runWorkspace(() => workspaceSelectWorktree(value));
-              }
+            onChange={(value) => {
+              void runWorkspace(() => workspaceSelectWorktree(value));
             }}
-          >
-            {workspace.worktrees.length === 0 ? (
-              <option value="">worktree</option>
-            ) : null}
-            {workspace.worktrees.map((worktree) => (
-              <option key={worktree.id} value={worktree.id}>
-                {worktree.branch ?? shortPath(worktree.path)}
-              </option>
-            ))}
-          </QuietSelect>
+          />
 
           <span aria-hidden="true" className="text-cg-line-strong">
             /
@@ -314,22 +294,16 @@ export function AppShell() {
             aria-label="Provider"
             className="max-w-[130px] text-small text-cg-muted-strong"
             disabled={busy || providers.length === 0}
+            options={providers.map((item) => ({
+              value: item.kind,
+              label: `${item.display_name}${item.available ? "" : " (unavailable)"}`,
+              disabled: !item.available,
+              hint: item.detail ?? undefined,
+            }))}
             title="Provider for new chats"
             value={provider}
-            onChange={(event) => onProviderChange(event.target.value as ProviderKind)}
-          >
-            {providers.map((item) => (
-              <option
-                key={item.kind}
-                disabled={!item.available}
-                title={item.detail ?? undefined}
-                value={item.kind}
-              >
-                {item.display_name}
-                {item.available ? "" : " (unavailable)"}
-              </option>
-            ))}
-          </QuietSelect>
+            onChange={(value) => onProviderChange(value as ProviderKind)}
+          />
 
           <Button
             aria-label="New chat"

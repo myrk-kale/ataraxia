@@ -197,13 +197,13 @@ export function ChatPanel({
       block.kind === "user" ? (
         <div
           key={block.key}
-          className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.75] whitespace-pre-wrap"
+          className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.7] whitespace-pre-wrap"
         >
           {block.item.text}
         </div>
       ) : (
         <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
-          <div className="flex items-center gap-2 text-small text-cg-muted">
+          <div className="flex items-center gap-2 text-ui text-cg-muted">
             <span aria-hidden="true" className="text-cg-accent">
               ✳
             </span>
@@ -213,7 +213,7 @@ export function ChatPanel({
             item.kind === "tool" ? (
               <ToolCard key={item.callId} tool={item} />
             ) : (
-              <div key={item.id} className="text-body leading-[1.75]">
+              <div key={item.id} className="text-body leading-[1.7]">
                 <Markdown text={item.text} />
               </div>
             ),

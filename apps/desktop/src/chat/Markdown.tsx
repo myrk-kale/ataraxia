@@ -25,8 +25,8 @@ const components: Components = {
   ul: ({ children }) => <ul className="my-2 list-disc pl-6">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal pl-6">{children}</ol>,
   li: ({ children }) => <li className="my-0.5">{children}</li>,
-  h1: ({ children }) => <h1 className="mt-5 mb-2 text-[17px] font-semibold tracking-[-0.3px]">{children}</h1>,
-  h2: ({ children }) => <h2 className="mt-5 mb-2 text-[15px] font-semibold tracking-[-0.2px]">{children}</h2>,
+  h1: ({ children }) => <h1 className="mt-5 mb-2 text-title font-semibold tracking-[-0.3px]">{children}</h1>,
+  h2: ({ children }) => <h2 className="mt-5 mb-2 text-heading font-semibold tracking-[-0.2px]">{children}</h2>,
   h3: ({ children }) => <h3 className="mt-4 mb-1 text-body font-semibold">{children}</h3>,
   blockquote: ({ children }) => (
     <blockquote className="my-2 border-l-2 border-cg-line-strong pl-3 text-cg-muted-strong">
