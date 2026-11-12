@@ -92,6 +92,8 @@ pub struct SpawnSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// Variables to strip (e.g. markers that make a CLI refuse to run nested).
+    pub env_remove: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +138,9 @@ impl ManagedProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for key in &spec.env_remove {
+            command.env_remove(key);
+        }
         for (key, value) in &spec.env {
             command.env(key, value);
         }
