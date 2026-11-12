@@ -28,8 +28,8 @@ use crate::domain::{
 };
 
 const BINARY_NAME: &str = "claude";
-const OVERRIDE_ENV: &str = "CONCIERGE_CLAUDE_BIN";
-const PERMISSION_MODE_ENV: &str = "CONCIERGE_CLAUDE_PERMISSION_MODE";
+const OVERRIDE_ENV: &str = "ATARAXIA_CLAUDE_BIN";
+const PERMISSION_MODE_ENV: &str = "ATARAXIA_CLAUDE_PERMISSION_MODE";
 const DEFAULT_PERMISSION_MODE: &str = "auto";
 
 enum Launcher {
@@ -78,7 +78,7 @@ impl ClaudeBackend {
 }
 
 /// Permission mode passed to `claude --permission-mode`. Defaults to `auto`; set
-/// `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode, or to an empty value to defer to the
+/// `ATARAXIA_CLAUDE_PERMISSION_MODE` to another mode, or to an empty value to defer to the
 /// user's own Claude settings.
 fn permission_mode() -> Option<String> {
     match std::env::var(PERMISSION_MODE_ENV) {
@@ -701,7 +701,7 @@ impl ClaudeShared {
                 "response": {
                     "subtype": "error",
                     "request_id": control_id,
-                    "error": "request not supported by Concierge"
+                    "error": "request not supported by Ataraxia"
                 }
             }));
             return;

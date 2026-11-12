@@ -86,10 +86,10 @@ impl Inner {
                     self.store
                         .update_session_status(session_id, status, &updated_at)
                 {
-                    eprintln!("concierge: could not persist session status: {error}");
+                    eprintln!("ataraxia: could not persist session status: {error}");
                 }
             }
-            Err(error) => eprintln!("concierge: clock error: {error}"),
+            Err(error) => eprintln!("ataraxia: clock error: {error}"),
         }
         self.sink
             .emit_agent(AgentEvent::Status { session_id, status });
@@ -97,7 +97,7 @@ impl Inner {
 
     fn persist(&self, session_id: SessionId, transcript: &[ChatItem]) {
         if let Err(error) = self.store.replace_chat_items(session_id, transcript) {
-            eprintln!("concierge: could not persist transcript: {error}");
+            eprintln!("ataraxia: could not persist transcript: {error}");
         }
     }
 
@@ -664,7 +664,7 @@ impl AgentRuntime for AgentHost {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 format!(
-                    "{} does not let Concierge change model, effort or agent",
+                    "{} does not let Ataraxia change model, effort or agent",
                     session.provider.as_str()
                 ),
             ));

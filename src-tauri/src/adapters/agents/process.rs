@@ -20,7 +20,7 @@ use crate::domain::{Error, ErrorCode, Result};
 const STDERR_TAIL_LINES: usize = 20;
 /// Set to a file path to append every line exchanged with a provider CLI (`<` from it, `>` to
 /// it). Off by default: the log holds the full conversation.
-const DEBUG_FRAMES_ENV: &str = "CONCIERGE_DEBUG_FRAMES";
+const DEBUG_FRAMES_ENV: &str = "ATARAXIA_DEBUG_FRAMES";
 
 fn debug_frame(direction: char, program: &Path, line: &str) {
     let Some(path) = std::env::var_os(DEBUG_FRAMES_ENV) else {

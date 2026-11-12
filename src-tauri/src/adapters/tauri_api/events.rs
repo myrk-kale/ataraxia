@@ -18,7 +18,7 @@ impl TauriEventSink {
 impl EventSink for TauriEventSink {
     fn emit_agent(&self, event: AgentEvent) {
         if let Err(error) = self.app.emit(AGENT_EVENT, event) {
-            eprintln!("concierge: failed to emit agent event: {error}");
+            eprintln!("ataraxia: failed to emit agent event: {error}");
         }
     }
 }

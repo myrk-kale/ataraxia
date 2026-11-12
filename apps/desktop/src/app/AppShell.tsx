@@ -31,7 +31,7 @@ import { Toast } from "./Toast";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
 
-const PROVIDER_STORAGE_KEY = "concierge.newChatProvider";
+const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
 
 function readStoredProvider(): ProviderKind {
   try {

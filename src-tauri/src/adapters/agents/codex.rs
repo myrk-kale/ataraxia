@@ -27,8 +27,8 @@ use crate::domain::{
 };
 
 const BINARY_NAME: &str = "codex";
-const OVERRIDE_ENV: &str = "CONCIERGE_CODEX_BIN";
-const APPROVALS_REVIEWER_ENV: &str = "CONCIERGE_CODEX_APPROVALS_REVIEWER";
+const OVERRIDE_ENV: &str = "ATARAXIA_CODEX_BIN";
+const APPROVALS_REVIEWER_ENV: &str = "ATARAXIA_CODEX_APPROVALS_REVIEWER";
 const DEFAULT_APPROVALS_REVIEWER: &str = "auto_review";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -72,7 +72,7 @@ impl CodexBackend {
 }
 
 /// Who reviews approval requests: `auto_review` (a reviewer agent decides, the default) or
-/// `user` (every request reaches the modal). `CONCIERGE_CODEX_APPROVALS_REVIEWER` overrides it;
+/// `user` (every request reaches the modal). `ATARAXIA_CODEX_APPROVALS_REVIEWER` overrides it;
 /// an empty value defers to the user's own Codex config.
 fn approvals_reviewer() -> Option<String> {
     match std::env::var(APPROVALS_REVIEWER_ENV) {
@@ -145,8 +145,8 @@ impl AgentBackend for CodexBackend {
                 "initialize",
                 json!({
                     "clientInfo": {
-                        "name": "concierge",
-                        "title": "Concierge",
+                        "name": "ataraxia",
+                        "title": "Ataraxia",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
@@ -249,7 +249,7 @@ impl CodexShared {
                 if method == COMMAND_APPROVAL || method == FILE_CHANGE_APPROVAL {
                     self.on_approval(id, &method, &params);
                 } else if let Some(client) = self.client.get() {
-                    let _ = client.respond_error(&id, -32601, "method not supported by Concierge");
+                    let _ = client.respond_error(&id, -32601, "method not supported by Ataraxia");
                 }
             }
             Incoming::Closed(info) => {

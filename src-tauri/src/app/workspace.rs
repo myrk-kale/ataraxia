@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn open_repository_creates_session_provenance() {
-        let root = PathBuf::from("/tmp/concierge-demo");
+        let root = PathBuf::from("/tmp/ataraxia-demo");
         let git = FakeGit::with_repo(
             root.clone(),
             vec![WorktreeInfo {

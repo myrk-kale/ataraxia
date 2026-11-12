@@ -179,6 +179,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ataraxia"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "parking_lot",
+ "portable-pty",
+ "pretty_assertions",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "thiserror 2.0.21",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -476,27 +497,6 @@ checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
-]
-
-[[package]]
-name = "concierge"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "parking_lot",
- "portable-pty",
- "pretty_assertions",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "thiserror 2.0.21",
- "time",
- "uuid",
 ]
 
 [[package]]

@@ -1,15 +1,15 @@
-# Concierge — Especificação do Sistema
+# Ataraxia — Especificação do Sistema
 
 **Versão:** 1.1 (atualização de design system)  
 **Data:** 11 de novembro de 2026  
 **Estado:** Proposta de implementação  
-**Referência visual e comportamental:** [Protótipo interativo do Concierge](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
+**Referência visual e comportamental:** [Protótipo interativo do Ataraxia](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 
 > **Papel do protótipo.** O protótipo define a direção visual, a navegação e os fluxos de interação. Seus agentes, respostas, repositórios e execução de terminal são simulados. Esta especificação estabelece os comportamentos reais necessários. Em caso de divergência de aparência, o protótipo é a referência de UX; em caso de divergência de comportamento, os requisitos abaixo prevalecem.
 
 ## 1. Visão geral
 
-O **Concierge** é um ambiente desktop para desenvolvimento de software assistido por agentes. Permite conversar com agentes de programação, consultar e editar arquivos, examinar alterações de Git por importância, discutir decisões derivadas do trabalho do agente e explorar fluxos do código em diagramas interativos.
+O **Ataraxia** é um ambiente desktop para desenvolvimento de software assistido por agentes. Permite conversar com agentes de programação, consultar e editar arquivos, examinar alterações de Git por importância, discutir decisões derivadas do trabalho do agente e explorar fluxos do código em diagramas interativos.
 
 Seu princípio operacional é: **os agentes produzem código e artefatos explicativos; a pessoa desenvolvedora compreende, questiona, aprova e orienta o trabalho sem perder o contexto.**
 
@@ -163,12 +163,12 @@ A escolha ou edição de um preset **não deve regenerar** automaticamente o dia
 
 ## 8. Geração automática de artefatos
 
-O Concierge deve produzir análises úteis sem exigir que o usuário entre em cada tela para gerá-las.
+O Ataraxia deve produzir análises úteis sem exigir que o usuário entre em cada tela para gerá-las.
 
 Fluxo de alto nível:
 
 1. O agente conclui uma unidade relevante de trabalho.
-2. O Concierge registra checkpoint e diff correspondente.
+2. O Ataraxia registra checkpoint e diff correspondente.
 3. Um orquestrador agenda tarefas especializadas, como detecção de decisões, priorização de revisão e preparação de estruturas para Flow.
 4. O resultado é associado à sessão e ao checkpoint, com status `queued/running/ready/failed/stale`.
 5. O usuário pode acessar os artefatos quando desejar, sem bloquear o Chat.
@@ -186,9 +186,9 @@ Requisitos mínimos de runtime:
 - Gerenciar pedidos de permissão e cancelamento.
 - Associar atividades do agente a arquivos alterados e checkpoints.
 - Iniciar investigações de subagentes com contexto delimitado.
-- Vincular comentários e decisões ao histórico próprio do Concierge.
+- Vincular comentários e decisões ao histórico próprio do Ataraxia.
 
-O **MCP** deve expor operações de consulta e atualização de artefatos do Concierge, com escopo, autorização e auditoria. ACP e MCP exercem papéis distintos: controle de sessões/conversas e exposição de ferramentas/contexto, respectivamente.
+O **MCP** deve expor operações de consulta e atualização de artefatos do Ataraxia, com escopo, autorização e auditoria. ACP e MCP exercem papéis distintos: controle de sessões/conversas e exposição de ferramentas/contexto, respectivamente.
 
 ## 10. Workspace e persistência
 
@@ -212,7 +212,7 @@ O terminal utiliza PTY real em implementação desktop e aparece como **painel r
 
 ### 12.1 Decisão tecnológica
 
-**HeroUI v3 é o design system oficial do frontend do Concierge.** A escolha busca uma biblioteca com **estética definida, consistente e profissional desde a instalação**, em vez de uma coleção headless que exigiria desenhar todos os controles do zero.
+**HeroUI v3 é o design system oficial do frontend do Ataraxia.** A escolha busca uma biblioteca com **estética definida, consistente e profissional desde a instalação**, em vez de uma coleção headless que exigiria desenhar todos os controles do zero.
 
 - **Biblioteca React:** [`@heroui/react`](https://www.npmjs.com/package/@heroui/react), linha **v3**.
 - **Estilos e tokens:** [`@heroui/styles`](https://github.com/heroui-inc/heroui/tree/v3/packages/styles), Tailwind CSS v4 e variáveis CSS.
@@ -223,12 +223,12 @@ O terminal utiliza PTY real em implementação desktop e aparece como **painel r
 ### 12.2 Regras de uso
 
 1. Usar componentes estilizados do HeroUI como padrão para select, popover, dialog, drawer, campos, botões, menus, tooltip, feedback e estados de carregamento.
-2. **Não** substituir o visual do protótipo por um dashboard HeroUI genérico. A composição, densidade, navegação e hierarquia permanecem ancoradas no Concierge.
-3. Criar um tema Concierge sobre os tokens do HeroUI: neutros predominantes, contraste legível, superfícies discretas e acento restrito a foco, seleção e estados significativos.
+2. **Não** substituir o visual do protótipo por um dashboard HeroUI genérico. A composição, densidade, navegação e hierarquia permanecem ancoradas no Ataraxia.
+3. Criar um tema Ataraxia sobre os tokens do HeroUI: neutros predominantes, contraste legível, superfícies discretas e acento restrito a foco, seleção e estados significativos.
 4. Evitar cards e bordas decorativas; usar composição tipográfica, alinhamento e espaço negativo como primeiro recurso de hierarquia.
 5. Aplicar componentes com comportamento acessível de teclado, foco visível, semântica, estados disabled/loading e suporte a light/dark mode.
 6. Respeitar `prefers-reduced-motion`; animações devem ser curtas e não bloquear a interação.
-7. Usar somente dependências e assets licenciados para o modelo de distribuição do Concierge; não introduzir componentes Pro inadvertidamente.
+7. Usar somente dependências e assets licenciados para o modelo de distribuição do Ataraxia; não introduzir componentes Pro inadvertidamente.
 
 ### 12.3 Componentes especializados, fora do escopo do HeroUI
 
@@ -251,7 +251,7 @@ O terminal utiliza PTY real em implementação desktop e aparece como **painel r
 ## 13. Arquitetura de alto nível
 
 ```text
-Concierge Desktop (Tauri)
+Ataraxia Desktop (Tauri)
 ├── React UI (HeroUI v3 theme)
 │   ├── Chat
 │   ├── Code (Monaco)
@@ -309,7 +309,7 @@ A UI nunca deve assumir que um agente está rodando apenas porque há sessão ar
 
 ## 17. Referências
 
-- [Protótipo Concierge](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
+- [Protótipo Ataraxia](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 - [HeroUI v3 — documentação](https://heroui.com/en/docs/react/getting-started)
 - [HeroUI v3 — repositório](https://github.com/heroui-inc/heroui)
 - [HeroUI v3 — React](https://github.com/heroui-inc/heroui/blob/v3/packages/react/README.md)

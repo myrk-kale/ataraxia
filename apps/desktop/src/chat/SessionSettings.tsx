@@ -65,7 +65,7 @@ export function SessionSettings({
     return (
       <span
         className="text-small text-cg-muted"
-        title="Concierge cannot change the model, effort or agent for this provider."
+        title="Ataraxia cannot change the model, effort or agent for this provider."
       >
         Model set by the provider
       </span>

@@ -26,7 +26,7 @@ use crate::domain::{
 };
 
 const BINARY_NAME: &str = "opencode";
-const OVERRIDE_ENV: &str = "CONCIERGE_OPENCODE_BIN";
+const OVERRIDE_ENV: &str = "ATARAXIA_OPENCODE_BIN";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 enum Launcher {
@@ -112,8 +112,8 @@ impl AgentBackend for OpenCodeBackend {
                         "terminal": false
                     },
                     "clientInfo": {
-                        "name": "concierge",
-                        "title": "Concierge",
+                        "name": "ataraxia",
+                        "title": "Ataraxia",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
@@ -390,7 +390,7 @@ impl AcpShared {
                 if method == "session/request_permission" {
                     self.on_permission(id, &params);
                 } else if let Some(client) = self.client.get() {
-                    let _ = client.respond_error(&id, -32601, "method not supported by Concierge");
+                    let _ = client.respond_error(&id, -32601, "method not supported by Ataraxia");
                 }
             }
             Incoming::Closed(info) => {

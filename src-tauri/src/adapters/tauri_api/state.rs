@@ -29,7 +29,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
     std::fs::create_dir_all(&data_dir)
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-    let db_path: PathBuf = data_dir.join("concierge.sqlite3");
+    let db_path: PathBuf = data_dir.join("ataraxia.sqlite3");
     let store: Arc<dyn Store> = Arc::new(SqliteStore::open(db_path)?);
     let pty = NativePtyHost::new(app.clone());
     let sink = Arc::new(TauriEventSink::new(app.clone()));

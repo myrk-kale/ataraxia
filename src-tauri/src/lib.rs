@@ -1,4 +1,4 @@
-//! Concierge core: hexagonal single crate.
+//! Ataraxia core: hexagonal single crate.
 //!
 //! Layout:
 //! - [`domain`]: pure types and invariants
@@ -49,7 +49,7 @@ pub fn run() {
             tauri_api::agent_get_snapshot,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Concierge")
+        .expect("error while building Ataraxia")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<tauri_api::AppState>() {
