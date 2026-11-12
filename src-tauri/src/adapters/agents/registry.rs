@@ -2,7 +2,6 @@ use crate::domain::agent::{
     ApprovalEnforcement, CapabilityMatrix, ForkMode, ProviderDescriptor, ProviderKind, SteeringMode,
 };
 use crate::domain::{Error, ErrorCode, Result};
-use crate::ports::AgentRuntime;
 
 /// Declares known providers and their MVP capability matrices.
 #[derive(Debug, Default)]
@@ -68,12 +67,8 @@ impl ProviderRegistry {
     }
 }
 
-impl AgentRuntime for ProviderRegistry {
-    fn providers(&self) -> Vec<ProviderDescriptor> {
-        Self::descriptors()
-    }
-
-    fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix> {
+impl ProviderRegistry {
+    pub fn capabilities_for(provider: ProviderKind) -> Result<CapabilityMatrix> {
         Self::descriptors()
             .into_iter()
             .find(|item| item.kind == provider)
@@ -93,8 +88,7 @@ mod tests {
 
     #[test]
     fn registry_lists_four_providers() {
-        let runtime = ProviderRegistry;
-        assert_eq!(runtime.providers().len(), 4);
-        assert!(runtime.capabilities(ProviderKind::OpenCode).is_ok());
+        assert_eq!(ProviderRegistry::descriptors().len(), 4);
+        assert!(ProviderRegistry::capabilities_for(ProviderKind::OpenCode).is_ok());
     }
 }

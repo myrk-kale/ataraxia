@@ -1,12 +1,16 @@
 //! Tauri commands: the driving adapter at the UI edge.
 
+mod events;
 mod state;
 
 use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
-use crate::domain::{Error, Result};
+use crate::domain::agent::ProviderDescriptor;
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::{
+    ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
+};
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
 pub use state::{AppState, build_app_state};
@@ -138,4 +142,74 @@ pub fn terminal_kill(
     session_id: PtySessionId,
 ) -> std::result::Result<(), String> {
     state.pty_host().kill(&session_id).map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_list_providers(state: tauri::State<'_, AppState>) -> Vec<ProviderDescriptor> {
+    state.agent_runtime().providers()
+}
+
+#[tauri::command]
+pub fn agent_start_session(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<(), String> {
+    let session = state
+        .store
+        .get_session(session_id)
+        .map_err(map_error)?
+        .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))
+        .map_err(map_error)?;
+    state
+        .agent_runtime()
+        .start_session(&session)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_prompt(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    text: String,
+) -> std::result::Result<TurnId, String> {
+    state
+        .agent_runtime()
+        .prompt(&session_id, &text)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_cancel(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    turn_id: Option<TurnId>,
+) -> std::result::Result<(), String> {
+    state
+        .agent_runtime()
+        .cancel(&session_id, turn_id.as_ref())
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_resolve_permission(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    request_id: PermissionRequestId,
+    allow: bool,
+) -> std::result::Result<(), String> {
+    state
+        .agent_runtime()
+        .resolve_permission(&session_id, PermissionDecision { request_id, allow })
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_get_snapshot(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<ChatSnapshot, String> {
+    state
+        .agent_runtime()
+        .snapshot(&session_id)
+        .map_err(map_error)
 }

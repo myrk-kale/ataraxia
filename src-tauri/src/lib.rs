@@ -37,6 +37,12 @@ pub fn run() {
             tauri_api::terminal_write,
             tauri_api::terminal_resize,
             tauri_api::terminal_kill,
+            tauri_api::agent_list_providers,
+            tauri_api::agent_start_session,
+            tauri_api::agent_prompt,
+            tauri_api::agent_cancel,
+            tauri_api::agent_resolve_permission,
+            tauri_api::agent_get_snapshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Concierge")
@@ -44,6 +50,7 @@ pub fn run() {
             if let RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<tauri_api::AppState>() {
                     state.pty.shutdown_all();
+                    state.agents.shutdown_all();
                 }
             }
         });

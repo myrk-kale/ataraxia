@@ -274,6 +274,28 @@ impl Store for SqliteStore {
         })
     }
 
+    fn update_session_status(
+        &self,
+        id: SessionId,
+        status: SessionStatus,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions
+                     SET status = ?2, updated_at = ?3
+                     WHERE id = ?1",
+                    params![id.0.to_string(), status.as_str(), updated_at],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
     fn get_preference(&self, key: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             conn.query_row(
