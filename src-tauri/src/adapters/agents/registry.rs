@@ -14,6 +14,8 @@ impl ProviderRegistry {
                 kind: ProviderKind::Fake,
                 display_name: "Fake".into(),
                 capabilities: CapabilityMatrix::fake(),
+                available: true,
+                detail: None,
             },
             ProviderDescriptor {
                 kind: ProviderKind::OpenCode,
@@ -30,6 +32,8 @@ impl ProviderRegistry {
                     approval_enforcement: ApprovalEnforcement::Host,
                     child_sessions: true,
                 },
+                available: true,
+                detail: None,
             },
             ProviderDescriptor {
                 kind: ProviderKind::Claude,
@@ -46,6 +50,8 @@ impl ProviderRegistry {
                     approval_enforcement: ApprovalEnforcement::Provider,
                     child_sessions: true,
                 },
+                available: true,
+                detail: None,
             },
             ProviderDescriptor {
                 kind: ProviderKind::Codex,
@@ -62,6 +68,8 @@ impl ProviderRegistry {
                     approval_enforcement: ApprovalEnforcement::Provider,
                     child_sessions: true,
                 },
+                available: true,
+                detail: None,
             },
         ]
     }

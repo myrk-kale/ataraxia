@@ -56,6 +56,14 @@ export type AgentEvent =
       input: string;
     }
   | {
+      type: "toolUpdate";
+      sessionId: SessionId;
+      turnId: string;
+      callId: string;
+      name: string | null;
+      input: string | null;
+    }
+  | {
       type: "toolResult";
       sessionId: SessionId;
       turnId: string;
@@ -77,6 +85,8 @@ export type AgentEvent =
 export type ProviderDescriptor = {
   kind: ProviderKind;
   display_name: string;
+  available: boolean;
+  detail: string | null;
 };
 
 export function agentListProviders() {
@@ -204,6 +214,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 status: "running",
               },
             ],
+          };
+        case "toolUpdate":
+          return {
+            ...state,
+            items: state.items.map((item) =>
+              item.kind === "tool" && item.callId === event.callId
+                ? {
+                    ...item,
+                    name: event.name ?? item.name,
+                    input: event.input ?? item.input,
+                  }
+                : item,
+            ),
           };
         case "toolResult":
           return {

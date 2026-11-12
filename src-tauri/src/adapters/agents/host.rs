@@ -128,6 +128,32 @@ impl Inner {
                     input,
                 });
             }
+            BackendEvent::ToolUpdate {
+                turn_id,
+                call_id,
+                name,
+                input,
+            } => {
+                for item in live.transcript.iter_mut() {
+                    if let ChatItem::Tool(tool) = item {
+                        if tool.call_id == call_id {
+                            if let Some(name) = &name {
+                                tool.name = name.clone();
+                            }
+                            if let Some(input) = &input {
+                                tool.input = input.clone();
+                            }
+                        }
+                    }
+                }
+                self.sink.emit_agent(AgentEvent::ToolUpdate {
+                    session_id,
+                    turn_id,
+                    call_id,
+                    name,
+                    input,
+                });
+            }
             BackendEvent::ToolResult {
                 turn_id,
                 call_id,
@@ -246,11 +272,39 @@ fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
     live.status = SessionStatus::Ready;
 }
 
+impl AgentHost {
+    /// Restarts a provider process that exited since the last turn.
+    fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
+        let dead = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|live| !live.backend.is_alive());
+        if !dead {
+            return Ok(());
+        }
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        self.start_session(&session)
+    }
+}
+
 impl AgentRuntime for AgentHost {
     fn providers(&self) -> Vec<ProviderDescriptor> {
         ProviderRegistry::descriptors()
             .into_iter()
-            .filter(|item| self.backends.contains_key(&item.kind))
+            .filter_map(|mut item| {
+                let backend = self.backends.get(&item.kind)?;
+                if let Err(reason) = backend.availability() {
+                    item.available = false;
+                    item.detail = Some(reason);
+                }
+                Some(item)
+            })
             .collect()
     }
 
@@ -259,13 +313,25 @@ impl AgentRuntime for AgentHost {
     }
 
     fn start_session(&self, session: &ChatSession) -> Result<()> {
-        if let Some(live) = self.inner.sessions.lock().get(&session.id) {
-            // Already running: just re-sync the UI with the current status.
-            self.inner.sink.emit_agent(AgentEvent::Status {
-                session_id: session.id,
-                status: live.status,
-            });
-            return Ok(());
+        let mut carried = Vec::new();
+        {
+            let mut sessions = self.inner.sessions.lock();
+            if let Some(live) = sessions.get(&session.id) {
+                if live.backend.is_alive() {
+                    // Already running: just re-sync the UI with the current status.
+                    self.inner.sink.emit_agent(AgentEvent::Status {
+                        session_id: session.id,
+                        status: live.status,
+                    });
+                    return Ok(());
+                }
+                // The provider process died: drop the stale session and start a fresh one.
+                if let Some(dead) = sessions.remove(&session.id) {
+                    dead.backend.shutdown();
+                    // Keep what the user already saw; the provider conversation itself restarts.
+                    carried = dead.transcript;
+                }
+            }
         }
         let backend = self.backends.get(&session.provider).ok_or_else(|| {
             Error::new(
@@ -298,7 +364,7 @@ impl AgentRuntime for AgentHost {
             Live {
                 backend: started,
                 status: SessionStatus::Ready,
-                transcript: Vec::new(),
+                transcript: carried,
                 active_turn: None,
                 pending: None,
             },
@@ -313,6 +379,7 @@ impl AgentRuntime for AgentHost {
             return Err(Error::new(ErrorCode::Invalid, "prompt is empty"));
         }
         let turn_id = TurnId::new();
+        self.revive_if_dead(session_id)?;
         let backend = {
             let mut sessions = self.inner.sessions.lock();
             let live = sessions

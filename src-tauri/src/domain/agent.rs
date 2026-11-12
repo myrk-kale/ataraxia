@@ -89,4 +89,7 @@ pub struct ProviderDescriptor {
     pub kind: ProviderKind,
     pub display_name: String,
     pub capabilities: CapabilityMatrix,
+    /// False when the provider's CLI cannot be found on this machine.
+    pub available: bool,
+    pub detail: Option<String>,
 }

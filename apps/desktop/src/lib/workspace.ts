@@ -90,11 +90,13 @@ export function workspaceCreateSession(
   repositoryId: RepositoryId,
   worktreeId: WorktreeId,
   title?: string,
+  provider?: ProviderKind,
 ) {
   return invoke<WorkspaceSnapshot>("workspace_create_session", {
     repositoryId,
     worktreeId,
     title: title ?? null,
+    provider: provider ?? null,
   });
 }
 
