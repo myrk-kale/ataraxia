@@ -1,6 +1,7 @@
 //! Agent provider adapters (host, backends, registry).
 
 pub mod backend;
+pub mod claude;
 pub mod fake;
 pub mod host;
 pub mod opencode;
@@ -8,6 +9,7 @@ pub mod process;
 pub mod registry;
 pub mod rpc;
 
+pub use claude::ClaudeBackend;
 pub use fake::FakeBackend;
 pub use host::AgentHost;
 pub use opencode::OpenCodeBackend;

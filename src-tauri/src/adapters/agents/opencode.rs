@@ -13,7 +13,9 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
-use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter};
+use super::backend::{
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
+};
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
 use crate::domain::ids::TurnId;
@@ -24,7 +26,6 @@ use crate::domain::{
 const BINARY_NAME: &str = "opencode";
 const OVERRIDE_ENV: &str = "CONCIERGE_OPENCODE_BIN";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_OUTPUT_CHARS: usize = 20_000;
 
 enum Launcher {
     Resolve,
@@ -90,6 +91,7 @@ impl AgentBackend for OpenCodeBackend {
                 args,
                 cwd: ctx.cwd.clone(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
             },
             true,
             move |incoming| handler_shared.on_incoming(incoming),
@@ -556,14 +558,6 @@ fn permission_detail(kind: &str, tool_call: &Value) -> String {
     }
 }
 
-fn truncate(mut text: String) -> String {
-    if text.chars().count() > MAX_OUTPUT_CHARS {
-        text = text.chars().take(MAX_OUTPUT_CHARS).collect();
-        text.push_str("\n… (truncated)");
-    }
-    text
-}
-
 fn tool_output(update: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(items) = update.get("content").and_then(Value::as_array) {
@@ -598,7 +592,7 @@ fn tool_output(update: &Value) -> String {
             }
         }
     }
-    truncate(parts.join("\n"))
+    truncate_output(parts.join("\n"))
 }
 
 #[cfg(test)]

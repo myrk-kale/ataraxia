@@ -79,3 +79,14 @@ pub trait BackendSession: Send + Sync {
     }
     fn shutdown(&self);
 }
+
+const MAX_OUTPUT_CHARS: usize = 20_000;
+
+/// Caps tool output so one huge result cannot bloat the transcript or the event channel.
+pub fn truncate_output(mut text: String) -> String {
+    if text.chars().count() > MAX_OUTPUT_CHARS {
+        text = text.chars().take(MAX_OUTPUT_CHARS).collect();
+        text.push_str("\n… (truncated)");
+    }
+    text
+}
