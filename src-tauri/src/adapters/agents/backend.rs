@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::domain::agent::SessionOptions;
 use crate::domain::ids::{SessionId, TurnId};
-use crate::domain::{PermissionDecision, PermissionRequestId, Result, ToolCallId};
+use crate::domain::{PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEvent {
@@ -45,6 +46,12 @@ pub enum BackendEvent {
         turn_id: TurnId,
         ok: bool,
     },
+    /// Progress inside a subagent's own conversation.
+    Subagent {
+        id: String,
+        title: String,
+        update: SubagentUpdate,
+    },
     Error {
         message: String,
     },
@@ -59,6 +66,8 @@ pub struct BackendContext {
     pub model: Option<String>,
     /// Reasoning-effort override (`None` = provider default).
     pub effort: Option<String>,
+    /// Named agent to run as (`None` = the provider's default agent).
+    pub agent: Option<String>,
     pub emit: Emitter,
 }
 
@@ -83,8 +92,17 @@ pub trait BackendSession: Send + Sync {
     }
     /// Applies a new model/effort to the running session. Returns `false` when the provider can
     /// only pick them up on a fresh process, in which case the host restarts the session.
-    fn apply_settings(&self, _model: Option<&str>, _effort: Option<&str>) -> bool {
+    fn apply_settings(
+        &self,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+        _agent: Option<&str>,
+    ) -> bool {
         false
+    }
+    /// Models, effort levels and agents this session offers; empty when unknown.
+    fn options(&self) -> SessionOptions {
+        SessionOptions::default()
     }
     fn shutdown(&self);
 }

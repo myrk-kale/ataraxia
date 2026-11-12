@@ -193,6 +193,7 @@ impl<'a> WorkspaceService<'a> {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: Some(now.clone()),

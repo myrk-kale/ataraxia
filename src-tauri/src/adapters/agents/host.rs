@@ -11,12 +11,13 @@ use uuid::Uuid;
 
 use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession};
 use super::registry::ProviderRegistry;
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
+use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSession, ChatSnapshot, Error, ErrorCode,
-    PendingPermission, PermissionDecision, Result, SessionStatus, ToolCallRecord, ToolStatus,
+    PendingPermission, PermissionDecision, Result, SessionStatus, SubagentRecord, SubagentStatus,
+    SubagentUpdate, ToolCallRecord, ToolStatus,
 };
 use crate::ports::{AgentRuntime, EventSink, Store};
 
@@ -24,6 +25,7 @@ struct Live {
     backend: Arc<dyn BackendSession>,
     status: SessionStatus,
     transcript: Vec<ChatItem>,
+    subagents: Vec<SubagentRecord>,
     active_turn: Option<TurnId>,
     pending: Option<PendingPermission>,
     /// Leading transcript items from before this agent process started.
@@ -232,6 +234,15 @@ impl Inner {
                 });
                 self.publish_status(session_id, SessionStatus::Ready);
             }
+            BackendEvent::Subagent { id, title, update } => {
+                apply_subagent(&mut live.subagents, &id, &title, &update);
+                self.sink.emit_agent(AgentEvent::Subagent {
+                    session_id,
+                    subagent_id: id,
+                    title,
+                    update,
+                });
+            }
             BackendEvent::Error { message } => {
                 let turn = live.active_turn;
                 if let Some(turn_id) = turn {
@@ -271,7 +282,109 @@ fn append_text(transcript: &mut Vec<ChatItem>, role: ChatRole, turn_id: TurnId, 
     }));
 }
 
+/// Applies one update to the subagent's own transcript, creating the record on first sight.
+fn apply_subagent(
+    subagents: &mut Vec<SubagentRecord>,
+    id: &str,
+    title: &str,
+    update: &SubagentUpdate,
+) {
+    let at = match subagents.iter().position(|item| item.id == id) {
+        Some(at) => at,
+        None => {
+            subagents.push(SubagentRecord {
+                id: id.to_string(),
+                title: title.to_string(),
+                status: SubagentStatus::Running,
+                items: Vec::new(),
+            });
+            subagents.len() - 1
+        }
+    };
+    let record = &mut subagents[at];
+    if !title.is_empty() && record.title != title {
+        record.title = title.to_string();
+    }
+    match update {
+        SubagentUpdate::Started => record.status = SubagentStatus::Running,
+        SubagentUpdate::Delta { text } => {
+            if let Some(ChatItem::Message(last)) = record.items.last_mut() {
+                if last.role == ChatRole::Assistant {
+                    last.text.push_str(text);
+                    return;
+                }
+            }
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: Uuid::new_v4().to_string(),
+                role: ChatRole::Assistant,
+                text: text.clone(),
+                turn_id: None,
+            }));
+        }
+        SubagentUpdate::Tool {
+            call_id,
+            name,
+            input,
+        } => record.items.push(ChatItem::Tool(ToolCallRecord {
+            call_id: *call_id,
+            turn_id: TurnId::new(),
+            name: name.clone(),
+            input: input.clone(),
+            output: None,
+            status: ToolStatus::Running,
+        })),
+        SubagentUpdate::ToolResult {
+            call_id,
+            output,
+            ok,
+        } => {
+            for item in record.items.iter_mut() {
+                if let ChatItem::Tool(tool) = item {
+                    if tool.call_id == *call_id {
+                        tool.output = Some(output.clone());
+                        tool.status = if *ok {
+                            ToolStatus::Done
+                        } else {
+                            ToolStatus::Failed
+                        };
+                    }
+                }
+            }
+        }
+        SubagentUpdate::Done { ok } => {
+            record.status = if *ok {
+                SubagentStatus::Done
+            } else {
+                SubagentStatus::Failed
+            };
+            for item in record.items.iter_mut() {
+                if let ChatItem::Tool(tool) = item {
+                    if tool.status == ToolStatus::Running {
+                        tool.status = if *ok {
+                            ToolStatus::Done
+                        } else {
+                            ToolStatus::Failed
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
+    // A subagent still open when the turn ends can never report again.
+    for record in live
+        .subagents
+        .iter_mut()
+        .filter(|record| record.status == SubagentStatus::Running)
+    {
+        record.status = if ok {
+            SubagentStatus::Done
+        } else {
+            SubagentStatus::Failed
+        };
+    }
     for item in live.transcript.iter_mut() {
         if let ChatItem::Tool(tool) = item {
             if tool.turn_id == turn_id && tool.status == ToolStatus::Running {
@@ -315,11 +428,22 @@ fn clean_effort(provider: ProviderKind, effort: Option<String>) -> Result<Option
     if effort.is_empty() {
         return Ok(None);
     }
-    let known = ProviderRegistry::descriptors()
+    let settings = ProviderRegistry::descriptors()
         .into_iter()
         .find(|item| item.kind == provider)
-        .is_some_and(|item| item.settings.efforts.contains(&effort));
-    if known {
+        .map(|item| item.settings)
+        .unwrap_or_default();
+    // Providers that list their own levels (and per model) are checked by the provider itself.
+    let valid = if settings.dynamic {
+        effort.len() <= 40
+            && effort.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && effort
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    } else {
+        settings.efforts.contains(&effort)
+    };
+    if valid {
         Ok(Some(effort))
     } else {
         Err(Error::new(
@@ -329,7 +453,53 @@ fn clean_effort(provider: ProviderKind, effort: Option<String>) -> Result<Option
     }
 }
 
+/// Agent names reach a CLI as an argument, so keep them to plain name characters.
+fn clean_agent(agent: Option<String>) -> Result<Option<String>> {
+    let Some(agent) = agent.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+    if agent.is_empty() {
+        return Ok(None);
+    }
+    let valid = agent.len() <= 100
+        && agent.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && agent
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./ ".contains(c));
+    if valid {
+        Ok(Some(agent))
+    } else {
+        Err(Error::new(ErrorCode::Invalid, "invalid agent name"))
+    }
+}
+
 impl AgentHost {
+    fn ensure_idle(&self, session_id: &SessionId, what: &str) -> Result<()> {
+        let busy = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|live| live.active_turn.is_some() || live.pending.is_some());
+        if busy {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("wait for the current turn to finish before {what}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stops the live process (keeping the saved transcript) and starts it again.
+    fn restart(&self, session_id: &SessionId, session: &ChatSession) -> Result<()> {
+        let removed = self.inner.sessions.lock().remove(session_id);
+        if let Some(live) = removed {
+            self.inner.persist(*session_id, &live.transcript);
+            live.backend.shutdown();
+        }
+        self.start_session(session)
+    }
+
     /// Restarts a provider process that exited since the last turn.
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
         let dead = self
@@ -371,6 +541,7 @@ impl AgentRuntime for AgentHost {
 
     fn start_session(&self, session: &ChatSession) -> Result<()> {
         let mut carried = Vec::new();
+        let mut carried_subagents = Vec::new();
         {
             let mut sessions = self.inner.sessions.lock();
             if let Some(live) = sessions.get(&session.id) {
@@ -387,6 +558,7 @@ impl AgentRuntime for AgentHost {
                     dead.backend.shutdown();
                     // Keep what the user already saw; the provider conversation itself restarts.
                     carried = dead.transcript;
+                    carried_subagents = dead.subagents;
                 }
             }
         }
@@ -429,6 +601,7 @@ impl AgentRuntime for AgentHost {
             cwd: worktree.path,
             model: session.model.clone(),
             effort: session.effort.clone(),
+            agent: session.agent.clone(),
             emit,
         })?;
 
@@ -440,6 +613,7 @@ impl AgentRuntime for AgentHost {
                 status: SessionStatus::Ready,
                 restored_count: carried.len(),
                 transcript: carried,
+                subagents: carried_subagents,
                 active_turn: None,
                 pending: None,
             },
@@ -453,6 +627,7 @@ impl AgentRuntime for AgentHost {
         session_id: &SessionId,
         model: Option<String>,
         effort: Option<String>,
+        agent: Option<String>,
     ) -> Result<ChatSession> {
         let session = self
             .inner
@@ -466,29 +641,20 @@ impl AgentRuntime for AgentHost {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 format!(
-                    "{} does not let Concierge change model or effort",
+                    "{} does not let Concierge change model, effort or agent",
                     session.provider.as_str()
                 ),
             ));
         }
         let model = clean_model(model)?;
         let effort = clean_effort(session.provider, effort)?;
-        {
-            let sessions = self.inner.sessions.lock();
-            if sessions
-                .get(session_id)
-                .is_some_and(|live| live.active_turn.is_some() || live.pending.is_some())
-            {
-                return Err(Error::new(
-                    ErrorCode::Invalid,
-                    "wait for the current turn to finish before changing model or effort",
-                ));
-            }
-        }
+        let agent = clean_agent(agent)?;
+        self.ensure_idle(session_id, "changing model, effort or agent")?;
         self.inner.store.update_session_settings(
             *session_id,
             model.as_deref(),
             effort.as_deref(),
+            agent.as_deref(),
             &now_rfc3339()?,
         )?;
         let updated = self
@@ -504,16 +670,57 @@ impl AgentRuntime for AgentHost {
             .get(session_id)
             .map(|live| Arc::clone(&live.backend));
         if let Some(backend) = live_backend {
-            if !backend.apply_settings(model.as_deref(), effort.as_deref()) {
-                let removed = self.inner.sessions.lock().remove(session_id);
-                if let Some(live) = removed {
-                    self.inner.persist(*session_id, &live.transcript);
-                    live.backend.shutdown();
-                }
-                self.start_session(&updated)?;
+            if !backend.apply_settings(model.as_deref(), effort.as_deref(), agent.as_deref()) {
+                self.restart(session_id, &updated)?;
             }
         }
         Ok(updated)
+    }
+
+    fn switch_provider(
+        &self,
+        session_id: &SessionId,
+        provider: ProviderKind,
+    ) -> Result<ChatSession> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        if session.provider == provider {
+            return Ok(session);
+        }
+        let backend = self.backends.get(&provider).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unsupported,
+                format!("provider {} is not available", provider.as_str()),
+            )
+        })?;
+        backend
+            .availability()
+            .map_err(|reason| Error::new(ErrorCode::Unsupported, reason))?;
+        self.ensure_idle(session_id, "switching the harness")?;
+        self.inner
+            .store
+            .update_session_provider(*session_id, provider, &now_rfc3339()?)?;
+        let updated = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        // The transcript stays on screen; the new harness starts without the old context.
+        self.restart(session_id, &updated)?;
+        Ok(updated)
+    }
+
+    fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions> {
+        let backend = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .map(|live| Arc::clone(&live.backend));
+        Ok(backend.map(|backend| backend.options()).unwrap_or_default())
     }
 
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId> {
@@ -608,12 +815,14 @@ impl AgentRuntime for AgentHost {
         Ok(match sessions.get(session_id) {
             Some(live) => ChatSnapshot {
                 items: live.transcript.clone(),
+                subagents: live.subagents.clone(),
                 restored_count: live.restored_count,
                 status: live.status,
                 pending_permission: live.pending.clone(),
             },
             None => ChatSnapshot {
                 items: Vec::new(),
+                subagents: Vec::new(),
                 restored_count: 0,
                 status: SessionStatus::Idle,
                 pending_permission: None,
@@ -705,6 +914,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: "t".into(),
             updated_at: "t".into(),
             last_opened_at: None,
@@ -741,7 +951,12 @@ mod tests {
         let h = harness();
         let updated = h
             .host
-            .configure_session(&h.session.id, Some("fake-fast".into()), Some("high".into()))
+            .configure_session(
+                &h.session.id,
+                Some("fake-fast".into()),
+                Some("high".into()),
+                None,
+            )
             .expect("configure");
         assert_eq!(updated.model.as_deref(), Some("fake-fast"));
         assert_eq!(updated.effort.as_deref(), Some("high"));
@@ -776,7 +991,7 @@ mod tests {
             .items
             .len();
         h.host
-            .configure_session(&h.session.id, None, Some("low".into()))
+            .configure_session(&h.session.id, None, Some("low".into()), None)
             .expect("configure");
         let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
         assert_eq!(snapshot.items.len(), before, "the transcript is kept");
@@ -788,18 +1003,18 @@ mod tests {
         let h = harness();
         assert!(
             h.host
-                .configure_session(&h.session.id, None, Some("turbo".into()))
+                .configure_session(&h.session.id, None, Some("turbo".into()), None)
                 .is_err()
         );
         assert!(
             h.host
-                .configure_session(&h.session.id, Some("--dangerous".into()), None)
+                .configure_session(&h.session.id, Some("--dangerous".into()), None, None)
                 .is_err()
         );
         h.host.prompt(&h.session.id, "hello").expect("prompt");
         assert!(
             h.host
-                .configure_session(&h.session.id, None, Some("low".into()))
+                .configure_session(&h.session.id, None, Some("low".into()), None)
                 .is_err(),
             "a running turn blocks changes"
         );
@@ -809,11 +1024,16 @@ mod tests {
     fn empty_values_clear_the_override() {
         let h = harness();
         h.host
-            .configure_session(&h.session.id, Some("fake-fast".into()), Some("low".into()))
+            .configure_session(
+                &h.session.id,
+                Some("fake-fast".into()),
+                Some("low".into()),
+                None,
+            )
             .expect("set");
         let cleared = h
             .host
-            .configure_session(&h.session.id, Some("  ".into()), None)
+            .configure_session(&h.session.id, Some("  ".into()), None, None)
             .expect("clear");
         assert_eq!(cleared.model, None);
         assert_eq!(cleared.effort, None);

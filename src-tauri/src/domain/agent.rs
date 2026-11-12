@@ -88,6 +88,27 @@ impl CapabilityMatrix {
 pub struct ModelChoice {
     pub id: String,
     pub label: String,
+    /// Effort levels this model supports; empty means "use the session-wide list".
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentChoice {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What a live session offers right now (discovered from the provider, not hard-coded).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionOptions {
+    pub models: Vec<ModelChoice>,
+    /// The model used when none is chosen, when the provider says so.
+    pub default_model: Option<String>,
+    /// Effort levels for the current model, lowest to highest.
+    pub efforts: Vec<String>,
+    pub agents: Vec<AgentChoice>,
 }
 
 /// What a provider lets the user tune per chat.
@@ -101,6 +122,13 @@ pub struct ProviderSettings {
     pub efforts: Vec<String>,
     /// Whether any model id can be typed in.
     pub custom_model: bool,
+    /// Models, efforts and agents come from the live session, so values are not checked
+    /// against the lists above.
+    #[serde(default)]
+    pub dynamic: bool,
+    /// Whether the chat can run as a named agent.
+    #[serde(default)]
+    pub agents: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

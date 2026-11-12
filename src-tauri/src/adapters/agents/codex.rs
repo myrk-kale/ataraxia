@@ -4,9 +4,9 @@
 //! `item/*` and `turn/*` notifications; command and file-change approvals arrive as server
 //! requests answered with a `decision`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -16,11 +16,13 @@ use serde_json::{Value, json};
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
 };
+use super::definitions::codex_agents;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
+use crate::domain::agent::{ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
-    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, ToolCallId,
+    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
 };
 
 const BINARY_NAME: &str = "codex";
@@ -110,6 +112,7 @@ impl AgentBackend for CodexBackend {
             .command()
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(CodexShared {
+            me: OnceLock::new(),
             emit: ctx.emit,
             client: OnceLock::new(),
             thread_id: OnceLock::new(),
@@ -117,9 +120,11 @@ impl AgentBackend for CodexBackend {
             state: Mutex::new(CodexState {
                 model: ctx.model.clone(),
                 effort: ctx.effort.clone(),
+                agent: ctx.agent.clone(),
                 ..CodexState::default()
             }),
         });
+        let _ = shared.me.set(Arc::downgrade(&shared));
         let handler_shared = Arc::clone(&shared);
         let client = RpcClient::spawn(
             &SpawnSpec {
@@ -170,7 +175,11 @@ impl AgentBackend for CodexBackend {
             client.kill();
             return Err(Error::new(ErrorCode::Agent, message));
         }
-        Ok(Arc::new(CodexSession { shared }))
+        Ok(Arc::new(CodexSession {
+            shared,
+            cwd: ctx.cwd,
+            models: OnceLock::new(),
+        }))
     }
 }
 
@@ -193,6 +202,13 @@ struct CodexState {
     /// Model and effort overrides, sent with every `turn/start`.
     model: Option<String>,
     effort: Option<String>,
+    /// Custom agent the user picked; Codex selects agents by name in the prompt.
+    agent: Option<String>,
+    /// Subagent threads: thread id → title, and what was already reported for them.
+    child_titles: HashMap<String, String>,
+    child_calls: HashMap<String, ToolCallId>,
+    child_live: HashSet<String>,
+    child_synced: HashSet<String>,
     turn: Option<TurnId>,
     /// Codex's own id for the running turn, needed for `turn/interrupt`.
     codex_turn: Option<String>,
@@ -204,6 +220,7 @@ struct CodexState {
 }
 
 struct CodexShared {
+    me: OnceLock<Weak<CodexShared>>,
     emit: Emitter,
     client: OnceLock<Arc<RpcClient>>,
     thread_id: OnceLock<String>,
@@ -238,6 +255,16 @@ impl CodexShared {
     }
 
     fn on_notification(&self, method: &str, params: &Value) {
+        // Spawned subagents run in their own threads; keep them out of the main conversation.
+        if let (Some(thread), Some(main)) = (
+            params.get("threadId").and_then(Value::as_str),
+            self.thread_id.get(),
+        ) {
+            if thread != main {
+                self.on_child_notification(thread, method, params);
+                return;
+            }
+        }
         let mut state = self.state.lock();
         let Some(turn_id) = state.turn else {
             return;
@@ -262,6 +289,9 @@ impl CodexShared {
             }
             "item/completed" => {
                 if let Some(item) = params.get("item") {
+                    if item.get("type").and_then(Value::as_str) == Some("collabAgentToolCall") {
+                        self.on_collab(&mut state, item);
+                    }
                     if let Some(call_id) = self.announce_item(&mut state, turn_id, item) {
                         let (output, ok) = item_result(item);
                         (self.emit)(BackendEvent::ToolResult {
@@ -292,6 +322,7 @@ impl CodexShared {
                     .unwrap_or("completed");
                 let cancelled = std::mem::take(&mut state.cancel_requested);
                 let last_error = state.last_error.take();
+                self.settle_children(&mut state, status == "completed" && !cancelled);
                 state.turn = None;
                 state.codex_turn = None;
                 state.queue.clear();
@@ -313,6 +344,250 @@ impl CodexShared {
             }
             _ => {}
         }
+    }
+
+    fn child_title(state: &CodexState, thread: &str) -> String {
+        state
+            .child_titles
+            .get(thread)
+            .cloned()
+            .unwrap_or_else(|| "Subagent".to_string())
+    }
+
+    /// Progress of a spawned subagent's own thread, when the server streams it.
+    fn on_child_notification(&self, thread: &str, method: &str, params: &Value) {
+        let mut state = self.state.lock();
+        let title = Self::child_title(&state, thread);
+        let id = thread.to_string();
+        match method {
+            "item/agentMessage/delta" => {
+                let text = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    state.child_live.insert(id.clone());
+                    (self.emit)(BackendEvent::Subagent {
+                        id,
+                        title,
+                        update: SubagentUpdate::Delta {
+                            text: text.to_string(),
+                        },
+                    });
+                }
+            }
+            "item/started" | "item/completed" => {
+                let Some(item) = params.get("item") else {
+                    return;
+                };
+                let (Some(item_id), Some((name, input))) =
+                    (item.get("id").and_then(Value::as_str), item_summary(item))
+                else {
+                    return;
+                };
+                state.child_live.insert(id.clone());
+                let call_id = match state.child_calls.get(item_id) {
+                    Some(call_id) => *call_id,
+                    None => {
+                        let call_id = ToolCallId::new();
+                        state.child_calls.insert(item_id.to_string(), call_id);
+                        (self.emit)(BackendEvent::Subagent {
+                            id: id.clone(),
+                            title: title.clone(),
+                            update: SubagentUpdate::Tool {
+                                call_id,
+                                name,
+                                input,
+                            },
+                        });
+                        call_id
+                    }
+                };
+                if method == "item/completed" {
+                    let (output, ok) = item_result(item);
+                    (self.emit)(BackendEvent::Subagent {
+                        id,
+                        title,
+                        update: SubagentUpdate::ToolResult {
+                            call_id,
+                            output: truncate_output(output),
+                            ok,
+                        },
+                    });
+                }
+            }
+            "turn/completed" => {
+                let ok = params
+                    .pointer("/turn/status")
+                    .and_then(Value::as_str)
+                    .is_none_or(|status| status == "completed");
+                state.child_synced.insert(id.clone());
+                (self.emit)(BackendEvent::Subagent {
+                    id,
+                    title,
+                    update: SubagentUpdate::Done { ok },
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// A `collabAgentToolCall` item names the threads a spawn created and how they are doing.
+    fn on_collab(&self, state: &mut CodexState, item: &Value) {
+        let prompt = item
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(first_line_title);
+        let spawns = item.get("tool").and_then(Value::as_str) == Some("spawnAgent");
+        if spawns {
+            if let Some(threads) = item.get("receiverThreadIds").and_then(Value::as_array) {
+                for thread in threads.iter().filter_map(Value::as_str) {
+                    if state.child_titles.contains_key(thread) {
+                        continue;
+                    }
+                    let title = prompt.clone().unwrap_or_else(|| "Subagent".to_string());
+                    state.child_titles.insert(thread.to_string(), title.clone());
+                    (self.emit)(BackendEvent::Subagent {
+                        id: thread.to_string(),
+                        title,
+                        update: SubagentUpdate::Started,
+                    });
+                }
+            }
+        }
+        if let Some(states) = item.get("agentsStates").and_then(Value::as_object) {
+            for (thread, agent) in states {
+                let finished = matches!(
+                    agent.get("status").and_then(Value::as_str),
+                    Some("completed" | "errored" | "shutdown")
+                );
+                if finished {
+                    self.sync_child(state, thread);
+                }
+            }
+        }
+    }
+
+    /// Reads a finished subagent thread back (once), unless its events already streamed in.
+    fn sync_child(&self, state: &mut CodexState, thread: &str) {
+        if state.child_live.contains(thread) || !state.child_synced.insert(thread.to_string()) {
+            return;
+        }
+        let title = Self::child_title(state, thread);
+        if let Some(me) = self.me.get().and_then(Weak::upgrade) {
+            let thread = thread.to_string();
+            // The reader thread must not wait for a reply, so the read runs on its own thread.
+            thread::spawn(move || me.replay_child(&thread, &title));
+        }
+    }
+
+    fn replay_child(&self, thread: &str, title: &str) {
+        let Some(client) = self.client.get() else {
+            return;
+        };
+        let read = client.request(
+            "thread/read",
+            json!({ "threadId": thread, "includeTurns": true }),
+            Some(INTERRUPT_TIMEOUT),
+        );
+        let (title, ok) = match &read {
+            Ok(result) => {
+                let named = ["agentNickname", "agentRole", "name"]
+                    .iter()
+                    .find_map(|key| {
+                        result
+                            .pointer(&format!("/thread/{key}"))
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                    });
+                let title = match (named, title) {
+                    (Some(name), "Subagent") => name.to_string(),
+                    _ => title.to_string(),
+                };
+                (title, true)
+            }
+            Err(_) => (title.to_string(), false),
+        };
+        let emit = |update| {
+            (self.emit)(BackendEvent::Subagent {
+                id: thread.to_string(),
+                title: title.clone(),
+                update,
+            });
+        };
+        if let Ok(result) = &read {
+            let turns = result
+                .pointer("/thread/turns")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in turns
+                .iter()
+                .filter_map(|turn| turn.get("items").and_then(Value::as_array))
+                .flatten()
+            {
+                match item.get("type").and_then(Value::as_str) {
+                    Some("agentMessage") => {
+                        if let Some(text) = item.get("text").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                emit(SubagentUpdate::Delta {
+                                    text: text.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some((name, input)) = item_summary(item) {
+                            let call_id = ToolCallId::new();
+                            emit(SubagentUpdate::Tool {
+                                call_id,
+                                name,
+                                input,
+                            });
+                            let (output, ok) = item_result(item);
+                            emit(SubagentUpdate::ToolResult {
+                                call_id,
+                                output: truncate_output(output),
+                                ok,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        emit(SubagentUpdate::Done { ok });
+    }
+
+    /// When the main turn ends, subagents that never streamed are read back and all are closed.
+    fn settle_children(&self, state: &mut CodexState, ok: bool) {
+        let threads: Vec<String> = state.child_titles.keys().cloned().collect();
+        for thread in threads {
+            if state.child_live.contains(&thread) {
+                if state.child_synced.insert(thread.clone()) {
+                    let title = Self::child_title(state, &thread);
+                    (self.emit)(BackendEvent::Subagent {
+                        id: thread,
+                        title,
+                        update: SubagentUpdate::Done { ok },
+                    });
+                }
+            } else {
+                self.sync_child(state, &thread);
+            }
+        }
+    }
+
+    /// Models the server offers, with the effort levels each one supports.
+    fn list_models(&self) -> Option<(Vec<ModelChoice>, Option<String>)> {
+        let client = self.client.get()?;
+        let result = client
+            .request(
+                "model/list",
+                json!({ "includeHidden": false, "limit": 100 }),
+                Some(INTERRUPT_TIMEOUT),
+            )
+            .ok()?;
+        Some(parse_model_list(&result))
     }
 
     /// Announces tool-like items once and returns their call id (None for plain messages).
@@ -449,10 +724,15 @@ impl CodexShared {
         let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
             return;
         };
-        let (model, effort) = {
+        let (model, effort, agent) = {
             let state = self.state.lock();
-            (state.model.clone(), state.effort.clone())
+            (
+                state.model.clone(),
+                state.effort.clone(),
+                state.agent.clone(),
+            )
         };
+        let text = prompt_text(agent.as_deref(), &text);
         let mut params = json!({
             "threadId": thread_id,
             "input": [{ "type": "text", "text": text, "text_elements": [] }]
@@ -499,15 +779,53 @@ impl CodexShared {
 
 struct CodexSession {
     shared: Arc<CodexShared>,
+    cwd: PathBuf,
+    /// `model/list` answer, fetched on first use.
+    models: OnceLock<(Vec<ModelChoice>, Option<String>)>,
 }
 
 impl BackendSession for CodexSession {
-    fn apply_settings(&self, model: Option<&str>, effort: Option<&str>) -> bool {
+    fn apply_settings(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+        agent: Option<&str>,
+    ) -> bool {
         // `turn/start` overrides apply to this turn and the following ones, no restart needed.
         let mut state = self.shared.state.lock();
         state.model = model.map(str::to_string);
         state.effort = effort.map(str::to_string);
+        state.agent = agent.map(str::to_string);
         true
+    }
+
+    fn options(&self) -> SessionOptions {
+        let listed = match self.models.get() {
+            Some(listed) => Some(listed),
+            None => self
+                .shared
+                .list_models()
+                .map(|listed| self.models.get_or_init(|| listed)),
+        };
+        let (models, default_model) = listed.cloned().unwrap_or_default();
+        let current = self
+            .shared
+            .state
+            .lock()
+            .model
+            .clone()
+            .or(default_model.clone());
+        let efforts = models
+            .iter()
+            .find(|model| Some(&model.id) == current.as_ref())
+            .map(|model| model.efforts.clone())
+            .unwrap_or_default();
+        SessionOptions {
+            models,
+            default_model,
+            efforts,
+            agents: codex_agents(&self.cwd),
+        }
     }
 
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
@@ -580,6 +898,75 @@ impl BackendSession for CodexSession {
             client.kill();
         }
     }
+}
+
+/// Codex picks a custom agent by name in the prompt.
+fn prompt_text(agent: Option<&str>, text: &str) -> String {
+    match agent {
+        Some(agent) => format!("Use the `{agent}` custom agent for this request.\n\n{text}"),
+        None => text.to_string(),
+    }
+}
+
+fn first_line_title(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let line = line.trim();
+    if line.chars().count() > 60 {
+        format!("{}…", line.chars().take(60).collect::<String>().trim_end())
+    } else if line.is_empty() {
+        "Subagent".to_string()
+    } else {
+        line.to_string()
+    }
+}
+
+fn parse_model_list(result: &Value) -> (Vec<ModelChoice>, Option<String>) {
+    let mut default_model = None;
+    let models = result
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("hidden").and_then(Value::as_bool) != Some(true))
+                .filter_map(|item| {
+                    let id = item
+                        .get("model")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)?
+                        .to_string();
+                    if item.get("isDefault").and_then(Value::as_bool) == Some(true) {
+                        default_model = Some(id.clone());
+                    }
+                    let label = item
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&id)
+                        .to_string();
+                    let efforts = item
+                        .get("supportedReasoningEfforts")
+                        .and_then(Value::as_array)
+                        .map(|levels| {
+                            levels
+                                .iter()
+                                .filter_map(|level| {
+                                    level
+                                        .get("reasoningEffort")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(ModelChoice { id, label, efforts })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (models, default_model)
 }
 
 /// Name + input text for the item kinds that act like tool calls.
@@ -686,6 +1073,128 @@ fn item_result(item: &Value) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    fn subagent_updates(events: &[BackendEvent]) -> Vec<(&str, &SubagentUpdate)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Subagent { title, update, .. } => Some((title.as_str(), update)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn streamed_subagent_thread_stays_out_of_the_main_conversation() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "spawn please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+
+        let updates = subagent_updates(&seen);
+        assert!(updates.iter().any(|(title, update)| {
+            *title == "Review the diff" && matches!(update, SubagentUpdate::Started)
+        }));
+        let streamed: String = updates
+            .iter()
+            .filter_map(|(_, update)| match update {
+                SubagentUpdate::Delta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, "Looks fine.");
+        assert!(updates.iter().any(|(_, update)| matches!(
+            update,
+            SubagentUpdate::ToolResult { ok: true, output, .. } if output == "diff --git"
+        )));
+        assert!(
+            updates
+                .iter()
+                .any(|(_, update)| matches!(update, SubagentUpdate::Done { ok: true }))
+        );
+        // The child's own turn/completed must not end the main turn early.
+        let main_done = seen
+            .iter()
+            .filter(|event| matches!(event, BackendEvent::TurnDone { .. }))
+            .count();
+        assert_eq!(main_done, 1);
+        let main_text: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(main_text, "Reviewed.");
+    }
+
+    #[test]
+    fn silent_subagent_is_read_back_with_thread_read() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "spawnquiet please")
+            .expect("prompt");
+        let mut seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        seen.extend(h.until("subagent read back", |event| {
+            matches!(
+                event,
+                BackendEvent::Subagent {
+                    update: SubagentUpdate::Done { .. },
+                    ..
+                }
+            )
+        }));
+        h.session.shutdown();
+
+        let updates = subagent_updates(&seen);
+        // thread/read supplies a nickname, but the prompt title wins once it exists.
+        assert!(updates.iter().all(|(title, _)| *title == "Review the diff"));
+        assert!(updates.iter().any(
+            |(_, update)| matches!(update, SubagentUpdate::Delta { text } if text == "All good.")
+        ));
+        assert!(updates.iter().any(|(_, update)| matches!(
+            update,
+            SubagentUpdate::Tool { name, .. } if name == "command"
+        )));
+        assert!(
+            updates
+                .iter()
+                .any(|(_, update)| matches!(update, SubagentUpdate::Done { ok: true }))
+        );
+    }
+
+    #[test]
+    fn models_come_from_model_list_with_their_own_efforts() {
+        let h = start();
+        let options = h.session.options();
+        h.session.shutdown();
+        let ids: Vec<_> = options
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        assert_eq!(ids, ["gpt-mock", "gpt-mini"], "hidden models are skipped");
+        assert_eq!(options.default_model.as_deref(), Some("gpt-mock"));
+        assert_eq!(options.efforts, ["low", "medium", "high"]);
+        assert_eq!(options.models[1].efforts, ["low"]);
+        assert_eq!(options.models[0].label, "GPT Mock");
+    }
+
+    #[test]
+    fn a_chosen_agent_is_named_in_the_prompt() {
+        assert_eq!(prompt_text(None, "hi"), "hi");
+        assert_eq!(
+            prompt_text(Some("reviewer"), "hi"),
+            "Use the `reviewer` custom agent for this request.\n\nhi"
+        );
+        assert_eq!(first_line_title("  Fix it  \nmore"), "Fix it");
+    }
+
     #[test]
     fn thread_start_routes_approvals_to_the_reviewer() {
         let params = thread_start_params(Path::new("/work"), Some("auto_review"), Some("gpt-x"));
@@ -721,6 +1230,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 model: None,
                 effort: None,
+                agent: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

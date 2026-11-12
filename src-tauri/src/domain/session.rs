@@ -59,6 +59,9 @@ pub struct ChatSession {
     /// Reasoning effort override; `None` keeps the provider's default.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Named agent the chat runs as (a Claude/OpenCode agent definition); `None` = default.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_opened_at: Option<String>,

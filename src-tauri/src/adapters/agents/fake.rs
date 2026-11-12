@@ -8,6 +8,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter};
+use crate::domain::agent::{AgentChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, ToolCallId,
@@ -73,8 +74,31 @@ struct FakeSession {
 }
 
 impl BackendSession for FakeSession {
-    fn apply_settings(&self, _model: Option<&str>, _effort: Option<&str>) -> bool {
+    fn apply_settings(
+        &self,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+        _agent: Option<&str>,
+    ) -> bool {
         self.live_settings
+    }
+
+    fn options(&self) -> SessionOptions {
+        SessionOptions {
+            agents: vec![
+                AgentChoice {
+                    id: "reviewer".into(),
+                    label: "reviewer".into(),
+                    description: Some("Reviews the change".into()),
+                },
+                AgentChoice {
+                    id: "explorer".into(),
+                    label: "explorer".into(),
+                    description: None,
+                },
+            ],
+            ..SessionOptions::default()
+        }
     }
 
     fn prompt(&self, turn_id: TurnId, _text: &str) -> Result<()> {

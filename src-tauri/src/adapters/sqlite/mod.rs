@@ -208,8 +208,8 @@ impl Store for SqliteStore {
             conn.execute(
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
-                    created_at, updated_at, last_opened_at, model, effort)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    created_at, updated_at, last_opened_at, model, effort, agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -221,7 +221,8 @@ impl Store for SqliteStore {
                     session.updated_at,
                     session.last_opened_at,
                     session.model,
-                    session.effort
+                    session.effort,
+                    session.agent
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -234,7 +235,7 @@ impl Store for SqliteStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
-                            created_at, updated_at, last_opened_at, model, effort
+                            created_at, updated_at, last_opened_at, model, effort, agent
                      FROM chat_sessions
                      WHERE repository_id = ?1
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -251,7 +252,7 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
-                        created_at, updated_at, last_opened_at, model, effort
+                        created_at, updated_at, last_opened_at, model, effort, agent
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -283,15 +284,39 @@ impl Store for SqliteStore {
         id: SessionId,
         model: Option<&str>,
         effort: Option<&str>,
+        agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()> {
         self.with_conn(|conn| {
             let updated = conn
                 .execute(
                     "UPDATE chat_sessions
-                     SET model = ?2, effort = ?3, updated_at = ?4
+                     SET model = ?2, effort = ?3, agent = ?5, updated_at = ?4
                      WHERE id = ?1",
-                    params![id.0.to_string(), model, effort, updated_at],
+                    params![id.0.to_string(), model, effort, updated_at, agent],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
+    fn update_session_provider(
+        &self,
+        id: SessionId,
+        provider: ProviderKind,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            // Model, effort and agent names are provider-specific, so they reset with it.
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions
+                     SET provider = ?2, model = NULL, effort = NULL, agent = NULL, updated_at = ?3
+                     WHERE id = ?1",
+                    params![id.0.to_string(), provider.as_str(), updated_at],
                 )
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
             if updated == 0 {
@@ -452,6 +477,7 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
         last_opened_at: row.get(8)?,
         model: row.get(9)?,
         effort: row.get(10)?,
+        agent: row.get(11)?,
     })
 }
 
@@ -525,6 +551,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,
@@ -573,6 +600,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,

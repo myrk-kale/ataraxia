@@ -6,7 +6,7 @@ mod state;
 use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::agent::{ProviderDescriptor, ProviderKind};
+use crate::domain::agent::{ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     ChatSession, ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
@@ -178,10 +178,34 @@ pub fn agent_configure_session(
     session_id: SessionId,
     model: Option<String>,
     effort: Option<String>,
+    agent: Option<String>,
 ) -> std::result::Result<ChatSession, String> {
     state
         .agent_runtime()
-        .configure_session(&session_id, model, effort)
+        .configure_session(&session_id, model, effort, agent)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn agent_switch_provider(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    provider: ProviderKind,
+) -> std::result::Result<ChatSession, String> {
+    state
+        .agent_runtime()
+        .switch_provider(&session_id, provider)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn agent_get_options(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<SessionOptions, String> {
+    state
+        .agent_runtime()
+        .session_options(&session_id)
         .map_err(map_error)
 }
 

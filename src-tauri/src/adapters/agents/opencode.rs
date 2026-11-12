@@ -629,6 +629,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 model: None,
                 effort: None,
+                agent: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -786,6 +787,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 model: None,
                 effort: None,
+                agent: None,
                 emit: Arc::new(|_| {}),
             })
             .err()
