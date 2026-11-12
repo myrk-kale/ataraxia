@@ -185,133 +185,135 @@ def mottling(c, seed, scale=20, strength=1.0):
     return smoothstep(field, 0.52, 0.70) * strength
 
 
-def paint_gills(c, rng, scale_by_side):
-    specs = [
-        [(146, 86), (112, 62), (88, 40), (50, 22)],
-        [(134, 112), (100, 106), (74, 104), (30, 92)],
-        [(142, 136), (110, 148), (84, 160), (46, 170)],
-    ]
-    for side in (-1, 1):
-        k = scale_by_side[side]
-        for spec in specs:
-            pts = [(CX + side * (CX - x) * k, 110 + (y - 110) * k) for x, y in spec]
-            stalk = bezier(pts, 90)
-            ns = normals(stalk)
-            c.paint(stroke_mask(c, stalk, 12, 3.4), 0.5)
-            # feathery filaments, spaced out so each one stays visible after dithering
+def paint_gill_set(c, rng, specs, stalk_val=0.5, fil_val=0.82, stalk_w=11.0, fil_scale=1.0):
+    """Feathery external gills: a tapering stalk with filaments on both sides."""
+    for spec in specs:
+        stalk = bezier(spec, 90)
+        ns = normals(stalk)
+        c.paint(stroke_mask(c, stalk, stalk_w, 3.2), stalk_val)
+        seg = 0.0
+        for i in range(8, len(stalk) - 1):
+            x0, y0 = stalk[i - 1]
+            x, y = stalk[i]
+            seg += math.hypot(x - x0, y - y0)
+            if seg < 9.0:
+                continue
             seg = 0.0
-            for i in range(8, len(stalk) - 1):
-                x0, y0 = stalk[i - 1]
-                x, y = stalk[i]
-                seg += math.hypot(x - x0, y - y0)
-                if seg < 8.5:
-                    continue
-                seg = 0.0
-                t = i / (len(stalk) - 1)
-                tx, ty = -ns[i][1], ns[i][0]
-                length = lerp(40, 11, t) * rng.uniform(0.9, 1.1)
-                for sign in (-1, 1):
-                    ang = math.atan2(ty, tx) + sign * lerp(0.95, 0.62, t)
-                    ex, ey = x + math.cos(ang) * length, y + math.sin(ang) * length
-                    mx = lerp(x, ex, 0.55) - ns[i][0] * sign * 4
-                    my = lerp(y, ey, 0.55) - ns[i][1] * sign * 4
-                    fil = bezier([(x, y), (mx, my), (mx, my), (ex, ey)], 14)
-                    c.paint(stroke_mask(c, fil, 4.6, 1.8), 0.82)
+            t = i / (len(stalk) - 1)
+            tx, ty = -ns[i][1], ns[i][0]
+            length = lerp(30, 10, t) * fil_scale * rng.uniform(0.9, 1.1)
+            for sign in (-1, 1):
+                ang = math.atan2(ty, tx) + sign * lerp(0.95, 0.62, t)
+                ex, ey = x + math.cos(ang) * length, y + math.sin(ang) * length
+                mx = lerp(x, ex, 0.55) - ns[i][0] * sign * 3.5
+                my = lerp(y, ey, 0.55) - ns[i][1] * sign * 3.5
+                fil = bezier([(x, y), (mx, my), (mx, my), (ex, ey)], 14)
+                c.paint(stroke_mask(c, fil, 4.8, 2.0), fil_val)
 
 
 def paint_axolotl(eyes_open, seed=7):
+    """A side view, facing right: head up at the right, body and a broad fin tail trailing left."""
     rng = random.Random(seed)
     c = Canvas()
     xs, ys = grid(c)
     gap = lambda m, r=5: c.paint(dilate(m, r), 0.0)  # a dark halo that separates a shape from what is behind
 
-    paint_gills(c, rng, {-1: 1.0, 1: 0.96})
-
-    # ---- tail and body: a spine with a width profile
-    spine = smooth_path([(200, 140), (200, 196), (197, 252), (203, 302), (224, 340), (262, 360), (310, 364), (348, 350), (374, 324)])
-    n = len(spine)
-
-    def half_width(t):
-        if t < 0.12:
-            return lerp(36, 46, t / 0.12)
-        if t < 0.45:
-            return lerp(46, 41, (t - 0.12) / 0.33)
-        if t < 0.6:
-            return lerp(41, 30, (t - 0.45) / 0.15)
-        return max(2.5, lerp(30, 2.5, ((t - 0.6) / 0.4) ** 0.8))
-
-    body = poly_mask(c, ribbon(spine, half_width))
-    gap(body)
-    inflated = inflate(body)
-    body_val = 0.26 + 0.52 * inflated + 0.14 * (1 - (xs + ys * 0.4) / 560.0)
-    c.paint(body, np.clip(body_val, 0, 1))
-    # the tail fin: a lighter margin along its edge and a centre ridge
-    tail = spine[int(n * 0.6):]
-    fin = stroke_mask(c, tail, 5, 1.5)
-    c.paint(fin * body, 0.9)
-    c.paint(np.clip(body - erode(body, 2.6), 0, 1), 0.93)  # rim light
-
-    # ---- legs: thick near the body, a broad paw with four or five clear fingers
-    def leg(joints, widths, fingers, finger_len, spread, base_angle):
+    def limb(joints, widths, fingers, finger_len, spread, base_angle, dim=1.0, halo=4):
         path = smooth_path(joints, 20)
-        limb = stroke_mask(c, path, widths[0], widths[1])
+        arm = stroke_mask(c, path, widths[0], widths[1])
         hx, hy = path[-1]
         digits = []
         for k in range(fingers):
             a = base_angle + (k - (fingers - 1) / 2) * spread
             f1 = (hx + math.cos(a) * finger_len * 0.5, hy + math.sin(a) * finger_len * 0.5)
             f2 = (hx + math.cos(a + 0.1) * finger_len, hy + math.sin(a + 0.1) * finger_len)
-            digits.append(stroke_mask(c, [(hx, hy), f1, f2], 10.5, 6.2))
+            digits.append(stroke_mask(c, [(hx, hy), f1, f2], 9.5, 5.6))
         paw = ellipse_mask(c, hx, hy, widths[1] * 0.8, widths[1] * 0.8)
-        shape = np.maximum.reduce([limb, paw] + digits)
-        gap(shape, 4)
-        c.paint(shape, np.clip(0.30 + 0.5 * inflate(np.maximum(limb, paw), 7), 0, 1))
+        core = np.maximum(arm, paw)
+        shape = np.maximum.reduce([core] + digits)
+        gap(shape, halo)
+        c.paint(shape, np.clip((0.30 + 0.5 * inflate(core, 7)) * dim, 0, 1))
         for digit in digits:
-            c.paint(digit, 0.88)
-            c.paint(np.clip(digit - erode(digit, 1.6), 0, 1), 1.0)
-        c.paint(np.clip(np.maximum(limb, paw) - erode(np.maximum(limb, paw), 2.4), 0, 1), 0.92)
+            c.paint(digit, 0.86 * dim)
+            c.paint(np.clip(digit - erode(digit, 1.6), 0, 1), 1.0 * dim)
+        c.paint(np.clip(core - erode(core, 2.4), 0, 1), 0.92 * dim)
 
-    leg([(168, 182), (134, 202), (112, 226), (100, 258)], (28, 17), 4, 30, 0.40, math.radians(112))
-    leg([(232, 184), (268, 198), (290, 222), (300, 252)], (28, 17), 4, 30, 0.40, math.radians(68))
-    leg([(170, 288), (134, 310), (116, 334), (110, 366)], (30, 18), 5, 32, 0.36, math.radians(98))
-    leg([(228, 294), (262, 302), (284, 320), (296, 344)], (30, 18), 5, 32, 0.36, math.radians(80))
+    # ---- the far side first: two gills behind the head and the far arm
+    paint_gill_set(c, rng, [
+        [(298, 116), (314, 90), (324, 60), (338, 30)],
+        [(308, 122), (344, 108), (366, 90), (386, 66)],
+    ], stalk_val=0.34, fil_val=0.56, stalk_w=9.5, fil_scale=0.85)
+    limb([(268, 214), (306, 224), (340, 232), (362, 252)], (22, 14), 4, 24, 0.38, math.radians(52), dim=0.72)
 
-    # ---- head: broad and flat, with a halo that cuts it free of the gills and body
-    head = poly_mask(c, superellipse(CX, 110, 76, 50, 2.7))
-    gap(head, 6)
-    head_val = 0.30 + 0.56 * inflate(head, 16) + 0.14 * (1 - (xs - 120 + (ys - 60) * 0.5) / 280.0)
+    # ---- tail and body: one ribbon from the neck down to a broad, translucent fin
+    spine = smooth_path([(298, 176), (268, 206), (230, 244), (192, 276), (150, 302), (106, 322), (62, 336), (26, 342)])
+    n = len(spine)
+
+    def half_width(t):
+        if t < 0.22:
+            return lerp(36, 48, t / 0.22)
+        if t < 0.50:
+            return lerp(48, 30, (t - 0.22) / 0.28)
+        if t < 0.72:
+            return lerp(30, 32, (t - 0.48) / 0.24)
+        u = (t - 0.72) / 0.28
+        return max(2.0, 32 * math.sqrt(max(0.0, 1 - u * u)))  # an elliptical, rounded tip
+
+    body = poly_mask(c, ribbon(spine, half_width))
+    gap(body)
+    body_val = 0.26 + 0.52 * inflate(body) + 0.14 * (1 - (xs * 0.6 + (400 - ys) * 0.5) / 520.0)
+    c.paint(body, np.clip(body_val, 0, 1))
+    # the fin is thin and translucent: lighter and flatter than the body, with faint rays
+    fin = body * poly_mask(c, ribbon(spine[int(n * 0.5):], lambda t: half_width(0.5 + 0.5 * t) + 3))
+    c.paint(fin, np.clip(0.44 + 0.34 * inflate(fin, 11), 0, 1))
+    for i in range(int(n * 0.55), n - 3, 4):
+        x, y = spine[i]
+        nx, ny = normals(spine)[i]
+        w = half_width(i / (n - 1)) * 0.85
+        ray = stroke_mask(c, [(x - nx * w, y - ny * w), (x + nx * w, y + ny * w)], 1.6, 1.6) * fin
+        c.lum = c.lum * (1 - ray * 0.3)
+    c.paint(np.clip(body - erode(body, 2.6), 0, 1), 0.92)  # rim light
+
+    limb([(176, 284), (180, 312), (196, 332), (220, 338)], (24, 14), 4, 24, 0.40, math.radians(10))  # hind leg
+
+    # ---- near gills, over the back of the neck; the head will overlap their roots
+    paint_gill_set(c, rng, [
+        [(284, 122), (292, 90), (284, 60), (270, 32)],
+        [(276, 138), (250, 122), (228, 108), (204, 90)],
+        [(276, 156), (248, 156), (224, 160), (196, 156)],
+    ], stalk_val=0.52, fil_val=0.86, stalk_w=12.0)
+
+    # ---- head: broad wedge with a rounded snout, cut free of the gills by a halo
+    head = np.maximum(poly_mask(c, superellipse(318, 150, 52, 38, 2.4)), ellipse_mask(c, 356, 158, 25, 21))
+    gap(head, 4)
+    head_val = 0.30 + 0.56 * inflate(head, 15) + 0.14 * (1 - (xs - 250 + (ys - 90) * 0.4) / 240.0)
     c.paint(head, np.clip(head_val, 0, 1))
     c.paint(np.clip(head - erode(head, 3.2), 0, 1), 0.95)
 
-    # ---- skin markings: organic blotches plus a few bright speckles, kept off the face
+    # ---- near arm, reaching forward in front of the chest
+    limb([(242, 222), (258, 244), (284, 256), (312, 254)], (30, 18), 4, 26, 0.40, math.radians(18), halo=5)
+
+    # ---- skin markings, kept off the face
     region = np.maximum(body, head)
-    face_clear = 1 - np.clip(blur(ellipse_mask(c, CX, 110, 68, 42), 6), 0, 1)
-    blotch = mottling(c, seed, 28, 0.42) * region * face_clear
-    c.lum = c.lum * (1 - blotch * 0.55)
-    for _ in range(150):
-        x, y = rng.uniform(130, 290), rng.uniform(170, 355)
-        r = rng.uniform(1.3, 2.4)
-        spot = ellipse_mask(c, x, y, r, r) * body
-        c.lum = np.clip(c.lum + spot * 0.28, 0, 1)
+    face_clear = 1 - np.clip(blur(ellipse_mask(c, 326, 150, 58, 38), 6), 0, 1)
+    blotch = mottling(c, seed, 28, 0.36) * region * face_clear
+    c.lum = c.lum * (1 - blotch * 0.5)
 
-    # ---- face: nostrils, a calm straight mouth and eyes
-    for side in (-1, 1):
-        c.paint(ellipse_mask(c, CX + side * 11, 72, 3.0, 2.4), 0.04)
-    mouth = [(CX - 40 + 80 * i / 40, 132 + 0.9 * ((abs(i - 20) / 20) ** 2)) for i in range(41)]
-    c.paint(stroke_mask(c, [(x, y + 4.4) for x, y in mouth], 2.2, 2.2), 0.86)  # lower lip catches light
-    c.paint(stroke_mask(c, mouth, 4.2, 4.2), 0.03)
+    # ---- face: a nostril, a calm mouth and the near eye
+    c.paint(ellipse_mask(c, 374, 144, 2.6, 2.0), 0.04)
+    mouth = [(304 + 64 * i / 40, 169 - 4 * (i / 40) + 0.5 * (1 - abs(i - 20) / 20)) for i in range(41)]
+    c.paint(stroke_mask(c, mouth, 3.8, 3.8), 0.03)
 
-    for side in (-1, 1):
-        ex, ey = CX + side * 42, 98
-        if eyes_open:
-            c.paint(ellipse_mask(c, ex, ey, 15.5, 15.5), 0.98)   # bright ring
-            c.paint(ellipse_mask(c, ex, ey, 11.8, 11.8), 0.03)   # dark eye
-            c.paint(ellipse_mask(c, ex - 3.8, ey - 4.2, 3.9, 3.9), 1.0)   # glint
-            c.paint(ellipse_mask(c, ex + 4.2, ey + 4.6, 1.9, 1.9), 0.9)   # small glint
-        else:
-            lid = [(ex - 12 + 24 * i / 20, ey + 1 + 3.0 * (1 - ((i - 10) / 10) ** 2)) for i in range(21)]
-            c.paint(stroke_mask(c, lid, 4.0, 4.0), 0.03)
-            c.paint(stroke_mask(c, [(x, y + 4.2) for x, y in lid], 2.6, 2.6), 0.88)
+    ex, ey = 338, 134
+    if eyes_open:
+        c.paint(ellipse_mask(c, ex, ey, 12.5, 12.5), 0.98)   # bright ring
+        c.paint(ellipse_mask(c, ex, ey, 9.4, 9.4), 0.03)     # dark eye
+        c.paint(ellipse_mask(c, ex - 3.0, ey - 3.4, 3.2, 3.2), 1.0)   # glint
+        c.paint(ellipse_mask(c, ex + 3.3, ey + 3.6, 1.6, 1.6), 0.9)   # small glint
+    else:
+        lid = [(ex - 11 + 22 * i / 20, ey + 1 + 3.0 * (1 - ((i - 10) / 10) ** 2)) for i in range(21)]
+        c.paint(stroke_mask(c, lid, 3.8, 3.8), 0.03)
+        c.paint(stroke_mask(c, [(x, y + 4.0) for x, y in lid], 2.4, 2.4), 0.88)
     return c
 
 
