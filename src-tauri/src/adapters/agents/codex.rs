@@ -1,0 +1,829 @@
+//! Codex through `codex app-server` (JSON-RPC over stdio, without the `jsonrpc` member).
+//!
+//! A thread is opened with `thread/start`; each prompt is a `turn/start`. Progress arrives as
+//! `item/*` and `turn/*` notifications; command and file-change approvals arrive as server
+//! requests answered with a `decision`.
+
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use std::thread;
+use std::time::Duration;
+
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+
+use super::backend::{
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
+};
+use super::process::{ExitInfo, SpawnSpec, resolve_binary};
+use super::rpc::{Incoming, RpcClient};
+use crate::domain::ids::TurnId;
+use crate::domain::{
+    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, ToolCallId,
+};
+
+const BINARY_NAME: &str = "codex";
+const OVERRIDE_ENV: &str = "CONCIERGE_CODEX_BIN";
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
+const FILE_CHANGE_APPROVAL: &str = "item/fileChange/requestApproval";
+
+enum Launcher {
+    Resolve,
+    Fixed { program: PathBuf, args: Vec<String> },
+}
+
+pub struct CodexBackend {
+    launcher: Launcher,
+}
+
+impl CodexBackend {
+    pub fn new() -> Self {
+        Self {
+            launcher: Launcher::Resolve,
+        }
+    }
+
+    /// Runs a stand-in program that speaks the same frames (tests).
+    pub fn with_command(program: PathBuf, args: Vec<String>) -> Self {
+        Self {
+            launcher: Launcher::Fixed { program, args },
+        }
+    }
+
+    fn command(&self) -> std::result::Result<(PathBuf, Vec<String>), String> {
+        match &self.launcher {
+            Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
+            Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
+                .map(|program| (program, vec!["app-server".to_string()]))
+                .ok_or_else(|| {
+                    format!("codex CLI not found. Install it or set {OVERRIDE_ENV} to its path.")
+                }),
+        }
+    }
+}
+
+impl Default for CodexBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AgentBackend for CodexBackend {
+    fn availability(&self) -> std::result::Result<(), String> {
+        self.command().map(|_| ())
+    }
+
+    fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+        let (program, args) = self
+            .command()
+            .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
+        let shared = Arc::new(CodexShared {
+            emit: ctx.emit,
+            client: OnceLock::new(),
+            thread_id: OnceLock::new(),
+            exit: Mutex::new(None),
+            state: Mutex::new(CodexState::default()),
+        });
+        let handler_shared = Arc::clone(&shared);
+        let client = RpcClient::spawn(
+            &SpawnSpec {
+                program,
+                args,
+                cwd: ctx.cwd.clone(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+            },
+            false,
+            move |incoming| handler_shared.on_incoming(incoming),
+        )?;
+        let _ = shared.client.set(Arc::clone(&client));
+
+        let handshake = (|| -> Result<()> {
+            client.request(
+                "initialize",
+                json!({
+                    "clientInfo": {
+                        "name": "concierge",
+                        "title": "Concierge",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }),
+                Some(HANDSHAKE_TIMEOUT),
+            )?;
+            client.notify_bare("initialized")?;
+            let started = client.request(
+                "thread/start",
+                json!({
+                    "cwd": ctx.cwd.to_string_lossy(),
+                    "approvalPolicy": "on-request",
+                    "sandbox": "workspace-write"
+                }),
+                Some(HANDSHAKE_TIMEOUT),
+            )?;
+            let thread_id = started
+                .pointer("/thread/id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::Agent, "thread/start returned no thread id")
+                })?;
+            let _ = shared.thread_id.set(thread_id.to_string());
+            Ok(())
+        })();
+        if let Err(error) = handshake {
+            let message = shared.with_exit_info(error.message);
+            client.kill();
+            return Err(Error::new(ErrorCode::Agent, message));
+        }
+        Ok(Arc::new(CodexSession { shared }))
+    }
+}
+
+struct QueuedPermission {
+    request_id: PermissionRequestId,
+    turn_id: TurnId,
+    rpc_id: Value,
+    tool_name: String,
+    detail: String,
+}
+
+struct ToolMeta {
+    id: ToolCallId,
+    name: String,
+    input: String,
+}
+
+#[derive(Default)]
+struct CodexState {
+    turn: Option<TurnId>,
+    /// Codex's own id for the running turn, needed for `turn/interrupt`.
+    codex_turn: Option<String>,
+    cancel_requested: bool,
+    last_error: Option<String>,
+    tools: HashMap<String, ToolMeta>,
+    queue: VecDeque<QueuedPermission>,
+    active: Option<QueuedPermission>,
+}
+
+struct CodexShared {
+    emit: Emitter,
+    client: OnceLock<Arc<RpcClient>>,
+    thread_id: OnceLock<String>,
+    exit: Mutex<Option<ExitInfo>>,
+    state: Mutex<CodexState>,
+}
+
+impl CodexShared {
+    fn with_exit_info(&self, message: String) -> String {
+        match self.exit.lock().as_ref() {
+            Some(info) => info.describe("codex"),
+            None => message,
+        }
+    }
+
+    fn on_incoming(&self, incoming: Incoming) {
+        match incoming {
+            Incoming::Notification { method, params } => self.on_notification(&method, &params),
+            Incoming::Request { id, method, params } => {
+                if method == COMMAND_APPROVAL || method == FILE_CHANGE_APPROVAL {
+                    self.on_approval(id, &method, &params);
+                } else if let Some(client) = self.client.get() {
+                    let _ = client.respond_error(&id, -32601, "method not supported by Concierge");
+                }
+            }
+            Incoming::Closed(info) => {
+                let message = info.describe("codex");
+                *self.exit.lock() = Some(info);
+                (self.emit)(BackendEvent::Error { message });
+            }
+        }
+    }
+
+    fn on_notification(&self, method: &str, params: &Value) {
+        let mut state = self.state.lock();
+        let Some(turn_id) = state.turn else {
+            return;
+        };
+        match method {
+            "item/agentMessage/delta" => {
+                let text = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    (self.emit)(BackendEvent::Delta {
+                        turn_id,
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "item/started" => {
+                if let Some(item) = params.get("item") {
+                    self.announce_item(&mut state, turn_id, item);
+                }
+            }
+            "item/completed" => {
+                if let Some(item) = params.get("item") {
+                    if let Some(call_id) = self.announce_item(&mut state, turn_id, item) {
+                        let (output, ok) = item_result(item);
+                        (self.emit)(BackendEvent::ToolResult {
+                            turn_id,
+                            call_id,
+                            output: truncate_output(output),
+                            ok,
+                        });
+                    }
+                }
+            }
+            "error" => {
+                let will_retry = params
+                    .get("willRetry")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !will_retry {
+                    state.last_error = params
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+            }
+            "turn/completed" => {
+                let status = params
+                    .pointer("/turn/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("completed");
+                let cancelled = std::mem::take(&mut state.cancel_requested);
+                let last_error = state.last_error.take();
+                state.turn = None;
+                state.codex_turn = None;
+                state.queue.clear();
+                state.active = None;
+                if status == "failed" && !cancelled {
+                    let message = params
+                        .pointer("/turn/error/message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .or(last_error)
+                        .unwrap_or_else(|| "Codex turn failed".to_string());
+                    (self.emit)(BackendEvent::Error { message });
+                } else {
+                    (self.emit)(BackendEvent::TurnDone {
+                        turn_id,
+                        ok: status == "completed" && !cancelled,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Announces tool-like items once and returns their call id (None for plain messages).
+    fn announce_item(
+        &self,
+        state: &mut CodexState,
+        turn_id: TurnId,
+        item: &Value,
+    ) -> Option<ToolCallId> {
+        let item_id = item.get("id").and_then(Value::as_str)?;
+        let (name, input) = item_summary(item)?;
+        Some(self.announce_tool(state, turn_id, item_id, &name, input))
+    }
+
+    fn announce_tool(
+        &self,
+        state: &mut CodexState,
+        turn_id: TurnId,
+        item_id: &str,
+        name: &str,
+        input: String,
+    ) -> ToolCallId {
+        if let Some(meta) = state.tools.get_mut(item_id) {
+            if !input.is_empty() && input != meta.input {
+                meta.input = input.clone();
+                (self.emit)(BackendEvent::ToolUpdate {
+                    turn_id,
+                    call_id: meta.id,
+                    name: None,
+                    input: Some(input),
+                });
+            }
+            return meta.id;
+        }
+        let id = ToolCallId::new();
+        state.tools.insert(
+            item_id.to_string(),
+            ToolMeta {
+                id,
+                name: name.to_string(),
+                input: input.clone(),
+            },
+        );
+        (self.emit)(BackendEvent::Tool {
+            turn_id,
+            call_id: id,
+            name: name.to_string(),
+            input,
+        });
+        id
+    }
+
+    fn on_approval(&self, rpc_id: Value, method: &str, params: &Value) {
+        let mut state = self.state.lock();
+        let Some(turn_id) = state.turn else {
+            drop(state);
+            self.answer(&rpc_id, "cancel");
+            return;
+        };
+        let item_id = params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let reason = params.get("reason").and_then(Value::as_str);
+        let (tool_name, subject, announce_input) = if method == COMMAND_APPROVAL {
+            let command = params.get("command").and_then(Value::as_str).unwrap_or("");
+            (
+                "command",
+                format!("Allow running: {command}"),
+                command.to_string(),
+            )
+        } else {
+            (
+                "file_change",
+                "Allow changing files".to_string(),
+                String::new(),
+            )
+        };
+        if !item_id.is_empty() {
+            self.announce_tool(&mut state, turn_id, &item_id, tool_name, announce_input);
+        }
+        let detail = match reason {
+            Some(reason) if !reason.is_empty() => format!("{subject} ({reason})"),
+            _ => subject,
+        };
+        state.queue.push_back(QueuedPermission {
+            request_id: PermissionRequestId::new(),
+            turn_id,
+            rpc_id,
+            tool_name: tool_name.to_string(),
+            detail,
+        });
+        self.pump_permissions(&mut state);
+    }
+
+    fn pump_permissions(&self, state: &mut CodexState) {
+        if state.active.is_some() {
+            return;
+        }
+        if let Some(next) = state.queue.pop_front() {
+            (self.emit)(BackendEvent::Permission {
+                turn_id: next.turn_id,
+                request_id: next.request_id,
+                tool_name: next.tool_name.clone(),
+                detail: next.detail.clone(),
+            });
+            state.active = Some(next);
+        }
+    }
+
+    fn answer(&self, rpc_id: &Value, decision: &str) {
+        if let Some(client) = self.client.get() {
+            let _ = client.respond(rpc_id, json!({ "decision": decision }));
+        }
+    }
+
+    fn interrupt(&self) {
+        let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
+            return;
+        };
+        let Some(codex_turn) = self.state.lock().codex_turn.clone() else {
+            // `turn/start` has not answered yet; its thread interrupts once it does.
+            return;
+        };
+        let _ = client.request(
+            "turn/interrupt",
+            json!({ "threadId": thread_id, "turnId": codex_turn }),
+            Some(INTERRUPT_TIMEOUT),
+        );
+    }
+
+    fn run_turn_start(&self, turn_id: TurnId, text: String) {
+        let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
+            return;
+        };
+        let outcome = client.request(
+            "turn/start",
+            json!({
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": text, "text_elements": [] }]
+            }),
+            Some(HANDSHAKE_TIMEOUT),
+        );
+        match outcome {
+            Ok(result) => {
+                let cancel_now = {
+                    let mut state = self.state.lock();
+                    if state.turn != Some(turn_id) {
+                        return;
+                    }
+                    state.codex_turn = result
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    state.cancel_requested
+                };
+                if cancel_now {
+                    self.interrupt();
+                }
+            }
+            Err(error) => {
+                {
+                    let mut state = self.state.lock();
+                    if state.turn != Some(turn_id) {
+                        return;
+                    }
+                    state.turn = None;
+                }
+                (self.emit)(BackendEvent::Error {
+                    message: self.with_exit_info(error.message),
+                });
+            }
+        }
+    }
+}
+
+struct CodexSession {
+    shared: Arc<CodexShared>,
+}
+
+impl BackendSession for CodexSession {
+    fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+        if !self.is_alive() {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                self.shared.with_exit_info("codex is not running".into()),
+            ));
+        }
+        {
+            let mut state = self.shared.state.lock();
+            state.turn = Some(turn_id);
+            state.codex_turn = None;
+            state.cancel_requested = false;
+            state.last_error = None;
+        }
+        let shared = Arc::clone(&self.shared);
+        let text = text.to_string();
+        thread::spawn(move || shared.run_turn_start(turn_id, text));
+        Ok(())
+    }
+
+    fn cancel(&self) -> Result<()> {
+        let pending: Vec<Value> = {
+            let mut state = self.shared.state.lock();
+            if state.turn.is_none() {
+                return Ok(());
+            }
+            state.cancel_requested = true;
+            let mut ids: Vec<Value> = state.queue.drain(..).map(|item| item.rpc_id).collect();
+            ids.extend(state.active.take().map(|item| item.rpc_id));
+            ids
+        };
+        for rpc_id in pending {
+            self.shared.answer(&rpc_id, "cancel");
+        }
+        let shared = Arc::clone(&self.shared);
+        thread::spawn(move || shared.interrupt());
+        Ok(())
+    }
+
+    fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+        let rpc_id = {
+            let mut state = self.shared.state.lock();
+            let matches_active = state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.request_id == decision.request_id);
+            if !matches_active {
+                return Err(Error::new(ErrorCode::Invalid, "no matching permission"));
+            }
+            state.active.take().expect("checked above").rpc_id
+        };
+        self.shared
+            .answer(&rpc_id, if decision.allow { "accept" } else { "decline" });
+        let mut state = self.shared.state.lock();
+        self.shared.pump_permissions(&mut state);
+        Ok(())
+    }
+
+    fn is_alive(&self) -> bool {
+        self.shared
+            .client
+            .get()
+            .is_some_and(|client| client.is_alive())
+    }
+
+    fn shutdown(&self) {
+        if let Some(client) = self.shared.client.get() {
+            client.kill();
+        }
+    }
+}
+
+/// Name + input text for the item kinds that act like tool calls.
+fn item_summary(item: &Value) -> Option<(String, String)> {
+    let text = |key: &str| item.get(key).and_then(Value::as_str);
+    match item.get("type").and_then(Value::as_str)? {
+        "commandExecution" => Some(("command".into(), text("command").unwrap_or("").to_string())),
+        "fileChange" => {
+            let paths = file_change_paths(item);
+            Some(("file_change".into(), paths.join("\n")))
+        }
+        "mcpToolCall" => {
+            let name = format!(
+                "{}/{}",
+                text("server").unwrap_or("mcp"),
+                text("tool").unwrap_or("tool")
+            );
+            let input = item
+                .get("arguments")
+                .filter(|args| !args.is_null())
+                .and_then(|args| serde_json::to_string_pretty(args).ok())
+                .unwrap_or_default();
+            Some((name, input))
+        }
+        "webSearch" => Some(("web_search".into(), text("query").unwrap_or("").to_string())),
+        _ => None,
+    }
+}
+
+fn file_change_paths(item: &Value) -> Vec<String> {
+    item.get("changes")
+        .and_then(Value::as_array)
+        .map(|changes| {
+            changes
+                .iter()
+                .filter_map(|change| {
+                    let path = change.get("path").and_then(Value::as_str)?;
+                    let kind = change
+                        .pointer("/kind/type")
+                        .or_else(|| change.get("kind"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("update");
+                    Some(format!("{kind} {path}"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Output text and success flag for a completed tool-like item.
+fn item_result(item: &Value) -> (String, bool) {
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed");
+    let completed = status == "completed";
+    match item.get("type").and_then(Value::as_str) {
+        Some("commandExecution") => {
+            let output = item
+                .get("aggregatedOutput")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let exit = item.get("exitCode").and_then(Value::as_i64);
+            let ok = completed && exit.unwrap_or(0) == 0;
+            let output = match (status, exit) {
+                ("declined", _) => "declined by user".to_string(),
+                (_, Some(code)) if code != 0 => format!("{output}\n(exit code {code})")
+                    .trim_start()
+                    .to_string(),
+                _ => output.to_string(),
+            };
+            (output, ok)
+        }
+        Some("fileChange") => {
+            let output = if status == "declined" {
+                "declined by user".to_string()
+            } else {
+                file_change_paths(item).join("\n")
+            };
+            (output, completed)
+        }
+        Some("mcpToolCall") => {
+            let output = item
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    item.pointer("/result/content")
+                        .and_then(Value::as_array)
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                })
+                .unwrap_or_default();
+            (output, completed)
+        }
+        _ => (String::new(), completed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::{self, Receiver};
+    use std::time::Instant;
+
+    use super::*;
+
+    struct Harness {
+        session: Arc<dyn BackendSession>,
+        events: Receiver<BackendEvent>,
+    }
+
+    fn start() -> Harness {
+        let backend = CodexBackend::with_command(
+            PathBuf::from("python3"),
+            vec![concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_codex.py").into()],
+        );
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let session = backend
+            .start(BackendContext {
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start mock codex");
+        Harness { session, events }
+    }
+
+    impl Harness {
+        fn until(
+            &self,
+            what: &str,
+            predicate: impl Fn(&BackendEvent) -> bool,
+        ) -> Vec<BackendEvent> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut seen = Vec::new();
+            while Instant::now() < deadline {
+                if let Ok(event) = self.events.recv_timeout(Duration::from_millis(50)) {
+                    let done = predicate(&event);
+                    seen.push(event);
+                    if done {
+                        return seen;
+                    }
+                }
+            }
+            panic!("timed out waiting for {what}; saw {seen:?}");
+        }
+    }
+
+    fn is_turn_done(event: &BackendEvent) -> bool {
+        matches!(event, BackendEvent::TurnDone { .. })
+    }
+
+    fn deltas(events: &[BackendEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn streams_agent_message_deltas() {
+        let h = start();
+        let turn = TurnId::new();
+        h.session.prompt(turn, "say hi").expect("prompt");
+        let seen = h.until("turn done", is_turn_done);
+        assert_eq!(deltas(&seen), "Hello world");
+        assert_eq!(
+            seen.last(),
+            Some(&BackendEvent::TurnDone {
+                turn_id: turn,
+                ok: true
+            })
+        );
+        h.session.shutdown();
+    }
+
+    fn run_tool_turn(allow: bool) -> Vec<BackendEvent> {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "tool please")
+            .expect("prompt");
+        let mut seen = h.until("permission", |event| {
+            matches!(event, BackendEvent::Permission { .. })
+        });
+        let request_id = match seen.last() {
+            Some(BackendEvent::Permission { request_id, .. }) => *request_id,
+            other => panic!("unexpected {other:?}"),
+        };
+        h.session
+            .resolve_permission(&PermissionDecision { request_id, allow })
+            .expect("resolve");
+        seen.extend(h.until("turn done", is_turn_done));
+        h.session.shutdown();
+        seen
+    }
+
+    #[test]
+    fn accepted_command_reports_output() {
+        let seen = run_tool_turn(true);
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::Tool { name, input, .. } if name == "command" && input == "touch probe.txt"
+        )));
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::Permission { detail, .. }
+                if detail == "Allow running: touch probe.txt (needs to write)"
+        )));
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ToolResult { ok: true, output, .. } if output == "created"
+        )));
+        assert_eq!(deltas(&seen), "All done.");
+    }
+
+    #[test]
+    fn declined_command_fails_the_tool() {
+        let seen = run_tool_turn(false);
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ToolResult { ok: false, output, .. } if output.contains("declined")
+        )));
+    }
+
+    #[test]
+    fn interrupt_finishes_with_an_unsuccessful_turn() {
+        let h = start();
+        let turn = TurnId::new();
+        h.session.prompt(turn, "hang").expect("prompt");
+        h.until("first delta", |event| {
+            matches!(event, BackendEvent::Delta { .. })
+        });
+        h.session.cancel().expect("cancel");
+        let seen = h.until("turn done", is_turn_done);
+        assert_eq!(
+            seen.last(),
+            Some(&BackendEvent::TurnDone {
+                turn_id: turn,
+                ok: false
+            })
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn crash_reports_stderr_and_marks_session_dead() {
+        let h = start();
+        h.session.prompt(TurnId::new(), "crash").expect("prompt");
+        let seen = h.until("error", |event| matches!(event, BackendEvent::Error { .. }));
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::Error { message } if message.contains("codex exploded")
+        )));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.session.is_alive() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!h.session.is_alive());
+    }
+
+    #[test]
+    fn items_map_to_tool_summaries() {
+        let file_change = json!({
+            "type": "fileChange",
+            "id": "f1",
+            "changes": [{ "path": "a.rs", "kind": { "type": "update" } }],
+            "status": "completed"
+        });
+        assert_eq!(
+            item_summary(&file_change),
+            Some(("file_change".into(), "update a.rs".into()))
+        );
+        assert_eq!(item_result(&file_change), ("update a.rs".into(), true));
+        assert_eq!(
+            item_summary(&json!({ "type": "agentMessage", "id": "m" })),
+            None
+        );
+        let failed = json!({
+            "type": "commandExecution",
+            "aggregatedOutput": "oops",
+            "exitCode": 2,
+            "status": "completed"
+        });
+        assert_eq!(item_result(&failed), ("oops\n(exit code 2)".into(), false));
+    }
+}

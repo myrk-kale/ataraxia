@@ -2,6 +2,7 @@
 
 pub mod backend;
 pub mod claude;
+pub mod codex;
 pub mod fake;
 pub mod host;
 pub mod opencode;
@@ -10,6 +11,7 @@ pub mod registry;
 pub mod rpc;
 
 pub use claude::ClaudeBackend;
+pub use codex::CodexBackend;
 pub use fake::FakeBackend;
 pub use host::AgentHost;
 pub use opencode::OpenCodeBackend;
