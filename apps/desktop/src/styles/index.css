@@ -186,7 +186,7 @@ button:disabled {
   }
 }
 
-/* While the opening plays, the header mark is drawn by the animation itself. */
+/* While the opening plays, the logo in the header is drawn by the animation itself. */
 :root[data-intro-running] [data-intro="mark"] {
   opacity: 0;
 }

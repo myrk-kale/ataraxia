@@ -1,22 +1,29 @@
-import { MARK_BOX, MARK_POINTS } from "./timeline";
+import { CAP, GLYPHS, pathD } from "./glyphs";
 
-/** The Λ of the brand: the app's icon in the header, and where the opening animation lands. */
+export const MARK_HEIGHT = 20;
+/** Line width on screen, in px; the opening draws the first A with the same one. */
+export const MARK_STROKE = 1.5;
+const SCALE = MARK_HEIGHT / CAP;
+const A = GLYPHS.A;
+
+/** The logo in the header: the A of ATARAXIA, and where the opening animation lands. */
 export function BrandMark() {
   return (
     <svg
       aria-hidden="true"
-      className="flex-none text-cg-ink"
+      className="mr-1.5 flex-none overflow-visible text-cg-ink"
       data-intro="mark"
       fill="none"
-      height={MARK_BOX.height}
+      height={MARK_HEIGHT}
       stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
-      strokeWidth={1.6}
-      viewBox={`0 0 ${MARK_BOX.width} ${MARK_BOX.height}`}
-      width={MARK_BOX.width}
+      strokeWidth={MARK_STROKE}
+      width={A.width * SCALE}
     >
-      <polyline points={MARK_POINTS.map(([x, y]) => `${x},${y}`).join(" ")} />
+      {A.strokes.map((cmds, k) => (
+        <path key={k} d={pathD(cmds, { ox: 0, oy: 0, s: SCALE })} />
+      ))}
     </svg>
   );
 }

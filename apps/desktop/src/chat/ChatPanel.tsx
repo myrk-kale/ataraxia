@@ -452,7 +452,7 @@ export function ChatPanel({
           void send();
         }}
       >
-        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5" data-intro="composer">
+        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5">
           <textarea
             ref={composerRef}
             aria-label="Message"

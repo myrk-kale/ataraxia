@@ -66,9 +66,9 @@ pnpm typecheck && pnpm test && pnpm build
 
 Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
 
-## Empty chat
+## Opening
 
-Opening the app plays "The Imprint" (1.1 s): the brand mark, a Λ, is stamped small in the middle of the window in thin strokes, then comes apart into three segments that travel to real parts of the interface (the header rule, the composer edge and the brand mark in the header) while the backdrop fades, so the mark becomes the interface with no cut. It is skipped with reduced motion enabled. Timing and geometry are in `apps/desktop/src/intro/timeline.ts`, the animation in `Imprint.tsx` and the header icon in `BrandMark.tsx`.
+Opening the app shows animated ASCII art (the "Summit Cloud Sea" piece from ascii-magic, vendored in `apps/desktop/src/vendor/ascii-magic`, drawn as squares) covering the whole window, and draws ATARAXIA over it, letter by letter, in thin strokes (the A has a crossbar, as in the reference wordmark). After a short hold the other letters fade and the first A travels to the corner of the header, where it stays as the logo, while the art and the backdrop fade and the interface that was already rendered underneath is uncovered (about 2.5 s). It is skipped with reduced motion enabled. The letters are paths, not a font: `apps/desktop/src/intro/glyphs.ts` (shapes), `timeline.ts` (timing), `Intro.tsx` (animation), `AsciiBackground.tsx` (the art) and `BrandMark.tsx` (the header logo). The art library is loaded on demand and never from the network.
 
 ## Shortcuts
 
