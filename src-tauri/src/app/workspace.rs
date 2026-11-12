@@ -163,6 +163,7 @@ impl<'a> WorkspaceService<'a> {
         repository_id: RepositoryId,
         worktree_id: WorktreeId,
         title: Option<String>,
+        provider: ProviderKind,
     ) -> Result<WorkspaceSnapshot> {
         let repository = self
             .store
@@ -185,7 +186,7 @@ impl<'a> WorkspaceService<'a> {
             id: SessionId::new(),
             repository_id: repository.id,
             worktree_id: worktree.id,
-            provider: ProviderKind::Fake,
+            provider,
             title: title
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| format!("Chat {count}")),
@@ -293,7 +294,7 @@ mod tests {
         let repo_id = snapshot.repositories[0].id;
         let worktree_id = snapshot.worktrees[0].id;
         let snapshot = service
-            .create_session(repo_id, worktree_id, None)
+            .create_session(repo_id, worktree_id, None, ProviderKind::Fake)
             .expect("create");
         assert_eq!(snapshot.sessions.len(), 1);
         assert_eq!(snapshot.sessions[0].provider, ProviderKind::Fake);

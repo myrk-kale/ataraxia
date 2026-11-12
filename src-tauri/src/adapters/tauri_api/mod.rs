@@ -6,7 +6,7 @@ mod state;
 use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::agent::ProviderDescriptor;
+use crate::domain::agent::{ProviderDescriptor, ProviderKind};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
@@ -74,9 +74,15 @@ pub fn workspace_create_session(
     repository_id: RepositoryId,
     worktree_id: WorktreeId,
     title: Option<String>,
+    provider: Option<ProviderKind>,
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| {
-        workspace.create_session(repository_id, worktree_id, title)
+        workspace.create_session(
+            repository_id,
+            worktree_id,
+            title,
+            provider.unwrap_or(ProviderKind::Fake),
+        )
     })
 }
 
@@ -149,7 +155,7 @@ pub fn agent_list_providers(state: tauri::State<'_, AppState>) -> Vec<ProviderDe
     state.agent_runtime().providers()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_start_session(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
@@ -166,7 +172,7 @@ pub fn agent_start_session(
         .map_err(map_error)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_prompt(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
@@ -178,7 +184,7 @@ pub fn agent_prompt(
         .map_err(map_error)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_cancel(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
@@ -190,7 +196,7 @@ pub fn agent_cancel(
         .map_err(map_error)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_resolve_permission(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,

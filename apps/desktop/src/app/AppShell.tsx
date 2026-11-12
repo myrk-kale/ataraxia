@@ -2,6 +2,7 @@ import { Button } from "@heroui/react";
 import { Moon, Sun, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { agentListProviders, type ProviderDescriptor } from "../lib/agent";
 import { invoke } from "@tauri-apps/api/core";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
@@ -15,6 +16,7 @@ import {
   workspaceOpenSession,
   workspaceSelectRepository,
   workspaceSelectWorktree,
+  type ProviderKind,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
 
@@ -50,6 +52,8 @@ export function AppShell() {
   const [coreStatus, setCoreStatus] = useState("checking…");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
+  const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
+  const [provider, setProvider] = useState<ProviderKind>("fake");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { theme, toggleTheme } = useThemeMode();
@@ -67,6 +71,13 @@ export function AppShell() {
           setCoreStatus(err instanceof Error ? err.message : "core unavailable");
         }
       });
+    agentListProviders()
+      .then((items) => {
+        if (!cancelled) {
+          setProviders(items);
+        }
+      })
+      .catch(() => undefined);
     workspaceBootstrap()
       .then((snapshot) => {
         if (!cancelled) {
@@ -162,7 +173,12 @@ export function AppShell() {
       return;
     }
     await runWorkspace(() =>
-      workspaceCreateSession(selectedRepository.id, selectedWorktree.id),
+      workspaceCreateSession(
+        selectedRepository.id,
+        selectedWorktree.id,
+        undefined,
+        provider,
+      ),
     );
     setSpace("chat");
   }
@@ -232,6 +248,26 @@ export function AppShell() {
             {workspace.worktrees.map((worktree) => (
               <option key={worktree.id} value={worktree.id}>
                 {worktree.branch ?? shortPath(worktree.path)}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Provider"
+            className="h-8 max-w-36 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
+            disabled={busy || providers.length === 0}
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as ProviderKind)}
+          >
+            {providers.map((item) => (
+              <option
+                key={item.kind}
+                disabled={!item.available}
+                title={item.detail ?? undefined}
+                value={item.kind}
+              >
+                {item.display_name}
+                {item.available ? "" : " (unavailable)"}
               </option>
             ))}
           </select>

@@ -22,6 +22,13 @@ pub enum BackendEvent {
         name: String,
         input: String,
     },
+    /// Refines a tool call announced earlier (providers often stream the input afterwards).
+    ToolUpdate {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        name: Option<String>,
+        input: Option<String>,
+    },
     ToolResult {
         turn_id: TurnId,
         call_id: ToolCallId,
@@ -52,6 +59,11 @@ pub struct BackendContext {
 }
 
 pub trait AgentBackend: Send + Sync {
+    /// `Err(reason)` when the provider cannot run on this machine (CLI missing, ...).
+    fn availability(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>>;
 }
 
@@ -61,5 +73,9 @@ pub trait BackendSession: Send + Sync {
     /// Must lead to exactly one `TurnDone { ok: false }` for the active turn.
     fn cancel(&self) -> Result<()>;
     fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()>;
+    /// False once the underlying process is gone; the host then restarts the session on demand.
+    fn is_alive(&self) -> bool {
+        true
+    }
     fn shutdown(&self);
 }

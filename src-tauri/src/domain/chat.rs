@@ -131,6 +131,14 @@ pub enum AgentEvent {
         input: String,
     },
     #[serde(rename_all = "camelCase")]
+    ToolUpdate {
+        session_id: SessionId,
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        name: Option<String>,
+        input: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
     ToolResult {
         session_id: SessionId,
         turn_id: TurnId,
