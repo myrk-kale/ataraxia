@@ -61,7 +61,7 @@ export function lerpPlacement(a: Placement, b: Placement, t: number): Placement 
 
 /** The word centred in a window: the scale, and the left edge and top of the first letter. */
 export function wordPlacement(width: number, height: number): Placement {
-  const cap = Math.min(56, Math.max(28, width * 0.07));
+  const cap = Math.min(64, Math.max(26, width * 0.06));
   const s = cap / 100;
   return { ox: (width - layout().width * s) / 2, oy: height / 2 - cap / 2, s };
 }

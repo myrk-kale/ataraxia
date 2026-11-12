@@ -4,6 +4,8 @@ import { layout, pathD, type Placement } from "./glyphs";
 import { introEnabled, lerpPlacement, settleAt, strokeProgress, wordPlacement } from "./timeline";
 
 const WORD = layout();
+/** Line width of the letters on screen; the first A thickens to the logo's as it lands. */
+const LETTER_STROKE = 1.2;
 const FALLBACK_MARK = { left: 29, top: 20, height: MARK_HEIGHT };
 
 /** Where the first A lands: the real logo in the header, measured on every frame. */
@@ -52,6 +54,7 @@ export function Intro() {
           element.setAttribute("stroke-dashoffset", String(1 - progress));
           element.style.visibility = progress > 0 ? "visible" : "hidden";
           element.style.opacity = lead ? "1" : String(1 - settle.fade);
+          element.setAttribute("stroke-width", String(LETTER_STROKE + (lead ? (MARK_STROKE - LETTER_STROKE) * settle.travel : 0)));
         });
       });
       if (backdropRef.current) {
@@ -82,7 +85,7 @@ export function Intro() {
               strokeDasharray="1 2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              strokeWidth={MARK_STROKE}
+              strokeWidth={LETTER_STROKE}
               style={{ visibility: "hidden" }}
             />
           )),
