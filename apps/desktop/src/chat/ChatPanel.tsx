@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Square } from "lucide-react";
+import { ArrowDown, Square } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -111,7 +111,6 @@ export function ChatPanel({
   }, [state.status, state.loaded, onStatus]);
 
   const busy = state.status === "working" || state.status === "waiting-permission";
-  const canSend = state.loaded && !busy && draft.trim().length > 0;
 
   function onScroll() {
     const element = scrollRef.current;
@@ -278,16 +277,15 @@ export function ChatPanel({
             {rendered}
 
             {busy ? (
-              <p className="-mt-5 flex items-center gap-2 text-small text-cg-muted">
-                <span className="flex gap-1" aria-hidden="true">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
-                </span>
-                {state.status === "waiting-permission"
-                  ? "Waiting for your approval"
-                  : "Working — press Esc to stop"}
-              </p>
+              <span
+                aria-label={state.status === "waiting-permission" ? "Waiting for approval" : "Working"}
+                className="-mt-5 flex gap-1"
+                role="status"
+              >
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
+              </span>
             ) : null}
           </div>
         </div>
@@ -328,7 +326,7 @@ export function ChatPanel({
           void send();
         }}
       >
-        <div className="rounded-[14px] border border-cg-line-strong bg-cg-panel px-4 py-3.5 shadow-[0_5px_15px_rgba(31,36,32,0.025)] focus-within:border-cg-muted">
+        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5">
           <textarea
             ref={composerRef}
             aria-label="Message"
@@ -340,37 +338,23 @@ export function ChatPanel({
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onComposerKeyDown}
           />
-          <div className="mt-1 flex items-center justify-between text-small text-cg-muted">
+          <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
             <span className="flex items-center gap-1.5">
               <span aria-hidden="true" className="text-cg-accent">
                 ✳
               </span>
               {providerLabel}
             </span>
-            <div className="flex items-center gap-3">
-              <span>
-                {busy ? "Esc to stop" : "Enter to send · Shift+Enter for a new line"}
-              </span>
-              {busy ? (
-                <button
-                  aria-label="Stop"
-                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
-                  type="button"
-                  onClick={cancelTurn}
-                >
-                  <Square fill="currentColor" size={11} />
-                </button>
-              ) : (
-                <button
-                  aria-label="Send message"
-                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover disabled:opacity-40"
-                  disabled={!canSend}
-                  type="submit"
-                >
-                  <ArrowUp size={15} />
-                </button>
-              )}
-            </div>
+            {busy ? (
+              <button
+                aria-label="Stop"
+                className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
+                type="button"
+                onClick={cancelTurn}
+              >
+                <Square fill="currentColor" size={11} />
+              </button>
+            ) : null}
           </div>
         </div>
       </form>

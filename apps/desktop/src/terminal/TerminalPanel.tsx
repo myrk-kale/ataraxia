@@ -16,7 +16,6 @@ import {
 type TerminalPanelProps = {
   worktreeId: string;
   cwd: string;
-  context: string;
   theme: "light" | "dark";
   onClose: () => void;
 };
@@ -42,7 +41,6 @@ const XTERM_THEMES = {
 export function TerminalPanel({
   worktreeId,
   cwd,
-  context,
   theme,
   onClose,
 }: TerminalPanelProps) {
@@ -53,7 +51,6 @@ export function TerminalPanel({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<PtySessionId | null>(null);
-  const [status, setStatus] = useState("starting…");
 
   useEffect(() => {
     const host = hostRef.current;
@@ -102,7 +99,6 @@ export function TerminalPanel({
         if (ensured.replay) {
           term.write(decodeTerminalBytes(ensured.replay));
         }
-        setStatus(ensured.created ? "ready" : "reattached");
 
         unlistenOutput = await listenTerminalOutput((payload) => {
           if (payload.sessionId !== sessionRef.current) {
@@ -114,8 +110,8 @@ export function TerminalPanel({
           if (payload.sessionId !== sessionRef.current) {
             return;
           }
-          setStatus(
-            payload.code == null ? "exited" : `exited (${payload.code})`,
+          term.write(
+            `\r\n\x1b[2m[process exited${payload.code == null ? "" : ` with code ${payload.code}`}]\x1b[0m\r\n`,
           );
           sessionRef.current = null;
         });
@@ -128,7 +124,9 @@ export function TerminalPanel({
           void terminalWrite(sessionId, encodeTerminalBytes(data));
         });
       } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
+        term.write(
+          `\x1b[2m[terminal unavailable: ${error instanceof Error ? error.message : String(error)}]\x1b[0m\r\n`,
+        );
       }
     }
 
@@ -199,31 +197,17 @@ export function TerminalPanel({
       >
         <span className="absolute top-0 left-1/2 h-0.5 w-11 -translate-x-1/2 rounded-sm bg-cg-line-strong group-hover:bg-cg-muted" />
       </div>
-      <header className="flex h-[39px] flex-none items-center gap-3.5 border-b border-cg-line px-6">
-        <span className="text-micro font-bold tracking-[1px] text-cg-muted-strong">TERMINAL</span>
-        <span className="min-w-0 truncate text-micro text-cg-muted">
-          {context} · {shortPath(cwd)} · {status}
-        </span>
-        <span className="flex-1" />
-        <span className="font-mono text-micro text-cg-muted">Ctrl + `</span>
+      <header className="flex h-6 flex-none items-center justify-end px-4">
         <button
           aria-label="Close terminal"
-          className="grid h-[25px] w-[25px] place-items-center text-[20px] leading-none text-cg-muted hover:text-cg-ink"
+          className="grid h-5 w-5 place-items-center text-[16px] leading-none text-cg-muted hover:text-cg-ink"
           type="button"
           onClick={onClose}
         >
           ×
         </button>
       </header>
-      <div ref={hostRef} className="min-h-0 flex-1 px-6 pt-2 pb-2" />
+      <div ref={hostRef} className="min-h-0 flex-1 px-6 pb-2" />
     </section>
   );
-}
-
-function shortPath(path: string): string {
-  const parts = path.split(/[/\\]/).filter(Boolean);
-  if (parts.length <= 2) {
-    return path;
-  }
-  return parts.slice(-2).join("/");
 }

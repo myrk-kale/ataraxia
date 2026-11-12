@@ -426,7 +426,6 @@ export function AppShell() {
       {terminalOpen && selectedWorktree ? (
         <TerminalPanel
           key={selectedWorktree.id}
-          context={contextLabel ?? shortPath(selectedWorktree.path)}
           cwd={selectedWorktree.path}
           theme={theme}
           worktreeId={selectedWorktree.id}
