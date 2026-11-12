@@ -31,7 +31,7 @@ export function AsciiBackground() {
     void Promise.all([
       import("../vendor/ascii-magic/player.js"),
       import("../vendor/ascii-magic/canvas.js"),
-      import("../vendor/ascii-magic/pieces/lavender-fields.js"),
+      import("../vendor/ascii-magic/pieces/summit-cloud-sea.js"),
     ]).then(([{ play }, { CELL_W, cellAspect }, piece]) => {
       if (cancelled) {
         return;
