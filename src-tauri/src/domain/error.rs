@@ -9,6 +9,7 @@ pub enum ErrorCode {
     Io,
     NotFound,
     Invalid,
+    NotARepo,
     Unsupported,
     Agent,
 }
@@ -19,6 +20,7 @@ impl ErrorCode {
             Self::Io => "io",
             Self::NotFound => "not-found",
             Self::Invalid => "invalid",
+            Self::NotARepo => "not-a-repo",
             Self::Unsupported => "unsupported",
             Self::Agent => "agent",
         }
