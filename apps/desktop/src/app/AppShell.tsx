@@ -353,7 +353,16 @@ export function AppShell() {
           <ChatPanel
             key={selectedSession.id}
             contextLabel={contextLabel}
+            provider={providers.find((item) => item.kind === selectedSession.provider) ?? null}
             session={selectedSession}
+            onSessionChange={(updated) =>
+              setWorkspace((current) => ({
+                ...current,
+                sessions: current.sessions.map((item) =>
+                  item.id === updated.id ? updated : item,
+                ),
+              }))
+            }
           />
         ) : space === "chat" ? (
           <NewContext

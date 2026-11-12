@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   agentCancel,
+  agentConfigureSession,
   agentGetSnapshot,
   agentPrompt,
   agentResolvePermission,
@@ -17,10 +18,12 @@ import {
   initialChatState,
   listenAgentEvents,
   PROVIDER_LABELS,
+  type ProviderDescriptor,
 } from "../lib/agent";
 import type { ChatSession } from "../lib/workspace";
 import { toBlocks } from "./blocks";
 import { Hero } from "./Hero";
+import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { Markdown } from "./Markdown";
 import { PermissionDialog } from "./PermissionDialog";
@@ -41,10 +44,14 @@ function errorText(err: unknown): string {
 
 export function ChatPanel({
   session,
+  provider,
   contextLabel,
+  onSessionChange,
 }: {
   session: ChatSession;
+  provider: ProviderDescriptor | null;
   contextLabel: string | null;
+  onSessionChange: (session: ChatSession) => void;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
@@ -133,6 +140,16 @@ export function ChatPanel({
     stickRef.current = true;
     try {
       await agentPrompt(sessionId, text);
+    } catch (err) {
+      dispatch({ type: "failed", message: errorText(err) });
+    }
+  }
+
+  async function configure(model: string | null, effort: string | null) {
+    try {
+      onSessionChange(await agentConfigureSession(sessionId, model, effort));
+      // Providers that read these at launch restart the agent; reload to show the divider.
+      dispatch({ type: "loaded", snapshot: await agentGetSnapshot(sessionId) });
     } catch (err) {
       dispatch({ type: "failed", message: errorText(err) });
     }
@@ -338,23 +355,38 @@ export function ChatPanel({
             onKeyDown={onComposerKeyDown}
           />
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
-            <span className="flex items-center gap-1.5">
-              <span aria-hidden="true" className="text-cg-accent">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span
+                aria-hidden="true"
+                className="grid h-6 w-6 flex-none place-items-center rounded-[7px] bg-cg-accent-bg text-[13px] leading-none text-cg-accent"
+              >
                 ✳
               </span>
-              {providerLabel}
+              <span className="truncate text-ui font-semibold text-cg-ink">{providerLabel}</span>
               <StatusDot status={state.status} />
-            </span>
-            {busy ? (
-              <button
-                aria-label="Stop"
-                className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
-                type="button"
-                onClick={cancelTurn}
-              >
-                <Square fill="currentColor" size={11} />
-              </button>
-            ) : null}
+            </div>
+            <div className="flex flex-none items-center gap-3">
+              <SessionSettings
+                disabled={busy || !state.loaded}
+                disabledReason="Wait for the current turn to finish"
+                effort={session.effort}
+                model={session.model}
+                provider={provider}
+                onChange={(model, effort) => {
+                  void configure(model, effort);
+                }}
+              />
+              {busy ? (
+                <button
+                  aria-label="Stop"
+                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
+                  type="button"
+                  onClick={cancelTurn}
+                >
+                  <Square fill="currentColor" size={11} />
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
       </form>

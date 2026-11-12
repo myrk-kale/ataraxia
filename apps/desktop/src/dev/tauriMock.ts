@@ -8,7 +8,7 @@ const worktrees = [
   { id: "w1", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: "feature/course-mask", head: "d76d97b4", created_at: now, updated_at: now },
   { id: "w2", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: "main", head: "a1b2c3d4", created_at: now, updated_at: now },
 ];
-const session = { id: "s1", repository_id: "r1", worktree_id: "w1", provider: "codex", title: "Refactor document generation", status: "ready", created_at: now, updated_at: now, last_opened_at: now };
+const session = { id: "s1", repository_id: "r1", worktree_id: "w1", provider: "codex", title: "Refactor document generation", status: "ready", model: null as string | null, effort: null as string | null, created_at: now, updated_at: now, last_opened_at: now };
 
 const sessions = [
   session,
@@ -50,18 +50,25 @@ if (mode === "fresh") {
   chat.items = [];
 }
 
+const noSettings = { configurable: false, models: [], efforts: [], custom_model: false };
 const providers = [
-  { kind: "fake", display_name: "Fake", available: true, detail: null },
-  { kind: "claude", display_name: "Claude Code", available: true, detail: null },
-  { kind: "codex", display_name: "Codex", available: true, detail: null },
-  { kind: "opencode", display_name: "OpenCode", available: false, detail: "not found" },
+  { kind: "fake", display_name: "Fake", available: true, detail: null, settings: { configurable: true, models: [{ id: "fake-fast", label: "Fake fast" }], efforts: ["low", "medium", "high"], custom_model: false } },
+  { kind: "claude", display_name: "Claude Code", available: true, detail: null, settings: { configurable: true, models: [{ id: "sonnet", label: "Sonnet" }, { id: "opus", label: "Opus" }, { id: "haiku", label: "Haiku" }, { id: "fable", label: "Fable" }], efforts: ["low", "medium", "high", "xhigh", "max"], custom_model: true } },
+  { kind: "codex", display_name: "Codex", available: true, detail: null, settings: { configurable: true, models: [], efforts: ["low", "medium", "high", "xhigh"], custom_model: true } },
+  { kind: "opencode", display_name: "OpenCode", available: false, detail: "not found", settings: noSettings },
 ];
 
-function handle(cmd: string): unknown {
+function handle(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "core_status": return "ready";
     case "agent_list_providers": return providers;
     case "agent_get_snapshot": return chat;
+    case "agent_configure_session": {
+      const target = snapshot.sessions.find((item) => item.id === args?.sessionId) ?? session;
+      target.model = (args?.model as string | null) ?? null;
+      target.effort = (args?.effort as string | null) ?? null;
+      return target;
+    }
     case "workspace_bootstrap":
     case "workspace_select_repository":
     case "workspace_select_worktree":
@@ -77,7 +84,7 @@ function handle(cmd: string): unknown {
 let callbackId = 0;
 const w = window as unknown as Record<string, unknown>;
 w.__TAURI_INTERNALS__ = {
-  invoke: (cmd: string) => Promise.resolve(handle(cmd)),
+  invoke: (cmd: string, args?: Record<string, unknown>) => Promise.resolve(handle(cmd, args)),
   transformCallback: () => ++callbackId,
   unregisterCallback: () => undefined,
   convertFileSrc: (p: string) => p,

@@ -39,6 +39,8 @@ export type ChatSession = {
   provider: ProviderKind;
   title: string;
   status: SessionStatus;
+  model: string | null;
+  effort: string | null;
   created_at: string;
   updated_at: string;
   last_opened_at: string | null;

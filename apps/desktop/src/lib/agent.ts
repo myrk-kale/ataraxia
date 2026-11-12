@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ProviderKind, SessionId, SessionStatus } from "./workspace";
+import type { ChatSession, ProviderKind, SessionId, SessionStatus } from "./workspace";
 
 export type ChatRole = "user" | "assistant" | "system";
 export type ToolStatus = "running" | "done" | "failed";
@@ -90,11 +90,23 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: "Codex",
 };
 
+export type ModelChoice = { id: string; label: string };
+
+export type ProviderSettings = {
+  /** False when Concierge cannot change model or effort for this provider. */
+  configurable: boolean;
+  models: ModelChoice[];
+  /** Lowest to highest; empty when the provider has no effort knob. */
+  efforts: string[];
+  custom_model: boolean;
+};
+
 export type ProviderDescriptor = {
   kind: ProviderKind;
   display_name: string;
   available: boolean;
   detail: string | null;
+  settings: ProviderSettings;
 };
 
 export function agentListProviders() {
@@ -103,6 +115,14 @@ export function agentListProviders() {
 
 export function agentStartSession(sessionId: SessionId) {
   return invoke<void>("agent_start_session", { sessionId });
+}
+
+export function agentConfigureSession(
+  sessionId: SessionId,
+  model: string | null,
+  effort: string | null,
+) {
+  return invoke<ChatSession>("agent_configure_session", { sessionId, model, effort });
 }
 
 export function agentPrompt(sessionId: SessionId, text: string) {
