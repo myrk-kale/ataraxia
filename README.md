@@ -6,7 +6,7 @@ Concierge integrates coding agents (Claude Code, Codex, OpenCode) into a keyboar
 
 ## Status
 
-Shell, workspace persistence, and a retractable real PTY terminal are in place. Agent runtime comes next. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
+Shell, workspace persistence, a retractable real PTY terminal, and the Chat space are in place. Chat talks to OpenCode (ACP), Claude Code (stream-json) and Codex (app-server) through one agent host, with streaming, tool cards, approve/deny prompts, cancel, and a persisted transcript. Code, Decisions, BTW and Flow come next. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
 
 - [Interactive prototype](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 
@@ -17,8 +17,9 @@ Shell, workspace persistence, and a retractable real PTY terminal are in place. 
 - **Core:** single Rust crate, hexagonal layout (`domain` / `ports` / `app` / `adapters`)
 - **Agent connectors:** Orca-shaped ports in Rust
   - OpenCode → ACP
-  - Claude Code → custom stream-json / Agent SDK bridge
+  - Claude Code → custom stream-json (`--permission-prompt-tool stdio`)
   - Codex → custom app-server
+  - Provider CLIs are found on `PATH` plus common install dirs; override with `CONCIERGE_OPENCODE_BIN`, `CONCIERGE_CLAUDE_BIN`, `CONCIERGE_CODEX_BIN`
 
 ## Workspace layout
 
@@ -50,13 +51,17 @@ pnpm dev
 Rust checks:
 
 ```bash
-cd src-tauri && cargo test && cargo check
+cd src-tauri && cargo fmt --check && cargo test && cargo check
+pnpm typecheck && pnpm test && pnpm build
 ```
 
-## Shortcuts (shell scaffold)
+Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
+
+## Shortcuts
 
 - `Shift + ←/→` — previous/next space
-- `Ctrl/Cmd + J` or `Ctrl/Cmd + \`` — toggle terminal panel placeholder
+- `Ctrl/Cmd + J` or `Ctrl/Cmd + \`` — toggle terminal panel
+- Chat: `Enter` send, `Shift + Enter` new line, `Esc` stop the running turn
 - Theme toggle in the header
 
 ## License

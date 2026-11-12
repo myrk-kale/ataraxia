@@ -34,6 +34,7 @@ export type PendingPermission = {
 
 export type ChatSnapshot = {
   items: ChatItem[];
+  restoredCount: number;
   status: SessionStatus;
   pendingPermission: PendingPermission | null;
 };
@@ -81,6 +82,13 @@ export type AgentEvent =
     }
   | { type: "turnDone"; sessionId: SessionId; turnId: string; ok: boolean }
   | { type: "error"; sessionId: SessionId; message: string };
+
+export const PROVIDER_LABELS: Record<ProviderKind, string> = {
+  fake: "Fake",
+  opencode: "OpenCode",
+  claude: "Claude Code",
+  codex: "Codex",
+};
 
 export type ProviderDescriptor = {
   kind: ProviderKind;
@@ -131,6 +139,7 @@ export function listenAgentEvents(
 
 export type ChatState = {
   items: ChatItem[];
+  restoredCount: number;
   status: SessionStatus;
   pending: PendingPermission | null;
   error: string | null;
@@ -139,6 +148,7 @@ export type ChatState = {
 
 export const initialChatState: ChatState = {
   items: [],
+  restoredCount: 0,
   status: "idle",
   pending: null,
   error: null,
@@ -180,6 +190,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "loaded":
       return {
         items: action.snapshot.items,
+        restoredCount: action.snapshot.restoredCount,
         status: action.snapshot.status,
         pending: action.snapshot.pendingPermission,
         error: null,

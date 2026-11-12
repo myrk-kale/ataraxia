@@ -181,6 +181,8 @@ pub struct PendingPermission {
 #[serde(rename_all = "camelCase")]
 pub struct ChatSnapshot {
     pub items: Vec<ChatItem>,
+    /// Leading items that predate the running agent process (restored from disk or a restart).
+    pub restored_count: usize,
     pub status: SessionStatus,
     pub pending_permission: Option<PendingPermission>,
 }

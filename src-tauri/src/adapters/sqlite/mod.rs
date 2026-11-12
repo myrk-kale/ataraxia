@@ -9,7 +9,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::agent::ProviderKind;
 use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
-use crate::domain::{ChatSession, Error, ErrorCode, Repository, Result, SessionStatus, Worktree};
+use crate::domain::{
+    ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionStatus, Worktree,
+};
 use crate::ports::Store;
 
 use migrations::migrate;
@@ -296,6 +298,57 @@ impl Store for SqliteStore {
         })
     }
 
+    fn replace_chat_items(&self, id: SessionId, items: &[ChatItem]) -> Result<()> {
+        let payloads = items
+            .iter()
+            .map(|item| {
+                serde_json::to_string(item)
+                    .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.with_conn(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            tx.execute(
+                "DELETE FROM chat_items WHERE session_id = ?1",
+                params![id.0.to_string()],
+            )
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            for (position, payload) in payloads.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO chat_items (session_id, position, payload) VALUES (?1, ?2, ?3)",
+                    params![id.0.to_string(), position as i64, payload],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            }
+            tx.commit()
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        })
+    }
+
+    fn list_chat_items(&self, id: SessionId) -> Result<Vec<ChatItem>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT payload FROM chat_items WHERE session_id = ?1 ORDER BY position ASC",
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            let rows = statement
+                .query_map(params![id.0.to_string()], |row| row.get::<_, String>(0))
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            let mut items = Vec::new();
+            for row in rows {
+                let payload = row.map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+                items.push(
+                    serde_json::from_str(&payload)
+                        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?,
+                );
+            }
+            Ok(items)
+        })
+    }
+
     fn get_preference(&self, key: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             conn.query_row(
@@ -453,5 +506,71 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Chat 1");
         assert!(listed[0].last_opened_at.is_some());
+    }
+
+    #[test]
+    fn chat_items_round_trip_and_are_replaced() {
+        use crate::domain::ids::TurnId;
+        use crate::domain::{
+            ChatItem, ChatMessage, ChatRole, ToolCallId, ToolCallRecord, ToolStatus,
+        };
+
+        let store = SqliteStore::open_in_memory().expect("open");
+        let now = now_rfc3339().expect("now");
+        let repo = Repository {
+            id: RepositoryId::new(),
+            root: PathBuf::from("/tmp/items"),
+            name: "items".into(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_repository(&repo).expect("repo");
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            repository_id: repo.id,
+            path: PathBuf::from("/tmp/items"),
+            branch: None,
+            head: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_worktree(&worktree).expect("worktree");
+        let session = ChatSession {
+            id: SessionId::new(),
+            repository_id: repo.id,
+            worktree_id: worktree.id,
+            provider: ProviderKind::Fake,
+            title: "Chat".into(),
+            status: SessionStatus::Idle,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_opened_at: None,
+        };
+        store.create_session(&session).expect("session");
+
+        let turn = TurnId::new();
+        let items = vec![
+            ChatItem::Message(ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::User,
+                text: "hi".into(),
+                turn_id: Some(turn),
+            }),
+            ChatItem::Tool(ToolCallRecord {
+                call_id: ToolCallId::new(),
+                turn_id: turn,
+                name: "bash".into(),
+                input: "ls".into(),
+                output: Some("a".into()),
+                status: ToolStatus::Done,
+            }),
+        ];
+        store.replace_chat_items(session.id, &items).expect("save");
+        assert_eq!(store.list_chat_items(session.id).expect("load"), items);
+
+        store
+            .replace_chat_items(session.id, &items[..1])
+            .expect("replace");
+        assert_eq!(store.list_chat_items(session.id).expect("load").len(), 1);
     }
 }

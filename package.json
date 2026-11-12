@@ -11,7 +11,8 @@
     "typecheck": "pnpm --filter @concierge/desktop typecheck",
     "tauri": "pnpm --filter @concierge/desktop exec tauri",
     "tauri:dev": "pnpm --filter @concierge/desktop exec tauri dev",
-    "tauri:build": "pnpm --filter @concierge/desktop exec tauri build"
+    "tauri:build": "pnpm --filter @concierge/desktop exec tauri build",
+    "test": "pnpm --filter @concierge/desktop test"
   },
   "engines": {
     "node": ">=22"
