@@ -1,6 +1,6 @@
 /// Stable health string exposed to the shell until richer status exists.
 pub fn core_status_message() -> String {
-    "concierge-core ready".to_string()
+    "ataraxia-core ready".to_string()
 }
 
 #[cfg(test)]
@@ -9,6 +9,6 @@ mod tests {
 
     #[test]
     fn status_is_stable() {
-        assert_eq!(core_status_message(), "concierge-core ready");
+        assert_eq!(core_status_message(), "ataraxia-core ready");
     }
 }

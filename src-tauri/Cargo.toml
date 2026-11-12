@@ -1,13 +1,13 @@
 [package]
-name = "concierge"
+name = "ataraxia"
 version = "0.1.0"
-description = "Concierge desktop core"
+description = "Ataraxia desktop core"
 authors = ["Kale"]
 edition = "2024"
 rust-version = "1.85"
 
 [lib]
-name = "concierge_lib"
+name = "ataraxia_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

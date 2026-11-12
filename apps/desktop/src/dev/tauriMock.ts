@@ -20,7 +20,7 @@ const sessions = [
 const mode = new URLSearchParams(window.location.search).get("state");
 
 const snapshot = {
-  repositories: [repo, { ...repo, id: "r2", name: "concierge-ui" }],
+  repositories: [repo, { ...repo, id: "r2", name: "ataraxia-ui" }],
   selected_repository_id: "r1",
   worktrees,
   selected_worktree_id: "w1",

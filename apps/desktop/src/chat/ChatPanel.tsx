@@ -311,10 +311,7 @@ export function ChatPanel({
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
-    <section
-      className="cg-page-in flex h-full min-h-0 flex-col"
-      onKeyDown={onPanelKeyDown}
-    >
+    <section className="cg-page-in flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
           <div
@@ -455,7 +452,7 @@ export function ChatPanel({
           void send();
         }}
       >
-        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5">
+        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5" data-intro="composer">
           <textarea
             ref={composerRef}
             aria-label="Message"

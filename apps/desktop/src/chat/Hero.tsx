@@ -10,9 +10,6 @@ export function Hero({
 }) {
   return (
     <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center">
-      <div aria-hidden="true" className="mb-3.5 text-[34px] leading-none text-cg-accent">
-        ✳
-      </div>
       <h1 className="mb-[9px] text-display font-semibold tracking-[-0.6px]">
         What shall we build?
       </h1>

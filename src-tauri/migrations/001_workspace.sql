@@ -1,4 +1,4 @@
--- Concierge workspace provenance
+-- Ataraxia workspace provenance
 CREATE TABLE repositories (
   id TEXT PRIMARY KEY,
   root TEXT NOT NULL UNIQUE,

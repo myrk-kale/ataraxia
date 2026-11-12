@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Concierge",
+  "productName": "Ataraxia",
   "version": "0.1.0",
-  "identifier": "app.concierge.desktop",
+  "identifier": "app.ataraxia.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --filter @concierge/desktop dev",
+    "beforeDevCommand": "pnpm --filter @ataraxia/desktop dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --filter @concierge/desktop build",
+    "beforeBuildCommand": "pnpm --filter @ataraxia/desktop build",
     "frontendDist": "../apps/desktop/dist"
   },
   "app": {
     "windows": [
       {
-        "title": "Concierge",
+        "title": "Ataraxia",
         "width": 1280,
         "height": 800,
         "minWidth": 960,

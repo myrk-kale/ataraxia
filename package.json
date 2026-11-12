@@ -1,18 +1,18 @@
 {
-  "name": "concierge",
+  "name": "ataraxia",
   "private": true,
   "version": "0.0.0",
   "description": "Desktop environment for agent-assisted software development",
   "packageManager": "pnpm@11.1.2",
   "scripts": {
-    "dev": "pnpm --filter @concierge/desktop dev",
-    "build": "pnpm --filter @concierge/desktop build",
-    "lint": "pnpm --filter @concierge/desktop lint",
-    "typecheck": "pnpm --filter @concierge/desktop typecheck",
+    "dev": "pnpm --filter @ataraxia/desktop dev",
+    "build": "pnpm --filter @ataraxia/desktop build",
+    "lint": "pnpm --filter @ataraxia/desktop lint",
+    "typecheck": "pnpm --filter @ataraxia/desktop typecheck",
     "tauri": "cd src-tauri && ../apps/desktop/node_modules/.bin/tauri",
     "tauri:dev": "pnpm tauri dev",
     "tauri:build": "pnpm tauri build",
-    "test": "pnpm --filter @concierge/desktop test"
+    "test": "pnpm --filter @ataraxia/desktop test"
   },
   "engines": {
     "node": ">=22"

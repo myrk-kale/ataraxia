@@ -17,7 +17,7 @@ function applyTheme(theme: ThemeMode) {
 
 export function useThemeMode() {
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    const stored = window.localStorage.getItem("concierge.theme");
+    const stored = window.localStorage.getItem("ataraxia.theme");
     if (stored === "light" || stored === "dark") {
       return stored;
     }
@@ -26,7 +26,7 @@ export function useThemeMode() {
 
   useEffect(() => {
     applyTheme(theme);
-    window.localStorage.setItem("concierge.theme", theme);
+    window.localStorage.setItem("ataraxia.theme", theme);
   }, [theme]);
 
   return {

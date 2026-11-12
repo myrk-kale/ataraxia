@@ -116,7 +116,7 @@ pub struct SessionOptions {
 /// What a provider lets the user tune per chat.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSettings {
-    /// False when the provider has no way to change model or effort from Concierge.
+    /// False when the provider has no way to change model or effort from Ataraxia.
     pub configurable: bool,
     /// Known model presets; the provider default is always offered on top.
     pub models: Vec<ModelChoice>,

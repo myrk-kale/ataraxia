@@ -155,7 +155,7 @@ mod tests {
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("concierge-defs-{label}-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("ataraxia-defs-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }

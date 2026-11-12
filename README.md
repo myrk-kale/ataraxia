@@ -1,12 +1,12 @@
-# Concierge
+# Ataraxia
 
 Desktop environment for agent-assisted software development.
 
-Concierge integrates coding agents (Claude Code, Codex, OpenCode) into a keyboard-first workspace with Chat, Code review, Decisions, Flow diagrams, contextual BTW investigations, and a real PTY terminal.
+Ataraxia integrates coding agents (Claude Code, Codex, OpenCode) into a keyboard-first workspace with Chat, Code review, Decisions, Flow diagrams, contextual BTW investigations, and a real PTY terminal.
 
 ## Status
 
-Shell, workspace persistence, a retractable real PTY terminal, and the Chat space are in place. Chat talks to OpenCode (ACP), Claude Code (stream-json) and Codex (app-server) through one agent host, with streaming, tool cards, approve/deny prompts, cancel, and a persisted transcript. Code, Decisions, BTW and Flow come next. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
+Shell, workspace persistence, a retractable real PTY terminal, and the Chat space are in place. Chat talks to OpenCode (ACP), Claude Code (stream-json) and Codex (app-server) through one agent host, with streaming, tool cards, approve/deny prompts, cancel, and a persisted transcript. Code, Decisions, BTW and Flow come next. Product direction: [`Ataraxia_SPEC_v1.1.md`](./Ataraxia_SPEC_v1.1.md). UX reference:
 
 - [Interactive prototype](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 
@@ -19,15 +19,15 @@ Shell, workspace persistence, a retractable real PTY terminal, and the Chat spac
   - OpenCode → ACP
   - Claude Code → custom stream-json (`--permission-prompt-tool stdio`)
   - Codex → custom app-server
-  - Provider CLIs are found on `PATH` plus common install dirs; override with `CONCIERGE_OPENCODE_BIN`, `CONCIERGE_CLAUDE_BIN`, `CONCIERGE_CODEX_BIN`
-  - Claude Code starts with `--permission-mode auto`; set `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode (e.g. `acceptEdits`), or to an empty value to use your own Claude settings
+  - Provider CLIs are found on `PATH` plus common install dirs; override with `ATARAXIA_OPENCODE_BIN`, `ATARAXIA_CLAUDE_BIN`, `ATARAXIA_CODEX_BIN`
+  - Claude Code starts with `--permission-mode auto`; set `ATARAXIA_CLAUDE_PERMISSION_MODE` to another mode (e.g. `acceptEdits`), or to an empty value to use your own Claude settings
   - Agent, model and reasoning effort are set per chat from the composer. The lists come from the live session where the provider reports them (Codex `model/list`, OpenCode ACP config options) and from `.claude/agents` / `.codex/agents` on disk. Claude Code reads them at launch (`--agent`, `--model`, `--effort`), so a change restarts the agent and keeps the transcript; OpenCode and Codex apply them live. Codex has no agent switch in its protocol, so a chosen agent is named in each prompt
   - Subagents show up as a small switcher above the composer. Each one opens as its own conversation, streaming while it works, and the composer there writes to that subagent. Claude relays the message through the main agent's `SendMessage` tool (needs the `agentId` Claude reports when the subagent returns), Codex starts a turn on the subagent's thread, OpenCode prompts its child session. Subagent conversations are kept for the running app, not saved to the database
-  - Claude runs most subagents in the background: the call returns at once with an `output_file`, a live transcript of the subagent. Concierge follows that file to show its conversation as it works, keeps the subagent open past the turn, and shows the report the main agent gives by itself when it finishes
-  - Claude only forwards complete subagent messages (not token deltas); Concierge sets `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT` so their text is included
-  - Set `CONCIERGE_DEBUG_FRAMES=/path/to/file` to append every raw line exchanged with a provider CLI (`<` from it, `>` to it). It contains the whole conversation, so it is off by default
+  - Claude runs most subagents in the background: the call returns at once with an `output_file`, a live transcript of the subagent. Ataraxia follows that file to show its conversation as it works, keeps the subagent open past the turn, and shows the report the main agent gives by itself when it finishes
+  - Claude only forwards complete subagent messages (not token deltas); Ataraxia sets `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT` so their text is included
+  - Set `ATARAXIA_DEBUG_FRAMES=/path/to/file` to append every raw line exchanged with a provider CLI (`<` from it, `>` to it). It contains the whole conversation, so it is off by default
   - The provider selector in the top bar changes the harness of the open chat (the transcript stays, the new agent starts fresh)
-  - Codex starts with `on-request` approvals, the `workspace-write` sandbox and `approvalsReviewer: auto_review` (a reviewer agent decides eligible requests); set `CONCIERGE_CODEX_APPROVALS_REVIEWER=user` to be asked for everything, or empty to use your own Codex config
+  - Codex starts with `on-request` approvals, the `workspace-write` sandbox and `approvalsReviewer: auto_review` (a reviewer agent decides eligible requests); set `ATARAXIA_CODEX_APPROVALS_REVIEWER=user` to be asked for everything, or empty to use your own Codex config
 
 ## Workspace layout
 
@@ -65,6 +65,10 @@ pnpm typecheck && pnpm test && pnpm build
 ```
 
 Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
+
+## Empty chat
+
+Opening the app plays "The Imprint" (1.1 s): the brand mark, a Λ, is stamped small in the middle of the window in thin strokes, then comes apart into three segments that travel to real parts of the interface (the header rule, the composer edge and the brand mark in the header) while the backdrop fades, so the mark becomes the interface with no cut. It is skipped with reduced motion enabled. Timing and geometry are in `apps/desktop/src/intro/timeline.ts`, the animation in `Imprint.tsx` and the header icon in `BrandMark.tsx`.
 
 ## Shortcuts
 

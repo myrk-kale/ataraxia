@@ -137,7 +137,7 @@ export type SessionOptions = {
 };
 
 export type ProviderSettings = {
-  /** False when Concierge cannot change model or effort for this provider. */
+  /** False when Ataraxia cannot change model or effort for this provider. */
   configurable: boolean;
   /** Fallback presets, used until the live session reports its own. */
   models: ModelChoice[];
