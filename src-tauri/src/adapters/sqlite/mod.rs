@@ -565,6 +565,75 @@ mod tests {
     }
 
     #[test]
+    fn session_settings_and_harness_switch_are_stored() {
+        let store = SqliteStore::open_in_memory().expect("open");
+        let now = now_rfc3339().expect("now");
+        let repo = Repository {
+            id: RepositoryId::new(),
+            root: PathBuf::from("/tmp/settings"),
+            name: "settings".into(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_repository(&repo).expect("repo");
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            repository_id: repo.id,
+            path: PathBuf::from("/tmp/settings"),
+            branch: None,
+            head: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_worktree(&worktree).expect("worktree");
+        let session = ChatSession {
+            id: SessionId::new(),
+            repository_id: repo.id,
+            worktree_id: worktree.id,
+            provider: ProviderKind::Claude,
+            title: "Chat".into(),
+            status: SessionStatus::Idle,
+            model: None,
+            effort: None,
+            agent: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_opened_at: None,
+        };
+        store.create_session(&session).expect("session");
+
+        store
+            .update_session_settings(
+                session.id,
+                Some("opus"),
+                Some("high"),
+                Some("reviewer"),
+                &now,
+            )
+            .expect("settings");
+        let saved = store.get_session(session.id).expect("get").expect("some");
+        assert_eq!(saved.model.as_deref(), Some("opus"));
+        assert_eq!(saved.effort.as_deref(), Some("high"));
+        assert_eq!(saved.agent.as_deref(), Some("reviewer"));
+
+        // Names are provider-specific, so a harness switch clears all three.
+        store
+            .update_session_provider(session.id, ProviderKind::Codex, &now)
+            .expect("switch");
+        let switched = store.get_session(session.id).expect("get").expect("some");
+        assert_eq!(switched.provider, ProviderKind::Codex);
+        assert_eq!(
+            (switched.model, switched.effort, switched.agent),
+            (None, None, None)
+        );
+        assert!(
+            store
+                .update_session_provider(SessionId::new(), ProviderKind::Codex, &now)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn chat_items_round_trip_and_are_replaced() {
         use crate::domain::ids::TurnId;
         use crate::domain::{

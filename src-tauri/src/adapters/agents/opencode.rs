@@ -18,9 +18,10 @@ use super::backend::{
 };
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
+use crate::domain::agent::{AgentChoice, ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
-    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, ToolCallId,
+    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
 };
 
 const BINARY_NAME: &str = "opencode";
@@ -78,6 +79,8 @@ impl AgentBackend for OpenCodeBackend {
             .command()
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(AcpShared {
+            config: Mutex::new(Vec::new()),
+            initial: Mutex::new(HashMap::new()),
             emit: ctx.emit,
             client: OnceLock::new(),
             acp_session_id: OnceLock::new(),
@@ -125,6 +128,9 @@ impl AgentBackend for OpenCodeBackend {
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
             let _ = shared.acp_session_id.set(session_id.to_string());
+            if let Some(options) = created.get("configOptions") {
+                shared.remember_config(parse_config_options(options), true);
+            }
             Ok(())
         })();
         if let Err(error) = handshake {
@@ -132,6 +138,12 @@ impl AgentBackend for OpenCodeBackend {
             client.kill();
             return Err(Error::new(ErrorCode::Agent, message));
         }
+        // Best effort: a stale saved model or agent must not stop the chat from opening.
+        let _ = shared.apply(
+            ctx.model.as_deref(),
+            ctx.effort.as_deref(),
+            ctx.agent.as_deref(),
+        );
         Ok(Arc::new(AcpSession { shared }))
     }
 }
@@ -164,9 +176,112 @@ struct AcpState {
     tools: HashMap<String, ToolMeta>,
     queue: VecDeque<QueuedPermission>,
     active: Option<QueuedPermission>,
+    /// Tool calls made inside child sessions → the call id shown in the subagent transcript.
+    child_calls: HashMap<String, ToolCallId>,
+}
+
+/// A subagent's child session, as marked by OpenCode on its updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChildSession {
+    id: String,
+    title: String,
+}
+
+fn child_session(holder: &Value) -> Option<ChildSession> {
+    let meta = holder.get("_meta")?.get("opencode/child-session")?;
+    let id = meta.get("id")?.as_str()?.to_string();
+    let title = meta
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("Subagent")
+        .to_string();
+    Some(ChildSession { id, title })
+}
+
+/// One selectable value of an ACP session config option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigValue {
+    value: String,
+    name: String,
+    description: Option<String>,
+}
+
+/// An ACP session config option (`model`, `effort`, `mode`, ...), flattened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigOption {
+    id: String,
+    category: String,
+    current: String,
+    values: Vec<ConfigValue>,
+}
+
+impl ConfigOption {
+    /// Matches by ACP category (`model`, `thought_level`, `mode`), falling back to the id.
+    fn is(&self, category: &str, id: &str) -> bool {
+        self.category == category || (self.category.is_empty() && self.id == id)
+    }
+}
+
+fn parse_config_options(value: &Value) -> Vec<ConfigOption> {
+    let Some(options) = value.as_array() else {
+        return Vec::new();
+    };
+    options
+        .iter()
+        .filter(|option| {
+            option
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("select")
+                == "select"
+        })
+        .filter_map(|option| {
+            let id = option.get("id")?.as_str()?.to_string();
+            let current = option.get("currentValue")?.as_str()?.to_string();
+            let category = option
+                .get("category")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let mut values = Vec::new();
+            let mut push = |item: &Value| {
+                if let Some(value) = item.get("value").and_then(Value::as_str) {
+                    values.push(ConfigValue {
+                        value: value.to_string(),
+                        name: item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(value)
+                            .to_string(),
+                        description: item
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+            };
+            for entry in option.get("options")?.as_array()? {
+                // Either a flat list of values or a list of groups of values.
+                match entry.get("options").and_then(Value::as_array) {
+                    Some(group) => group.iter().for_each(&mut push),
+                    None => push(entry),
+                }
+            }
+            Some(ConfigOption {
+                id,
+                category,
+                current,
+                values,
+            })
+        })
+        .collect()
 }
 
 struct AcpShared {
+    /// Config options as last reported, and the values the session started with.
+    config: Mutex<Vec<ConfigOption>>,
+    initial: Mutex<HashMap<String, String>>,
     emit: Emitter,
     client: OnceLock<Arc<RpcClient>>,
     acp_session_id: OnceLock<String>,
@@ -175,6 +290,74 @@ struct AcpShared {
 }
 
 impl AcpShared {
+    fn remember_config(&self, options: Vec<ConfigOption>, first: bool) {
+        if first {
+            let mut initial = self.initial.lock();
+            for option in &options {
+                initial.insert(option.id.clone(), option.current.clone());
+            }
+        }
+        *self.config.lock() = options;
+    }
+
+    fn option_id(&self, category: &str, id: &str) -> Option<String> {
+        self.config
+            .lock()
+            .iter()
+            .find(|option| option.is(category, id))
+            .map(|option| option.id.clone())
+    }
+
+    /// Sets one config option; the reply carries the complete, updated list.
+    fn set_config(&self, config_id: &str, value: &str) -> Result<()> {
+        let (Some(client), Some(session_id)) = (self.client.get(), self.acp_session_id.get())
+        else {
+            return Err(Error::new(ErrorCode::Agent, "opencode is not running"));
+        };
+        let reply = client.request(
+            "session/set_config_option",
+            json!({ "sessionId": session_id, "configId": config_id, "value": value }),
+            Some(HANDSHAKE_TIMEOUT),
+        )?;
+        if let Some(options) = reply.get("configOptions") {
+            self.remember_config(parse_config_options(options), false);
+        }
+        Ok(())
+    }
+
+    /// Moves the session to the wanted model, agent and effort; `None` means the default.
+    fn apply(&self, model: Option<&str>, effort: Option<&str>, agent: Option<&str>) -> Result<()> {
+        // Model first: the effort levels on offer depend on it.
+        for (category, id, wanted) in [
+            ("model", "model", model),
+            ("mode", "mode", agent),
+            ("thought_level", "effort", effort),
+        ] {
+            let Some(config_id) = self.option_id(category, id) else {
+                continue;
+            };
+            let target = match wanted {
+                Some(value) => Some(value.to_string()),
+                // Back to default: the effort option has an explicit `default` value.
+                None if category == "thought_level" => Some("default".to_string()),
+                None => self.initial.lock().get(&config_id).cloned(),
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let current = self
+                .config
+                .lock()
+                .iter()
+                .find(|option| option.id == config_id)
+                .map(|option| option.current.clone());
+            if current.as_deref() != Some(target.as_str()) {
+                self.set_config(&config_id, &target)?;
+            }
+        }
+        Ok(())
+    }
+
     fn with_exit_info(&self, message: String) -> String {
         match self.exit.lock().as_ref() {
             Some(info) => info.describe("opencode"),
@@ -187,7 +370,12 @@ impl AcpShared {
             Incoming::Notification { method, params } => {
                 if method == "session/update" {
                     if let Some(update) = params.get("update") {
-                        self.on_update(update);
+                        // Child (subagent) sessions ride on the prompt's session with a marker.
+                        let child = child_session(&params).or_else(|| child_session(update));
+                        match child {
+                            Some(child) => self.on_child_update(&child, update),
+                            None => self.on_update(update),
+                        }
                     }
                 }
             }
@@ -230,6 +418,68 @@ impl AcpShared {
             }
             "tool_call" | "tool_call_update" => {
                 self.on_tool(&mut state, turn_id, update);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_child_update(&self, child: &ChildSession, update: &Value) {
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut state = self.state.lock();
+        if state.turn.is_none() {
+            return;
+        }
+        let emit = |update: SubagentUpdate| {
+            (self.emit)(BackendEvent::Subagent {
+                id: child.id.clone(),
+                title: child.title.clone(),
+                update,
+            });
+        };
+        match kind {
+            "agent_message_chunk" => {
+                let text = update
+                    .pointer("/content/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    emit(SubagentUpdate::Delta {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "tool_call" | "tool_call_update" => {
+                let Some(acp_id) = update.get("toolCallId").and_then(Value::as_str) else {
+                    return;
+                };
+                let call_id = match state.child_calls.get(acp_id) {
+                    Some(call_id) => *call_id,
+                    None => {
+                        let call_id = ToolCallId::new();
+                        state.child_calls.insert(acp_id.to_string(), call_id);
+                        emit(SubagentUpdate::Tool {
+                            call_id,
+                            name: update
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("tool")
+                                .to_string(),
+                            input: raw_input_text(update.get("rawInput")).unwrap_or_default(),
+                        });
+                        call_id
+                    }
+                };
+                let status = update.get("status").and_then(Value::as_str);
+                if matches!(status, Some("completed" | "failed")) {
+                    emit(SubagentUpdate::ToolResult {
+                        call_id,
+                        output: tool_output(update),
+                        ok: status == Some("completed"),
+                    });
+                }
             }
             _ => {}
         }
@@ -322,7 +572,8 @@ impl AcpShared {
             .unwrap_or_default()
             .to_string();
         let title = tool_call.get("title").and_then(Value::as_str);
-        if !acp_id.is_empty() && !state.tools.contains_key(&acp_id) {
+        let from_child = child_session(&tool_call).is_some();
+        if !from_child && !acp_id.is_empty() && !state.tools.contains_key(&acp_id) {
             let input = raw_input_text(tool_call.get("rawInput"));
             self.announce_tool(&mut state, turn_id, &acp_id, title, input);
         }
@@ -431,6 +682,56 @@ struct AcpSession {
 }
 
 impl BackendSession for AcpSession {
+    fn apply_settings(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+        agent: Option<&str>,
+    ) -> bool {
+        self.shared.apply(model, effort, agent).is_ok()
+    }
+
+    fn options(&self) -> SessionOptions {
+        let config = self.shared.config.lock();
+        let values = |category: &str, id: &str| -> Vec<ConfigValue> {
+            config
+                .iter()
+                .find(|option| option.is(category, id))
+                .map(|option| option.values.clone())
+                .unwrap_or_default()
+        };
+        let initial = self.shared.initial.lock();
+        let default_model = config
+            .iter()
+            .find(|option| option.is("model", "model"))
+            .and_then(|option| initial.get(&option.id).cloned());
+        SessionOptions {
+            models: values("model", "model")
+                .into_iter()
+                .map(|item| ModelChoice {
+                    id: item.value,
+                    label: item.name,
+                    efforts: Vec::new(),
+                })
+                .collect(),
+            default_model,
+            // Levels of the model in use, without the explicit `default` entry.
+            efforts: values("thought_level", "effort")
+                .into_iter()
+                .map(|item| item.value)
+                .filter(|value| value != "default")
+                .collect(),
+            agents: values("mode", "mode")
+                .into_iter()
+                .map(|item| AgentChoice {
+                    id: item.value,
+                    label: item.name,
+                    description: item.description,
+                })
+                .collect(),
+        }
+    }
+
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
         if !self.is_alive() {
             return Err(Error::new(
@@ -621,21 +922,124 @@ mod tests {
     }
 
     fn start() -> Harness {
+        start_with(None, None, None)
+    }
+
+    fn start_with(model: Option<&str>, effort: Option<&str>, agent: Option<&str>) -> Harness {
         let (sender, events) = mpsc::channel();
         let sender = Mutex::new(sender);
         let session = mock_backend()
             .start(BackendContext {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
-                model: None,
-                effort: None,
-                agent: None,
+                model: model.map(str::to_string),
+                effort: effort.map(str::to_string),
+                agent: agent.map(str::to_string),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
             })
             .expect("handshake with mock agent");
         Harness { session, events }
+    }
+
+    fn state_line(h: &Harness) -> String {
+        h.session
+            .prompt(TurnId::new(), "state please")
+            .expect("prompt");
+        let seen = h.until("turn done", is_turn_done);
+        seen.iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn models_effort_and_agents_come_from_the_session_config() {
+        let h = start();
+        let options = h.session.options();
+        h.session.shutdown();
+        let models: Vec<_> = options.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(models, ["mock/smart", "mock/fast"]);
+        assert_eq!(options.default_model.as_deref(), Some("mock/smart"));
+        assert_eq!(
+            options.efforts,
+            ["low", "high"],
+            "the default entry is not a level"
+        );
+        let agents: Vec<_> = options.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(agents, ["build", "plan"]);
+        assert_eq!(options.agents[0].description.as_deref(), Some("Builds"));
+    }
+
+    #[test]
+    fn saved_settings_are_applied_when_the_session_starts() {
+        let h = start_with(Some("mock/smart"), Some("high"), Some("plan"));
+        assert_eq!(state_line(&h), "model=mock/smart effort=high mode=plan");
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn settings_change_live_and_return_to_defaults() {
+        let h = start();
+        assert!(
+            h.session
+                .apply_settings(Some("mock/fast"), None, Some("plan"))
+        );
+        assert_eq!(state_line(&h), "model=mock/fast effort=default mode=plan");
+        // This model has no effort levels, so the picker must empty out.
+        assert!(h.session.options().efforts.is_empty());
+        assert!(h.session.apply_settings(None, None, None));
+        assert_eq!(state_line(&h), "model=mock/smart effort=default mode=build");
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn child_session_updates_become_a_subagent_conversation() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "child please")
+            .expect("prompt");
+        let seen = h.until("turn done", is_turn_done);
+        h.session.shutdown();
+        let child: Vec<_> = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Subagent { id, title, update } => Some((id, title, update)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            child
+                .iter()
+                .all(|(id, title, _)| *id == "ses_child" && *title == "Explore")
+        );
+        assert!(child.iter().any(
+            |(_, _, update)| matches!(update, SubagentUpdate::Delta { text } if text == "Scanning")
+        ));
+        assert!(child.iter().any(
+            |(_, _, update)| matches!(update, SubagentUpdate::Tool { name, .. } if name == "grep")
+        ));
+        assert!(child.iter().any(|(_, _, update)| matches!(
+            update,
+            SubagentUpdate::ToolResult { ok: true, output, .. } if output == "3 hits"
+        )));
+        // The child's chatter and tool stay out of the main conversation.
+        let main: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(main, "Delegating. Back.");
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Tool { .. }))
+        );
     }
 
     impl Harness {
