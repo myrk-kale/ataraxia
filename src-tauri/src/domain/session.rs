@@ -16,6 +16,35 @@ pub enum SessionStatus {
     Failed,
 }
 
+impl SessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Working => "working",
+            Self::WaitingPermission => "waiting-permission",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "idle" => Some(Self::Idle),
+            "starting" => Some(Self::Starting),
+            "ready" => Some(Self::Ready),
+            "working" => Some(Self::Working),
+            "waiting-permission" => Some(Self::WaitingPermission),
+            "stopping" => Some(Self::Stopping),
+            "stopped" => Some(Self::Stopped),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: SessionId,
@@ -24,4 +53,7 @@ pub struct ChatSession {
     pub provider: ProviderKind,
     pub title: String,
     pub status: SessionStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_opened_at: Option<String>,
 }

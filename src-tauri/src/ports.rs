@@ -1,8 +1,10 @@
 //! Side-effect ports. Application depends on these traits; adapters implement them.
 
-use crate::domain::Result;
+use std::path::Path;
+
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
-use crate::domain::ids::{SessionId, TurnId};
+use crate::domain::ids::{RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::{ChatSession, RepoInfo, Repository, Result, Worktree, WorktreeInfo};
 
 /// Uniform agent surface for Claude / Codex / OpenCode / fakes.
 pub trait AgentRuntime: Send + Sync {
@@ -10,19 +12,39 @@ pub trait AgentRuntime: Send + Sync {
     fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix>;
 }
 
-/// Placeholder git port; concrete methods arrive with workspace persistence.
 pub trait Git: Send + Sync {
-    fn is_repository(&self, path: &std::path::Path) -> Result<bool>;
+    fn discover(&self, path: &Path) -> Result<RepoInfo>;
+    fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>>;
 }
 
-/// Placeholder filesystem port.
 pub trait Fs: Send + Sync {
-    fn exists(&self, path: &std::path::Path) -> Result<bool>;
+    fn exists(&self, path: &Path) -> Result<bool>;
 }
 
-/// Placeholder persistence port.
 pub trait Store: Send + Sync {
     fn health_check(&self) -> Result<()>;
+
+    fn upsert_repository(&self, repo: &Repository) -> Result<()>;
+    fn list_repositories(&self) -> Result<Vec<Repository>>;
+    fn get_repository(&self, id: RepositoryId) -> Result<Option<Repository>>;
+    fn find_repository_by_root(&self, root: &Path) -> Result<Option<Repository>>;
+
+    fn upsert_worktree(&self, worktree: &Worktree) -> Result<()>;
+    fn list_worktrees(&self, repository_id: RepositoryId) -> Result<Vec<Worktree>>;
+    fn get_worktree(&self, id: WorktreeId) -> Result<Option<Worktree>>;
+    fn find_worktree_by_path(
+        &self,
+        repository_id: RepositoryId,
+        path: &Path,
+    ) -> Result<Option<Worktree>>;
+
+    fn create_session(&self, session: &ChatSession) -> Result<()>;
+    fn list_sessions(&self, repository_id: RepositoryId) -> Result<Vec<ChatSession>>;
+    fn get_session(&self, id: SessionId) -> Result<Option<ChatSession>>;
+    fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()>;
+
+    fn get_preference(&self, key: &str) -> Result<Option<String>>;
+    fn set_preference(&self, key: &str, value: &str) -> Result<()>;
 }
 
 /// Placeholder PTY port.

@@ -18,6 +18,16 @@ impl ProviderKind {
             Self::Codex => "codex",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "fake" => Some(Self::Fake),
+            "opencode" => Some(Self::OpenCode),
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

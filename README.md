@@ -6,7 +6,7 @@ Concierge integrates coding agents (Claude Code, Codex, OpenCode) into a keyboar
 
 ## Status
 
-Scaffold in progress. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
+Shell + workspace persistence are in place (open repo, select worktree, create/resume chat sessions). Agent runtime comes next. Product direction: [`Concierge_SPEC_v1.1.md`](./Concierge_SPEC_v1.1.md). UX reference:
 
 - [Interactive prototype](https://concierge-workspace-poc-20261111.mikael3305.chatgpt.site)
 
