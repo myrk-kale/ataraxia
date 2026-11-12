@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AsciiBackground } from "./AsciiBackground";
 import { MARK_HEIGHT, MARK_STROKE } from "./BrandMark";
 import { layout, pathD, type Placement } from "./glyphs";
 import { introEnabled, lerpPlacement, settleAt, strokeProgress, wordPlacement } from "./timeline";
@@ -71,7 +72,9 @@ export function Intro() {
   }
   return (
     <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-[100]">
-      <div ref={backdropRef} className="absolute inset-0 bg-cg-panel" />
+      <div ref={backdropRef} className="absolute inset-0 bg-cg-panel">
+        <AsciiBackground />
+      </div>
       <svg className="absolute inset-0 h-full w-full overflow-visible text-cg-ink" fill="none">
         {WORD.items.map((letter) =>
           letter.glyph.strokes.map((_, k) => (
