@@ -66,6 +66,10 @@ pnpm typecheck && pnpm test && pnpm build
 
 Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
 
+## Empty chat
+
+An empty chat shows the Concierge axolotl floating over animated dot waves. Once the conversation starts the axolotl goes away and the waves stay behind it, turned down so the text reads. The waves follow the light and dark themes, pause while the window is hidden and stand still with reduced motion enabled.
+
 ## Shortcuts
 
 - `Shift + ←/→` — previous/next space

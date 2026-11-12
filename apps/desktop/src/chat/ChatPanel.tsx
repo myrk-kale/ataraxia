@@ -27,6 +27,7 @@ import {
 import type { ChatSession } from "../lib/workspace";
 import { toBlocks } from "./blocks";
 import { Hero } from "./Hero";
+import { WaveBackground } from "./WaveBackground";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { SubagentBar } from "./SubagentBar";
@@ -312,9 +313,11 @@ export function ChatPanel({
 
   return (
     <section
-      className="cg-page-in flex h-full min-h-0 flex-col"
+      className="cg-page-in relative isolate flex h-full min-h-0 flex-col"
       onKeyDown={onPanelKeyDown}
     >
+      {/* The waves stay for the whole chat; the axolotl (in the Hero) is only for an empty one. */}
+      <WaveBackground quiet={!emptyChat} />
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
           <div

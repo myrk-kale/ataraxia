@@ -26,6 +26,9 @@
   --cg-green: #397e66;
   --cg-red: #b55d63;
   --cg-amber: #e4ad67;
+  /* Wave dots (r g b) and how much stronger they need to be on this background. */
+  --cg-wave: 57 126 102;
+  --cg-wave-boost: 3.4;
   --cg-primary: #252724;
   --cg-primary-hover: #464844;
   --cg-on-primary: #ffffff;
@@ -57,6 +60,8 @@
   --cg-green: #6eae8e;
   --cg-red: #d98a90;
   --cg-amber: #e4ad67;
+  --cg-wave: 190 233 161;
+  --cg-wave-boost: 2.4;
   --cg-primary: #e8e9e6;
   --cg-primary-hover: #ffffff;
   --cg-on-primary: #151614;
@@ -183,6 +188,22 @@ button:disabled {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+.cg-axolotl {
+  animation: cg-axolotl-float 6s ease-in-out infinite;
+  /* A faint halo of the wave colour; it only reads on the dark background. */
+  text-shadow: 0 0 14px rgb(var(--cg-wave) / 0.14);
+}
+
+@keyframes cg-axolotl-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-0.5deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(0.5deg);
   }
 }
 
