@@ -19,7 +19,7 @@ export function NewContext({
   onOpenRepository: () => void;
 }) {
   return (
-    <section className="cg-page-in h-full overflow-y-auto">
+    <section className="cg-page-in flex h-full flex-col overflow-y-auto">
       <Hero contextLabel={contextLabel}>
         <div className="mt-8 flex justify-center">
           {hasRepository ? (

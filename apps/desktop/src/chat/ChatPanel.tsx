@@ -18,9 +18,10 @@ import {
   listenAgentEvents,
   PROVIDER_LABELS,
 } from "../lib/agent";
-import type { ChatSession, SessionStatus } from "../lib/workspace";
+import type { ChatSession } from "../lib/workspace";
 import { toBlocks } from "./blocks";
 import { Hero } from "./Hero";
+import { StatusDot } from "./StatusDot";
 import { Markdown } from "./Markdown";
 import { PermissionDialog } from "./PermissionDialog";
 import { ToolCard } from "./ToolCard";
@@ -41,11 +42,9 @@ function errorText(err: unknown): string {
 export function ChatPanel({
   session,
   contextLabel,
-  onStatus,
 }: {
   session: ChatSession;
   contextLabel: string | null;
-  onStatus?: (status: SessionStatus) => void;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
@@ -103,12 +102,6 @@ export function ChatPanel({
       element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_PX)}px`;
     }
   }, [draft]);
-
-  useEffect(() => {
-    if (state.loaded) {
-      onStatus?.(state.status);
-    }
-  }, [state.status, state.loaded, onStatus]);
 
   const busy = state.status === "working" || state.status === "waiting-permission";
 
@@ -230,6 +223,8 @@ export function ChatPanel({
     return startsAfterRestore ? [restoredNotice, node] : [node];
   });
 
+  const emptyChat = state.loaded && state.items.length === 0;
+
   return (
     <section
       className="cg-page-in flex h-full min-h-0 flex-col"
@@ -237,7 +232,11 @@ export function ChatPanel({
     >
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
-          <div className="mx-auto flex max-w-[780px] flex-col gap-[33px] px-8 pt-[35px] pb-20">
+          <div
+            className={`mx-auto flex max-w-[780px] flex-col gap-[33px] px-8 ${
+              emptyChat ? "min-h-full py-6" : "pt-[35px] pb-20"
+            }`}
+          >
             {state.loaded && state.items.length > 0 ? (
               <div className="flex items-center gap-2 text-small text-cg-muted">
                 <span className="text-micro font-bold tracking-[1.15px] uppercase">
@@ -254,7 +253,7 @@ export function ChatPanel({
               </p>
             ) : null}
 
-            {state.loaded && state.items.length === 0 ? (
+            {emptyChat ? (
               <Hero contextLabel={contextLabel}>
                 <div className="mt-8 flex flex-wrap justify-center gap-2">
                   {SUGGESTIONS.map((suggestion) => (
@@ -344,6 +343,7 @@ export function ChatPanel({
                 ✳
               </span>
               {providerLabel}
+              <StatusDot status={state.status} />
             </span>
             {busy ? (
               <button

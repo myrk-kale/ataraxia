@@ -9,7 +9,7 @@ export function Hero({
   children?: ReactNode;
 }) {
   return (
-    <div className="mx-auto mt-[16vh] max-w-[650px] px-[30px] text-center">
+    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center">
       <div aria-hidden="true" className="mb-3.5 text-[29px] leading-none text-cg-accent">
         ✳
       </div>

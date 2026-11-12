@@ -21,12 +21,10 @@ import {
   workspaceSelectRepository,
   workspaceSelectWorktree,
   type ProviderKind,
-  type SessionStatus,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
 import { EdgeNav } from "./EdgeNav";
 import { SessionsPanel } from "./SessionsPanel";
-import { StatusPill } from "./StatusPill";
 import { Toast } from "./Toast";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
@@ -85,7 +83,6 @@ export function AppShell() {
   const [preferredProvider, setPreferredProvider] = useState<ProviderKind>(
     readStoredProvider,
   );
-  const [chatStatus, setChatStatus] = useState<SessionStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { theme, toggleTheme } = useThemeMode();
@@ -185,7 +182,6 @@ export function AppShell() {
 
   const sessionId = selectedSession?.id ?? null;
   useEffect(() => {
-    setChatStatus(null);
   }, [sessionId]);
 
   async function runWorkspace(
@@ -375,7 +371,6 @@ export function AppShell() {
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </Button>
-          <StatusPill status={selectedSession ? (chatStatus ?? selectedSession.status) : null} />
         </div>
       </header>
 
@@ -385,7 +380,6 @@ export function AppShell() {
             key={selectedSession.id}
             contextLabel={contextLabel}
             session={selectedSession}
-            onStatus={setChatStatus}
           />
         ) : space === "chat" ? (
           <NewContext
