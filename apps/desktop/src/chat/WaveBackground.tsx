@@ -1,12 +1,5 @@
 import { useEffect, useRef } from "react";
-import {
-  addRipple,
-  drawWaves,
-  parseWaveColor,
-  RIPPLE_LIFE_MS,
-  type Ripple,
-  type WaveColor,
-} from "./wave";
+import { drawWaves, parseWaveColor, WaveField, type WaveColor } from "./wave";
 
 // Used only if the theme tokens cannot be read: the dark theme is the default look.
 const FALLBACK_COLOR: WaveColor = { r: 255, g: 255, b: 255 };
@@ -54,18 +47,15 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
     let elapsed = 0;
     let last = performance.now();
     let frameId = 0;
-    let ripples: Ripple[] = [];
+    // Dragging through the field pushes the dots along; they ease back by themselves.
+    const field = new WaveField();
 
     const paint = () => {
-      // Spent ripples are dropped here so a finished click costs nothing.
-      if (ripples.length > 0 && ripples.every((ripple) => elapsed - ripple.t0 >= RIPPLE_LIFE_MS)) {
-        ripples = [];
-      }
       drawWaves(ctx, width, height, elapsed, {
         intensity: BASE_INTENSITY,
         gain: (quietRef.current ? QUIET_GAIN : 1) * palette.boost,
         color: palette.color,
-        ripples,
+        field,
       });
     };
     redrawRef.current = paint;
@@ -81,6 +71,7 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      field.resize(width, height);
       paint();
     };
 
@@ -92,6 +83,7 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
       }
       last = now;
       elapsed += delta;
+      field.step(delta);
       paint();
     };
 
@@ -106,12 +98,49 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
       }
     };
 
-    // Clicking the empty background stirs the field. Only surfaces marked `data-wave-surface`
-    // count, so buttons, inputs and message text never trigger it. People who prefer reduced
-    // motion get no moving effect at all.
-    const stirAt = (event: PointerEvent) => {
+    // Press the empty background and drag to move the waves; a plain click gives them a light
+    // push. Only surfaces marked `data-wave-surface` count, so buttons, inputs and message text
+    // never trigger it. People who prefer reduced motion get no moving effect at all.
+    type Drag = { id: number; x: number; y: number; travelled: number };
+    let drag: Drag | null = null;
+    const local = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    const noSelect = (event: Event) => event.preventDefault();
+    const onMove = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.id) {
+        return;
+      }
+      const point = local(event);
+      const mx = point.x - drag.x;
+      const my = point.y - drag.y;
+      if (Math.hypot(mx, my) < 0.5) {
+        return;
+      }
+      field.drag(point.x, point.y, mx, my);
+      drag.travelled += Math.hypot(mx, my);
+      drag.x = point.x;
+      drag.y = point.y;
+    };
+    const release = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.id) {
+        return;
+      }
+      if (drag.travelled < 4) {
+        field.poke(drag.x, drag.y);
+      }
+      drag = null;
+      document.body.style.cursor = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("selectstart", noSelect);
+    };
+    const press = (event: PointerEvent) => {
       const target = event.target;
       if (
+        drag ||
         event.button !== 0 ||
         !running() ||
         !(target instanceof HTMLElement) ||
@@ -119,11 +148,17 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
       ) {
         return;
       }
-      const rect = canvas.getBoundingClientRect();
-      ripples = addRipple(ripples, event.clientX - rect.left, event.clientY - rect.top, elapsed);
+      const point = local(event);
+      drag = { id: event.pointerId, x: point.x, y: point.y, travelled: 0 };
+      document.body.style.cursor = "grabbing";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", release);
+      window.addEventListener("pointercancel", release);
+      // Dragging across text must not start selecting it.
+      window.addEventListener("selectstart", noSelect);
     };
     const surface = canvas.parentElement;
-    surface?.addEventListener("pointerdown", stirAt);
+    surface?.addEventListener("pointerdown", press);
 
     const sizeObserver = new ResizeObserver(resize);
     sizeObserver.observe(canvas);
@@ -143,7 +178,12 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
 
     return () => {
       cancelAnimationFrame(frameId);
-      surface?.removeEventListener("pointerdown", stirAt);
+      surface?.removeEventListener("pointerdown", press);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("selectstart", noSelect);
+      document.body.style.cursor = "";
       sizeObserver.disconnect();
       themeObserver.disconnect();
       document.removeEventListener("visibilitychange", sync);
