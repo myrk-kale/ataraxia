@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 export interface SelectOption {
@@ -8,6 +8,18 @@ export interface SelectOption {
   display?: string;
   disabled?: boolean;
   hint?: string;
+}
+
+/** Options whose label, value or hint contain every word of the query (case-insensitive). */
+export function filterOptions(options: SelectOption[], query: string): SelectOption[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) {
+    return options;
+  }
+  return options.filter((option) => {
+    const haystack = `${option.label} ${option.value} ${option.hint ?? ""}`.toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  });
 }
 
 export interface SelectAction {
@@ -24,6 +36,8 @@ interface QuietSelectProps {
   placeholder?: string;
   /** Small glyph shown before the label on the trigger. */
   icon?: ReactNode;
+  /** Adds a filter box at the top of the list, for long lists. */
+  searchable?: boolean;
   /** Extra content at the bottom of the list; `close` dismisses the popover. */
   footer?: (close: () => void) => ReactNode;
   className?: string;
@@ -47,6 +61,7 @@ export function QuietSelect({
   actions = [],
   placeholder = "",
   icon,
+  searchable = false,
   footer,
   className = "",
   disabled,
@@ -56,7 +71,9 @@ export function QuietSelect({
   const menuId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [box, setBox] = useState<{
     left: number | "auto";
     right: number | "auto";
@@ -65,6 +82,7 @@ export function QuietSelect({
     minWidth: number;
   }>({ left: 0, right: "auto", top: 0, bottom: "auto", minWidth: 0 });
   const selected = options.find((option) => option.value === value);
+  const visible = filterOptions(options, query);
 
   function items(): HTMLButtonElement[] {
     return Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
@@ -88,6 +106,10 @@ export function QuietSelect({
       minWidth: Math.max(rect.width, 200),
     });
     menuRef.current?.showPopover();
+    // Focus right away so the first keystrokes after opening are not lost to the trigger.
+    if (searchable) {
+      searchRef.current?.focus({ preventScroll: true });
+    }
   }
 
   function close() {
@@ -97,9 +119,18 @@ export function QuietSelect({
   function onToggle(event: React.SyntheticEvent<HTMLElement>) {
     const isOpen = (event.nativeEvent as ToggleEvent).newState === "open";
     setOpen(isOpen);
-    if (isOpen) {
-      const list = items();
-      (list.find((item) => item.getAttribute("aria-selected") === "true") ?? list[0])?.focus();
+    if (!isOpen) {
+      setQuery("");
+      return;
+    }
+    const list = items();
+    const current = list.find((item) => item.getAttribute("aria-selected") === "true");
+    if (searchable) {
+      // Typing is the fast path in a long list; the chosen item is still scrolled into view.
+      searchRef.current?.focus({ preventScroll: true });
+      current?.scrollIntoView({ block: "nearest" });
+    } else {
+      (current ?? list[0])?.focus();
     }
   }
 
@@ -110,6 +141,24 @@ export function QuietSelect({
       event.preventDefault();
       list[(index + list.length) % list.length]?.focus();
     };
+    if (event.target === searchRef.current) {
+      // Home/End and typing belong to the text field.
+      if (event.key === "ArrowDown") {
+        move(0);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+      } else if (event.key === "Enter") {
+        // Also keeps Enter from submitting the form the composer lives in.
+        event.preventDefault();
+        list.find((item) => item.getAttribute("role") === "option")?.click();
+      }
+      return;
+    }
+    if (searchable && event.key === "ArrowUp" && at <= 0) {
+      event.preventDefault();
+      searchRef.current?.focus();
+      return;
+    }
     if (event.key === "ArrowDown") {
       move(at + 1);
     } else if (event.key === "ArrowUp") {
@@ -165,8 +214,31 @@ export function QuietSelect({
         onKeyDown={onMenuKeyDown}
         onToggle={onToggle}
       >
+        {searchable ? (
+          <div className="sticky -top-1.5 z-10 -mx-1.5 -mt-1.5 mb-1 border-b border-cg-line bg-cg-panel px-3 py-2">
+            <label className="flex items-center gap-2 text-small text-cg-muted">
+              <Search aria-hidden="true" className="flex-none" size={12} />
+              <input
+                ref={searchRef}
+                aria-label={`Search ${ariaLabel.toLowerCase()}`}
+                autoComplete="off"
+                className="min-w-0 flex-1 border-0 bg-transparent text-small text-cg-ink outline-none placeholder:text-cg-muted/70"
+                placeholder="Search…"
+                spellCheck={false}
+                type="text"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+          </div>
+        ) : null}
         <div aria-label={ariaLabel} role="listbox">
-          {options.map((option) => (
+          {visible.length === 0 ? (
+            <p className="px-2.5 py-2 text-small text-cg-muted" role="status">
+              No matches
+            </p>
+          ) : null}
+          {visible.map((option) => (
             <button
               key={option.value}
               aria-disabled={option.disabled}

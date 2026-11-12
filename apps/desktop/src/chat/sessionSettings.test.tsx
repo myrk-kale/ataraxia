@@ -108,6 +108,17 @@ describe("SessionSettings", () => {
     expect(html).toContain('aria-label="Custom model id"');
   });
 
+  it("lets you search long lists of models and agents but not the effort levels", () => {
+    const html = render(
+      provider({ agents: true, efforts: ["low"] }),
+      {},
+      options({ agents: [{ id: "x", label: "x", description: null }] }),
+    );
+    expect(html).toContain('aria-label="Search model"');
+    expect(html).toContain('aria-label="Search agent"');
+    expect(html).not.toContain("Search reasoning effort");
+  });
+
   it("hides the effort picker when the provider has no effort levels", () => {
     expect(render(provider({ efforts: [] }))).not.toContain("Reasoning effort");
   });

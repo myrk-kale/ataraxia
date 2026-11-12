@@ -112,6 +112,7 @@ export function SessionSettings({
           disabled={disabled}
           icon={<Bot size={12} />}
           options={agentOptions}
+          searchable
           title={disabled ? disabledReason : "Agent"}
           value={agent ?? DEFAULT}
           onChange={(value) => onChange(model, effort, value || null)}
@@ -135,6 +136,7 @@ export function SessionSettings({
         }
         icon={<Cpu size={12} />}
         options={modelOptions}
+        searchable
         title={disabled ? disabledReason : "Model"}
         value={model ?? DEFAULT}
         onChange={(value) => {
