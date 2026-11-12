@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
+import { TerminalPanel } from "../terminal/TerminalPanel";
 import {
   emptyWorkspace,
   workspaceBootstrap,
@@ -286,6 +287,7 @@ export function AppShell() {
             aria-label="Toggle terminal"
             size="sm"
             variant={terminalOpen ? "secondary" : "ghost"}
+            isDisabled={!selectedWorktree}
             onPress={() => setTerminalOpen((openPanel) => !openPanel)}
           >
             <TerminalSquare size={16} />
@@ -330,18 +332,12 @@ export function AppShell() {
         </nav>
       </div>
 
-      {terminalOpen ? (
-        <section className="h-40 border-t border-foreground/10 bg-foreground/[0.03] px-4 py-3">
-          <div className="text-xs uppercase tracking-[0.16em] text-foreground/45">
-            Terminal
-          </div>
-          <p className="mt-2 text-sm text-foreground/65">
-            Painel retrátil pronto. O PTY real entra na PR3.
-            {selectedWorktree
-              ? ` Worktree: ${shortPath(selectedWorktree.path)}.`
-              : null}
-          </p>
-        </section>
+      {terminalOpen && selectedWorktree ? (
+        <TerminalPanel
+          key={selectedWorktree.id}
+          worktreeId={selectedWorktree.id}
+          cwd={selectedWorktree.path}
+        />
       ) : null}
     </div>
   );

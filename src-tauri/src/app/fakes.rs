@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
-use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
 };
@@ -239,11 +239,72 @@ impl Store for FakeStore {
 }
 
 #[derive(Debug, Default)]
-pub struct FakePty;
+pub struct FakePty {
+    sessions: Mutex<HashMap<WorktreeId, PtySessionId>>,
+    writers: Mutex<HashMap<PtySessionId, Vec<u8>>>,
+}
 
 impl PtyHost for FakePty {
     fn supported(&self) -> bool {
         true
+    }
+
+    fn ensure_session(
+        &self,
+        req: crate::ports::PtySpawnRequest,
+    ) -> Result<crate::ports::PtyEnsureResponse> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        if let Some(existing) = sessions.get(&req.worktree_id) {
+            return Ok(crate::ports::PtyEnsureResponse {
+                session_id: *existing,
+                created: false,
+                replay: Vec::new(),
+            });
+        }
+        let session_id = PtySessionId::new();
+        sessions.insert(req.worktree_id, session_id);
+        self.writers
+            .lock()
+            .expect("writers")
+            .insert(session_id, Vec::new());
+        Ok(crate::ports::PtyEnsureResponse {
+            session_id,
+            created: true,
+            replay: Vec::new(),
+        })
+    }
+
+    fn write(&self, id: &PtySessionId, bytes: &[u8]) -> Result<()> {
+        let mut writers = self.writers.lock().expect("writers");
+        let buf = writers
+            .get_mut(id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "terminal session not found"))?;
+        buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn resize(&self, id: &PtySessionId, _cols: u16, _rows: u16) -> Result<()> {
+        if self.writers.lock().expect("writers").contains_key(id) {
+            Ok(())
+        } else {
+            Err(Error::new(
+                ErrorCode::NotFound,
+                "terminal session not found",
+            ))
+        }
+    }
+
+    fn kill(&self, id: &PtySessionId) -> Result<()> {
+        let mut writers = self.writers.lock().expect("writers");
+        if writers.remove(id).is_none() {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                "terminal session not found",
+            ));
+        }
+        let mut sessions = self.sessions.lock().expect("sessions");
+        sessions.retain(|_, session_id| session_id != id);
+        Ok(())
     }
 }
 

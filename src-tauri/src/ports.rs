@@ -1,9 +1,11 @@
 //! Side-effect ports. Application depends on these traits; adapters implement them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
-use crate::domain::ids::{RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{ChatSession, RepoInfo, Repository, Result, Worktree, WorktreeInfo};
 
 /// Uniform agent surface for Claude / Codex / OpenCode / fakes.
@@ -47,9 +49,53 @@ pub trait Store: Send + Sync {
     fn set_preference(&self, key: &str, value: &str) -> Result<()>;
 }
 
-/// Placeholder PTY port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySpawnRequest {
+    pub worktree_id: WorktreeId,
+    pub cwd: PathBuf,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyEnsureResponse {
+    pub session_id: PtySessionId,
+    pub created: bool,
+    #[serde(with = "base64_bytes")]
+    pub replay: Vec<u8>,
+}
+
+mod base64_bytes {
+    use base64::Engine as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Native PTY host: one logical session per worktree.
 pub trait PtyHost: Send + Sync {
     fn supported(&self) -> bool;
+    fn ensure_session(&self, req: PtySpawnRequest) -> Result<PtyEnsureResponse>;
+    fn write(&self, id: &PtySessionId, bytes: &[u8]) -> Result<()>;
+    fn resize(&self, id: &PtySessionId, cols: u16, rows: u16) -> Result<()>;
+    fn kill(&self, id: &PtySessionId) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

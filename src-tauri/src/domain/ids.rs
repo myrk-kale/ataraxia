@@ -21,6 +21,10 @@ pub struct CheckpointId(pub Uuid);
 #[serde(transparent)]
 pub struct TurnId(pub Uuid);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PtySessionId(pub Uuid);
+
 impl RepositoryId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
@@ -51,6 +55,12 @@ impl TurnId {
     }
 }
 
+impl PtySessionId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 impl Default for RepositoryId {
     fn default() -> Self {
         Self::new()
@@ -76,6 +86,12 @@ impl Default for CheckpointId {
 }
 
 impl Default for TurnId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for PtySessionId {
     fn default() -> Self {
         Self::new()
     }
