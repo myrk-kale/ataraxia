@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { drawWaves, parseWaveColor, waveDot, WaveField, WAVE_GAP, type WaveContext } from "./wave";
+import { drawWaves, parseWaveColor, waveDot, WAVE_GAP, type WaveContext } from "./wave";
 
 class FakeContext implements WaveContext {
   fillStyle: string | CanvasGradient | CanvasPattern = "";
@@ -59,145 +59,6 @@ describe("waveDot", () => {
 });
 
 /** Where the dot in a column and row sits at rest. */
-const rest = (col: number, row: number) => ({ x: (col + 0.5) * WAVE_GAP, y: (row + 0.5) * WAVE_GAP });
-
-function field(width = 650, height = 390): WaveField {
-  const f = new WaveField();
-  f.resize(width, height);
-  return f;
-}
-
-/** The largest distance any dot is from its place. */
-function spread(f: WaveField): number {
-  let most = 0;
-  for (let row = 0; row < f.rows; row += 1) {
-    for (let col = 0; col < f.cols; col += 1) {
-      const { dx, dy } = f.offset(col, row);
-      most = Math.max(most, Math.hypot(dx, dy));
-    }
-  }
-  return most;
-}
-
-function run(f: WaveField, frames: number) {
-  for (let i = 0; i < frames; i += 1) {
-    f.step(16.7);
-  }
-}
-
-describe("WaveField", () => {
-  it("matches the dot grid the draw loop walks", () => {
-    for (const [w, h] of [[650, 390], [13, 13], [19.5, 26], [1565, 784]] as const) {
-      const f = field(w, h);
-      let cols = 0;
-      for (let x = WAVE_GAP / 2; x < w; x += WAVE_GAP) cols += 1;
-      let rows = 0;
-      for (let y = WAVE_GAP / 2; y < h; y += WAVE_GAP) rows += 1;
-      expect([f.cols, f.rows]).toEqual([cols, rows]);
-    }
-    expect(field(0, 0).cols).toBe(0);
-  });
-
-  it("starts at rest", () => {
-    const f = field();
-    expect(f.stirred).toBe(false);
-    expect(spread(f)).toBe(0);
-    f.step(16.7);
-    expect(spread(f)).toBe(0);
-  });
-
-  it("moves the dots under a drag along the drag, and leaves faraway ones alone", () => {
-    const f = field();
-    const centre = rest(25, 15);
-    f.drag(centre.x, centre.y, 30, 0);
-    run(f, 6);
-    const near = f.offset(25, 15);
-    expect(near.dx).toBeGreaterThan(1);
-    expect(Math.abs(near.dy)).toBeLessThan(near.dx * 0.2);
-    const far = f.offset(2, 2);
-    expect(far.dx).toBe(0);
-    expect(far.dy).toBe(0);
-  });
-
-  it("pushes the dots in the direction of a drag, whichever way it goes", () => {
-    const f = field();
-    const c = rest(20, 12);
-    f.drag(c.x, c.y, -18, 24);
-    run(f, 5);
-    const { dx, dy } = f.offset(20, 12);
-    expect(dx).toBeLessThan(0);
-    expect(dy).toBeGreaterThan(0);
-  });
-
-  it("shifts dots less the farther they are from the pointer", () => {
-    const f = field();
-    const c = rest(25, 15);
-    f.drag(c.x, c.y, 30, 0);
-    run(f, 6);
-    const at = (cols: number) => Math.abs(f.offset(25 + cols, 15).dx);
-    expect(at(0)).toBeGreaterThan(at(4));
-    expect(at(4)).toBeGreaterThan(at(8));
-  });
-
-  it("gives a plain click a light push outward from where it landed", () => {
-    const f = field();
-    const c = rest(25, 15);
-    f.poke(c.x, c.y);
-    run(f, 6);
-    expect(f.offset(28, 15).dx).toBeGreaterThan(0.5);
-    expect(f.offset(22, 15).dx).toBeLessThan(-0.5);
-    expect(f.offset(25, 18).dy).toBeGreaterThan(0.5);
-    expect(f.offset(25, 12).dy).toBeLessThan(-0.5);
-  });
-
-  it("eases back to rest by itself, softly", () => {
-    const f = field();
-    const c = rest(25, 15);
-    f.drag(c.x, c.y, 40, 20);
-    run(f, 4);
-    const peak = spread(f);
-    expect(peak).toBeGreaterThan(3);
-    run(f, 150);
-    expect(spread(f)).toBeLessThan(peak * 0.02);
-    run(f, 400);
-    expect(spread(f)).toBe(0);
-    expect(f.stirred).toBe(false);
-  });
-
-  it("never lets a dot stray far, however hard it is pushed", () => {
-    const f = field();
-    const c = rest(25, 15);
-    for (let i = 0; i < 200; i += 1) {
-      f.drag(c.x, c.y, 60, 60);
-      f.poke(c.x, c.y, 20);
-      f.step(16.7);
-      expect(Number.isFinite(spread(f))).toBe(true);
-    }
-    expect(spread(f)).toBeLessThanOrEqual(Math.SQRT2 * 70 + 0.01);
-  });
-
-  it("takes a fast flick as a series of short pushes so nothing is skipped", () => {
-    const f = field();
-    const start = rest(5, 15);
-    f.drag(start.x + 400, start.y, 400, 0);
-    run(f, 5);
-    // Dots all along the flick were carried, not only the ones at its end.
-    expect(f.offset(10, 15).dx).toBeGreaterThan(0.5);
-    expect(f.offset(20, 15).dx).toBeGreaterThan(0.5);
-    expect(f.offset(30, 15).dx).toBeGreaterThan(0.5);
-  });
-
-  it("starts again from rest when the canvas changes size", () => {
-    const f = field();
-    const c = rest(10, 10);
-    f.drag(c.x, c.y, 30, 30);
-    run(f, 3);
-    expect(spread(f)).toBeGreaterThan(0);
-    f.resize(900, 500);
-    expect(spread(f)).toBe(0);
-    expect(f.stirred).toBe(false);
-  });
-});
 
 describe("drawWaves", () => {
   const options = { intensity: 0.5, gain: 2, color: { r: 10, g: 20, b: 30 } };
@@ -212,35 +73,6 @@ describe("drawWaves", () => {
     // Dots share fills by opacity step instead of one fill per dot.
     expect(ctx.fills.length).toBeGreaterThan(1);
     expect(ctx.fills.length).toBeLessThanOrEqual(25);
-  });
-
-  it("draws dots where a drag moved them, still in a few fills", () => {
-    class Recording extends FakeContext {
-      points: Array<[number, number]> = [];
-      arc(x: number, y: number) {
-        super.arc(x, y);
-        this.points.push([x, y]);
-      }
-    }
-    const still = new Recording();
-    drawWaves(still, 650, 390, 500, options);
-
-    const f = field();
-    const c = rest(25, 15);
-    f.drag(c.x, c.y, 30, 0);
-    run(f, 6);
-    const dragged = new Recording();
-    drawWaves(dragged, 650, 390, 500, { ...options, field: f });
-
-    expect(dragged.fills.length).toBeLessThanOrEqual(25);
-    // Some dots are somewhere else than they were without the drag...
-    const home = new Set(still.points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`));
-    const away = dragged.points.filter(([x, y]) => !home.has(`${x.toFixed(1)},${y.toFixed(1)}`));
-    expect(away.length).toBeGreaterThan(20);
-    // ...and a field that is not stirred changes nothing.
-    const calm = new Recording();
-    drawWaves(calm, 650, 390, 500, { ...options, field: field() });
-    expect(calm.points).toEqual(still.points);
   });
 
   it("paints in the requested colour", () => {

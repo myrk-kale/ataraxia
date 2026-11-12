@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { Axolotl } from "./Axolotl";
 
 /** The centered "What shall we build?" block shared by the empty chat and the no-session state. */
 export function Hero({
@@ -10,10 +9,7 @@ export function Hero({
   children?: ReactNode;
 }) {
   return (
-    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center" data-wave-surface>
-      <div className="mb-5" data-wave-surface>
-        <Axolotl />
-      </div>
+    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center">
       <h1 className="mb-[9px] text-display font-semibold tracking-[-0.6px]">
         What shall we build?
       </h1>

@@ -192,25 +192,6 @@ button:disabled {
   }
 }
 
-.cg-axolotl {
-  animation: cg-axolotl-float 6s ease-in-out infinite;
-}
-
-/* A faint halo around the art; it only reads on the dark background. */
-:root.dark .cg-axolotl {
-  text-shadow: 0 0 14px rgb(var(--cg-wave) / 0.12);
-}
-
-@keyframes cg-axolotl-float {
-  0%,
-  100% {
-    transform: translateY(0) rotate(-0.5deg);
-  }
-  50% {
-    transform: translateY(-7px) rotate(0.5deg);
-  }
-}
-
 @keyframes cg-pulse {
   50% {
     opacity: 0.35;

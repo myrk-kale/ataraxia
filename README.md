@@ -68,7 +68,7 @@ Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/f
 
 ## Empty chat
 
-An empty chat shows the Concierge axolotl (drawn by `apps/desktop/scripts/generate-axolotl.py`, which writes `src/chat/axolotlArt.ts`; rerun it after changing the drawing) floating (and blinking now and then) over animated dot waves. The waves are white on the dark theme and black on the light one. Press the empty background and drag to move them: the dots follow the pointer with a soft pull and ease back to their place when you let go (a plain click gives them a light push outward). Once the conversation starts the axolotl goes away and the waves stay behind it, turned down so the text reads. They pause while the window is hidden, and with reduced motion enabled they stand still and the axolotl does not blink.
+Opening the app plays a short intro: animated dot waves (white on the dark theme, black on the light one) fill the window for about a second and a half, then give way to the interface, which is already rendered underneath. With reduced motion enabled the intro is skipped. The code is `apps/desktop/src/chat/IntroWaves.tsx` (timing in `intro.ts`, drawing in `wave.ts`).
 
 ## Shortcuts
 
