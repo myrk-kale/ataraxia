@@ -75,6 +75,19 @@ describe("drawWaves", () => {
     expect(ctx.fills.length).toBeLessThanOrEqual(25);
   });
 
+  it("lets a shape move, hide or brighten dots, up to the ceiling", () => {
+    const base = { intensity: 0.5, gain: 2, color: { r: 10, g: 20, b: 30 } };
+    const all = new FakeContext();
+    drawWaves(all, 130, 130, 0, { ...base, shape: (x, y) => ({ x, y, alpha: 0.2, radius: 1 }) });
+    expect(all.arcs).toBe(100);
+    const half = new FakeContext();
+    drawWaves(half, 130, 130, 0, { ...base, shape: (x, y) => (x < 65 ? { x, y, alpha: 0.2, radius: 1 } : null) });
+    expect(half.arcs).toBe(50);
+    const bright = new FakeContext();
+    drawWaves(bright, 130, 130, 0, { ...base, ceiling: 0.9, shape: (x, y) => ({ x, y, alpha: 5, radius: 1 }) });
+    expect(bright.fills).toEqual(["rgba(10,20,30,0.900)"]);
+  });
+
   it("paints in the requested colour", () => {
     const ctx = new FakeContext();
     drawWaves(ctx, 400, 300, 0, options);

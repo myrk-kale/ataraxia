@@ -68,7 +68,7 @@ Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/f
 
 ## Empty chat
 
-Opening the app plays a short intro: animated dot waves (white on the dark theme, black on the light one) fill the window for about a second and a half, then give way to the interface, which is already rendered underneath. With reduced motion enabled the intro is skipped. The code is `apps/desktop/src/chat/IntroWaves.tsx` (timing in `intro.ts`, drawing in `wave.ts`).
+Opening the app plays a short intro: animated dot waves (white on the dark theme, black on the light one) bloom out of the centre of the window, shock rings run through them, and the interface (already rendered underneath) opens up as a circle that sweeps to the corners with a bright crest of dots on its edge, all in about 1.9 seconds. With reduced motion enabled the intro is skipped. The code is `apps/desktop/src/chat/IntroWaves.tsx` (timing in `intro.ts`, drawing in `wave.ts`).
 
 ## Shortcuts
 

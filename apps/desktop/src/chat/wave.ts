@@ -1,7 +1,7 @@
 /**
  * Wave interference drawn with dots, ported from the Concierge wave prototype: two point
- * sources whose rings add up, so the dot grid swells and ripples. Used by the opening splash. Pure maths plus one draw
- * function that takes any 2D context, so it can be tested without a browser.
+ * sources whose rings add up, so the dot grid swells and ripples. Used by the opening splash. Pure maths plus
+ * one draw function that takes any 2D context, so it can be tested without a browser.
  */
 
 export const WAVE_GAP = 13;
@@ -18,7 +18,16 @@ export type WaveOptions = {
   /** Scales every dot's opacity: lower it behind text, raise it on light backgrounds. */
   gain: number;
   color: WaveColor;
+  /** The brightest a dot may get (0 to 1). Defaults to the subtle 0.36 used for backgrounds. */
+  ceiling?: number;
+  /**
+   * Reshapes each dot just before it is drawn, given its resting place and the wave's own
+   * result. Return the dot to draw (any position, opacity up to the ceiling) or null to skip it.
+   */
+  shape?: (x: number, y: number, dot: Dot) => ShapedDot | null;
 };
+
+export type ShapedDot = { x: number; y: number; alpha: number; radius: number };
 
 export type Dot = { alpha: number; offsetY: number; radius: number };
 
@@ -60,7 +69,7 @@ export function drawWaves(
   width: number,
   height: number,
   t: number,
-  { intensity, gain, color }: WaveOptions,
+  { intensity, gain, color, ceiling = MAX_ALPHA, shape }: WaveOptions,
 ): void {
   ctx.clearRect(0, 0, width, height);
   if (width <= 0 || height <= 0) {
@@ -70,14 +79,12 @@ export function drawWaves(
   for (let y = WAVE_GAP / 2; y < height; y += WAVE_GAP) {
     for (let x = WAVE_GAP / 2; x < width; x += WAVE_GAP) {
       const dot = waveDot(x, y, width, height, t, intensity, gain);
-      const { alpha, radius } = dot;
-      const px = x;
-      const py = y + dot.offsetY;
-      if (alpha < MIN_ALPHA) {
+      const drawn = shape ? shape(x, y, dot) : { x, y: y + dot.offsetY, alpha: dot.alpha, radius: dot.radius };
+      if (!drawn || drawn.alpha < MIN_ALPHA) {
         continue;
       }
-      const step = Math.round((alpha / MAX_ALPHA) * ALPHA_STEPS);
-      buckets[step].push(px, py, radius);
+      const step = Math.min(ALPHA_STEPS, Math.round((drawn.alpha / ceiling) * ALPHA_STEPS));
+      buckets[step].push(drawn.x, drawn.y, drawn.radius);
     }
   }
   buckets.forEach((dots, step) => {
@@ -89,7 +96,7 @@ export function drawWaves(
       ctx.moveTo(dots[i] + dots[i + 2], dots[i + 1]);
       ctx.arc(dots[i], dots[i + 1], dots[i + 2], 0, Math.PI * 2);
     }
-    ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${((step / ALPHA_STEPS) * MAX_ALPHA).toFixed(3)})`;
+    ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${((step / ALPHA_STEPS) * ceiling).toFixed(3)})`;
     ctx.fill();
   });
 }
