@@ -20,6 +20,25 @@ import {
   type WorkspaceSnapshot,
 } from "../lib/workspace";
 
+const PROVIDER_STORAGE_KEY = "concierge.newChatProvider";
+
+function readStoredProvider(): ProviderKind {
+  try {
+    const stored = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+    if (
+      stored === "fake" ||
+      stored === "opencode" ||
+      stored === "claude" ||
+      stored === "codex"
+    ) {
+      return stored;
+    }
+  } catch {
+    // Storage can be unavailable; the default is fine.
+  }
+  return "fake";
+}
+
 function shortPath(path: string): string {
   const parts = path.split(/[/\\]/).filter(Boolean);
   if (parts.length <= 2) {
@@ -53,7 +72,9 @@ export function AppShell() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
-  const [provider, setProvider] = useState<ProviderKind>("fake");
+  const [preferredProvider, setPreferredProvider] = useState<ProviderKind>(
+    readStoredProvider,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { theme, toggleTheme } = useThemeMode();
@@ -118,6 +139,21 @@ export function AppShell() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  const provider: ProviderKind =
+    providers.find((item) => item.kind === preferredProvider && item.available)
+      ?.kind ??
+    providers.find((item) => item.available)?.kind ??
+    "fake";
+
+  function onProviderChange(next: ProviderKind) {
+    setPreferredProvider(next);
+    try {
+      window.localStorage.setItem(PROVIDER_STORAGE_KEY, next);
+    } catch {
+      // Not persisting the choice is harmless.
+    }
+  }
 
   const selectedRepository = useMemo(
     () =>
@@ -257,7 +293,7 @@ export function AppShell() {
             className="h-8 max-w-36 rounded-md border border-foreground/15 bg-transparent px-2 text-sm"
             disabled={busy || providers.length === 0}
             value={provider}
-            onChange={(event) => setProvider(event.target.value as ProviderKind)}
+            onChange={(event) => onProviderChange(event.target.value as ProviderKind)}
           >
             {providers.map((item) => (
               <option

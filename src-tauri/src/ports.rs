@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
-    AgentEvent, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository, Result,
-    SessionStatus, Worktree, WorktreeInfo,
+    AgentEvent, ChatItem, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository,
+    Result, SessionStatus, Worktree, WorktreeInfo,
 };
 
 /// Uniform agent surface for Claude / Codex / OpenCode / fakes.
@@ -68,6 +68,10 @@ pub trait Store: Send + Sync {
         status: SessionStatus,
         updated_at: &str,
     ) -> Result<()>;
+
+    /// Replaces the stored transcript of a session.
+    fn replace_chat_items(&self, id: SessionId, items: &[ChatItem]) -> Result<()>;
+    fn list_chat_items(&self, id: SessionId) -> Result<Vec<ChatItem>>;
 
     fn get_preference(&self, key: &str) -> Result<Option<String>>;
     fn set_preference(&self, key: &str, value: &str) -> Result<()>;

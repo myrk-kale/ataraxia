@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
-    ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
+    ChatItem, ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
 };
 use crate::ports::{Fs, Git, PtyHost, Store};
 
@@ -88,6 +88,7 @@ pub struct FakeStore {
     worktrees: Mutex<Vec<Worktree>>,
     sessions: Mutex<Vec<ChatSession>>,
     preferences: Mutex<HashMap<String, String>>,
+    chat_items: Mutex<HashMap<SessionId, Vec<ChatItem>>>,
 }
 
 impl FakeStore {
@@ -247,6 +248,24 @@ impl Store for FakeStore {
         session.status = status;
         session.updated_at = updated_at.to_string();
         Ok(())
+    }
+
+    fn replace_chat_items(&self, id: SessionId, items: &[ChatItem]) -> Result<()> {
+        self.chat_items
+            .lock()
+            .expect("chat items")
+            .insert(id, items.to_vec());
+        Ok(())
+    }
+
+    fn list_chat_items(&self, id: SessionId) -> Result<Vec<ChatItem>> {
+        Ok(self
+            .chat_items
+            .lock()
+            .expect("chat items")
+            .get(&id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn get_preference(&self, key: &str) -> Result<Option<String>> {

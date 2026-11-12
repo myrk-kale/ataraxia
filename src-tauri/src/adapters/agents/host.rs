@@ -26,6 +26,8 @@ struct Live {
     transcript: Vec<ChatItem>,
     active_turn: Option<TurnId>,
     pending: Option<PendingPermission>,
+    /// Leading transcript items from before this agent process started.
+    restored_count: usize,
 }
 
 struct Inner {
@@ -59,7 +61,13 @@ impl AgentHost {
     pub fn shutdown_all(&self) {
         let backends: Vec<_> = {
             let mut sessions = self.inner.sessions.lock();
-            sessions.drain().map(|(_, live)| live.backend).collect()
+            sessions
+                .drain()
+                .map(|(session_id, live)| {
+                    self.inner.persist(session_id, &live.transcript);
+                    live.backend
+                })
+                .collect()
         };
         for backend in backends {
             backend.shutdown();
@@ -83,6 +91,12 @@ impl Inner {
         }
         self.sink
             .emit_agent(AgentEvent::Status { session_id, status });
+    }
+
+    fn persist(&self, session_id: SessionId, transcript: &[ChatItem]) {
+        if let Err(error) = self.store.replace_chat_items(session_id, transcript) {
+            eprintln!("concierge: could not persist transcript: {error}");
+        }
     }
 
     fn handle(&self, session_id: SessionId, event: BackendEvent) {
@@ -210,6 +224,7 @@ impl Inner {
                     return;
                 }
                 finish_turn(live, turn_id, ok);
+                self.persist(session_id, &live.transcript);
                 self.sink.emit_agent(AgentEvent::TurnDone {
                     session_id,
                     turn_id,
@@ -223,6 +238,7 @@ impl Inner {
                     finish_turn(live, turn_id, false);
                 }
                 live.status = SessionStatus::Ready;
+                self.persist(session_id, &live.transcript);
                 self.sink.emit_agent(AgentEvent::Error {
                     session_id,
                     message,
@@ -333,6 +349,21 @@ impl AgentRuntime for AgentHost {
                 }
             }
         }
+        if carried.is_empty() {
+            carried = self
+                .inner
+                .store
+                .list_chat_items(session.id)
+                .unwrap_or_default();
+            // A tool that was mid-flight when the app closed can never finish.
+            for item in carried.iter_mut() {
+                if let ChatItem::Tool(tool) = item {
+                    if tool.status == ToolStatus::Running {
+                        tool.status = ToolStatus::Failed;
+                    }
+                }
+            }
+        }
         let backend = self.backends.get(&session.provider).ok_or_else(|| {
             Error::new(
                 ErrorCode::Unsupported,
@@ -364,6 +395,7 @@ impl AgentRuntime for AgentHost {
             Live {
                 backend: started,
                 status: SessionStatus::Ready,
+                restored_count: carried.len(),
                 transcript: carried,
                 active_turn: None,
                 pending: None,
@@ -391,6 +423,7 @@ impl AgentRuntime for AgentHost {
             live.active_turn = Some(turn_id);
             live.status = SessionStatus::Working;
             append_text(&mut live.transcript, ChatRole::User, turn_id, text);
+            self.inner.persist(*session_id, &live.transcript);
             self.inner.sink.emit_agent(AgentEvent::Delta {
                 session_id: *session_id,
                 turn_id,
@@ -464,11 +497,13 @@ impl AgentRuntime for AgentHost {
         Ok(match sessions.get(session_id) {
             Some(live) => ChatSnapshot {
                 items: live.transcript.clone(),
+                restored_count: live.restored_count,
                 status: live.status,
                 pending_permission: live.pending.clone(),
             },
             None => ChatSnapshot {
                 items: Vec::new(),
+                restored_count: 0,
                 status: SessionStatus::Idle,
                 pending_permission: None,
             },
@@ -516,6 +551,7 @@ mod tests {
     }
 
     struct Harness {
+        store: Arc<FakeStore>,
         host: AgentHost,
         sink: Arc<RecordingSink>,
         session: ChatSession,
@@ -558,12 +594,13 @@ mod tests {
         };
         store.create_session(&session).expect("session");
         let sink = Arc::new(RecordingSink::default());
-        let host = AgentHost::new(store, sink.clone()).with_backend(
+        let host = AgentHost::new(store.clone(), sink.clone()).with_backend(
             ProviderKind::Fake,
             Arc::new(FakeBackend::new(Duration::ZERO)),
         );
         host.start_session(&session).expect("start");
         Harness {
+            store,
             host,
             sink,
             session,
@@ -704,5 +741,77 @@ mod tests {
         other.provider = ProviderKind::Claude;
         let error = h.host.start_session(&other).expect_err("unsupported");
         assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn finished_turns_are_persisted_and_restored_after_restart() {
+        let h = harness();
+        h.host.prompt(&h.session.id, "remember me").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        let request_id = pending_request(&h.sink.snapshot()).expect("request");
+        h.host
+            .resolve_permission(
+                &h.session.id,
+                PermissionDecision {
+                    request_id,
+                    allow: true,
+                },
+            )
+            .expect("resolve");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        let live_len = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .len();
+        assert_eq!(
+            h.store.list_chat_items(h.session.id).expect("stored").len(),
+            live_len
+        );
+
+        // A fresh host (app restart) shows the old transcript, flagged as restored.
+        let sink = Arc::new(RecordingSink::default());
+        let restarted = AgentHost::new(h.store.clone(), sink).with_backend(
+            ProviderKind::Fake,
+            Arc::new(FakeBackend::new(Duration::ZERO)),
+        );
+        restarted.start_session(&h.session).expect("start");
+        let snapshot = restarted.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.items.len(), live_len);
+        assert_eq!(snapshot.restored_count, live_len);
+        assert!(matches!(
+            &snapshot.items[0],
+            ChatItem::Message(m) if m.text == "remember me"
+        ));
+    }
+
+    #[test]
+    fn tools_left_running_on_disk_are_restored_as_failed() {
+        let h = harness();
+        let turn = TurnId::new();
+        h.store
+            .replace_chat_items(
+                h.session.id,
+                &[ChatItem::Tool(ToolCallRecord {
+                    call_id: crate::domain::ToolCallId::new(),
+                    turn_id: turn,
+                    name: "read_file".into(),
+                    input: String::new(),
+                    output: None,
+                    status: ToolStatus::Running,
+                })],
+            )
+            .expect("seed");
+        let restarted = AgentHost::new(h.store.clone(), Arc::new(RecordingSink::default()))
+            .with_backend(
+                ProviderKind::Fake,
+                Arc::new(FakeBackend::new(Duration::ZERO)),
+            );
+        restarted.start_session(&h.session).expect("start");
+        let items = restarted.snapshot(&h.session.id).expect("snapshot").items;
+        assert!(matches!(&items[0], ChatItem::Tool(t) if t.status == ToolStatus::Failed));
     }
 }
