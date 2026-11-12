@@ -32,8 +32,26 @@ export type PendingPermission = {
   detail: string;
 };
 
+export type SubagentStatus = "running" | "done" | "failed";
+
+/** A subagent's own conversation, read-only in the UI. */
+export type SubagentView = {
+  id: string;
+  title: string;
+  status: SubagentStatus;
+  items: ChatItem[];
+};
+
+export type SubagentUpdate =
+  | { kind: "started" }
+  | { kind: "delta"; text: string }
+  | { kind: "tool"; callId: string; name: string; input: string }
+  | { kind: "toolResult"; callId: string; output: string; ok: boolean }
+  | { kind: "done"; ok: boolean };
+
 export type ChatSnapshot = {
   items: ChatItem[];
+  subagents: SubagentView[];
   restoredCount: number;
   status: SessionStatus;
   pendingPermission: PendingPermission | null;
@@ -81,6 +99,13 @@ export type AgentEvent =
       detail: string;
     }
   | { type: "turnDone"; sessionId: SessionId; turnId: string; ok: boolean }
+  | {
+      type: "subagent";
+      sessionId: SessionId;
+      subagentId: string;
+      title: string;
+      update: SubagentUpdate;
+    }
   | { type: "error"; sessionId: SessionId; message: string };
 
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
@@ -90,15 +115,35 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: "Codex",
 };
 
-export type ModelChoice = { id: string; label: string };
+export type ModelChoice = {
+  id: string;
+  label: string;
+  /** Effort levels this model supports; empty means the session-wide list applies. */
+  efforts: string[];
+};
+
+export type AgentChoice = { id: string; label: string; description: string | null };
+
+/** What a live session offers right now, discovered from the provider. */
+export type SessionOptions = {
+  models: ModelChoice[];
+  default_model: string | null;
+  efforts: string[];
+  agents: AgentChoice[];
+};
 
 export type ProviderSettings = {
   /** False when Concierge cannot change model or effort for this provider. */
   configurable: boolean;
+  /** Fallback presets, used until the live session reports its own. */
   models: ModelChoice[];
   /** Lowest to highest; empty when the provider has no effort knob. */
   efforts: string[];
   custom_model: boolean;
+  /** Models and efforts come from the live session instead of this list. */
+  dynamic: boolean;
+  /** The chat can run as a named agent. */
+  agents: boolean;
 };
 
 export type ProviderDescriptor = {
@@ -121,8 +166,17 @@ export function agentConfigureSession(
   sessionId: SessionId,
   model: string | null,
   effort: string | null,
+  agent: string | null,
 ) {
-  return invoke<ChatSession>("agent_configure_session", { sessionId, model, effort });
+  return invoke<ChatSession>("agent_configure_session", { sessionId, model, effort, agent });
+}
+
+export function agentSwitchProvider(sessionId: SessionId, provider: ProviderKind) {
+  return invoke<ChatSession>("agent_switch_provider", { sessionId, provider });
+}
+
+export function agentGetOptions(sessionId: SessionId) {
+  return invoke<SessionOptions>("agent_get_options", { sessionId });
 }
 
 export function agentPrompt(sessionId: SessionId, text: string) {
@@ -159,6 +213,7 @@ export function listenAgentEvents(
 
 export type ChatState = {
   items: ChatItem[];
+  subagents: SubagentView[];
   restoredCount: number;
   status: SessionStatus;
   pending: PendingPermission | null;
@@ -168,6 +223,7 @@ export type ChatState = {
 
 export const initialChatState: ChatState = {
   items: [],
+  subagents: [],
   restoredCount: 0,
   status: "idle",
   pending: null,
@@ -205,11 +261,99 @@ function settleTools(items: ChatItem[], turnId: string, ok: boolean): ChatItem[]
   );
 }
 
+function settleItems(items: ChatItem[], ok: boolean): ChatItem[] {
+  return items.map((item) =>
+    item.kind === "tool" && item.status === "running"
+      ? { ...item, status: ok ? "done" : "failed" }
+      : item,
+  );
+}
+
+/** Applies one subagent update, creating the subagent on first sight (mirrors the host). */
+export function applySubagent(
+  subagents: SubagentView[],
+  id: string,
+  title: string,
+  update: SubagentUpdate,
+): SubagentView[] {
+  const known = subagents.some((item) => item.id === id);
+  const base = known
+    ? subagents
+    : [...subagents, { id, title, status: "running" as const, items: [] }];
+  return base.map((item) => {
+    if (item.id !== id) {
+      return item;
+    }
+    const next: SubagentView = {
+      ...item,
+      title: title && title !== item.title ? title : item.title,
+    };
+    switch (update.kind) {
+      case "started":
+        return { ...next, status: "running" };
+      case "delta": {
+        const last = next.items[next.items.length - 1];
+        if (last && last.kind === "message" && last.role === "assistant") {
+          return {
+            ...next,
+            items: [...next.items.slice(0, -1), { ...last, text: last.text + update.text }],
+          };
+        }
+        return {
+          ...next,
+          items: [
+            ...next.items,
+            {
+              kind: "message",
+              id: `${id}:${next.items.length}`,
+              role: "assistant",
+              text: update.text,
+              turnId: null,
+            },
+          ],
+        };
+      }
+      case "tool":
+        return {
+          ...next,
+          items: [
+            ...next.items,
+            {
+              kind: "tool",
+              callId: update.callId,
+              turnId: id,
+              name: update.name,
+              input: update.input,
+              output: null,
+              status: "running",
+            },
+          ],
+        };
+      case "toolResult":
+        return {
+          ...next,
+          items: next.items.map((entry) =>
+            entry.kind === "tool" && entry.callId === update.callId
+              ? { ...entry, output: update.output, status: update.ok ? "done" : "failed" }
+              : entry,
+          ),
+        };
+      case "done":
+        return {
+          ...next,
+          status: update.ok ? "done" : "failed",
+          items: settleItems(next.items, update.ok),
+        };
+    }
+  });
+}
+
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "loaded":
       return {
         items: action.snapshot.items,
+        subagents: action.snapshot.subagents ?? [],
         restoredCount: action.snapshot.restoredCount,
         status: action.snapshot.status,
         pending: action.snapshot.pendingPermission,
@@ -287,6 +431,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ...state,
             pending: null,
             items: settleTools(state.items, event.turnId, event.ok),
+            // A subagent still open when the turn ends can never report again.
+            subagents: state.subagents.map((item) =>
+              item.status === "running"
+                ? {
+                    ...item,
+                    status: event.ok ? "done" : "failed",
+                    items: settleItems(item.items, event.ok),
+                  }
+                : item,
+            ),
+          };
+        case "subagent":
+          return {
+            ...state,
+            subagents: applySubagent(
+              state.subagents,
+              event.subagentId,
+              event.title,
+              event.update,
+            ),
           };
         case "error":
           return { ...state, error: event.message, pending: null };

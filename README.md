@@ -21,7 +21,9 @@ Shell, workspace persistence, a retractable real PTY terminal, and the Chat spac
   - Codex → custom app-server
   - Provider CLIs are found on `PATH` plus common install dirs; override with `CONCIERGE_OPENCODE_BIN`, `CONCIERGE_CLAUDE_BIN`, `CONCIERGE_CODEX_BIN`
   - Claude Code starts with `--permission-mode auto`; set `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode (e.g. `acceptEdits`), or to an empty value to use your own Claude settings
-  - Model and reasoning effort are set per chat from the composer. Claude Code reads them at launch (`--model`, `--effort`), so a change restarts the agent and keeps the transcript; Codex sends them with each turn. OpenCode is not configurable from Concierge yet
+  - Agent, model and reasoning effort are set per chat from the composer. The lists come from the live session where the provider reports them (Codex `model/list`, OpenCode ACP config options) and from `.claude/agents` / `.codex/agents` on disk. Claude Code reads them at launch (`--agent`, `--model`, `--effort`), so a change restarts the agent and keeps the transcript; OpenCode and Codex apply them live. Codex has no agent switch in its protocol, so a chosen agent is named in each prompt
+  - Subagents show up as a small switcher above the composer; each one opens as a read-only conversation. They are kept for the running app, not saved to the database
+  - The provider selector in the top bar changes the harness of the open chat (the transcript stays, the new agent starts fresh)
   - Codex starts with `on-request` approvals, the `workspace-write` sandbox and `approvalsReviewer: auto_review` (a reviewer agent decides eligible requests); set `CONCIERGE_CODEX_APPROVALS_REVIEWER=user` to be asked for everything, or empty to use your own Codex config
 
 ## Workspace layout

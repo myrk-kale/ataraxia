@@ -41,6 +41,7 @@ export type ChatSession = {
   status: SessionStatus;
   model: string | null;
   effort: string | null;
+  agent: string | null;
   created_at: string;
   updated_at: string;
   last_opened_at: string | null;

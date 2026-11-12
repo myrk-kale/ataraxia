@@ -10,6 +10,7 @@ import {
 import {
   agentCancel,
   agentConfigureSession,
+  agentGetOptions,
   agentGetSnapshot,
   agentPrompt,
   agentResolvePermission,
@@ -18,13 +19,16 @@ import {
   initialChatState,
   listenAgentEvents,
   PROVIDER_LABELS,
+  type ChatItem,
   type ProviderDescriptor,
+  type SessionOptions,
 } from "../lib/agent";
 import type { ChatSession } from "../lib/workspace";
 import { toBlocks } from "./blocks";
 import { Hero } from "./Hero";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
+import { SubagentBar } from "./SubagentBar";
 import { Markdown } from "./Markdown";
 import { PermissionDialog } from "./PermissionDialog";
 import { ToolCard } from "./ToolCard";
@@ -57,6 +61,9 @@ export function ChatPanel({
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [draft, setDraft] = useState("");
   const [atBottom, setAtBottom] = useState(true);
+  const [options, setOptions] = useState<SessionOptions | null>(null);
+  // The subagent whose conversation is on screen; null shows the main conversation.
+  const [view, setView] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);
@@ -93,13 +100,51 @@ export function ChatPanel({
     };
   }, [sessionId]);
 
+  async function loadOptions() {
+    try {
+      setOptions(await agentGetOptions(sessionId));
+    } catch {
+      // Options are a convenience; the pickers fall back to the provider's presets.
+      setOptions(null);
+    }
+  }
+
+  useEffect(() => {
+    if (state.loaded) {
+      void loadOptions();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.loaded, sessionId]);
+
+  // Switching the harness restarts the agent underneath this chat: reload what it shows.
+  const shownProvider = useRef(session.provider);
+  useEffect(() => {
+    if (shownProvider.current === session.provider) {
+      return;
+    }
+    shownProvider.current = session.provider;
+    setView(null);
+    setOptions(null);
+    void (async () => {
+      try {
+        dispatch({ type: "loaded", snapshot: await agentGetSnapshot(sessionId) });
+        await loadOptions();
+      } catch (err) {
+        dispatch({ type: "failed", message: errorText(err) });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.provider]);
+
+  const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
+
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (element && stickRef.current) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [state.items, state.status, state.pending, state.loaded]);
+  }, [state.items, state.status, state.pending, state.loaded, activeSubagent]);
 
   // Grow the composer with its content up to a cap.
   useLayoutEffect(() => {
@@ -145,11 +190,12 @@ export function ChatPanel({
     }
   }
 
-  async function configure(model: string | null, effort: string | null) {
+  async function configure(model: string | null, effort: string | null, agent: string | null) {
     try {
-      onSessionChange(await agentConfigureSession(sessionId, model, effort));
+      onSessionChange(await agentConfigureSession(sessionId, model, effort, agent));
       // Providers that read these at launch restart the agent; reload to show the divider.
       dispatch({ type: "loaded", snapshot: await agentGetSnapshot(sessionId) });
+      await loadOptions();
     } catch (err) {
       dispatch({ type: "failed", message: errorText(err) });
     }
@@ -169,7 +215,13 @@ export function ChatPanel({
   }
 
   function onPanelKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (event.key === "Escape" && busy) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (view !== null) {
+      event.preventDefault();
+      setView(null);
+    } else if (busy) {
       event.preventDefault();
       cancelTurn();
     }
@@ -199,48 +251,58 @@ export function ChatPanel({
     </div>
   );
 
-  const restoredSplit = state.restoredCount > 0 ? state.restoredCount : -1;
-  const blocks = toBlocks(state.items, restoredSplit);
   const providerLabel = PROVIDER_LABELS[session.provider];
 
   // The divider sits before the first item produced by the running agent process.
-  let seen = 0;
-  const rendered = blocks.flatMap((block) => {
-    const count = block.kind === "agent" ? block.items.length : 1;
-    const startsAfterRestore = restoredSplit > 0 && seen === restoredSplit;
-    seen += count;
+  function renderItems(items: ChatItem[], restoredSplit: number, author: string) {
+    const blocks = toBlocks(items, restoredSplit);
+    let seen = 0;
+    return blocks.flatMap((block) => {
+      const count = block.kind === "agent" ? block.items.length : 1;
+      const startsAfterRestore = restoredSplit > 0 && seen === restoredSplit;
+      seen += count;
 
-    const node =
-      block.kind === "user" ? (
-        <div
-          key={block.key}
-          className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.7] whitespace-pre-wrap"
-        >
-          {block.item.text}
-        </div>
-      ) : (
-        <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
-          <div className="flex items-center gap-2 text-ui text-cg-muted">
-            <span aria-hidden="true" className="text-cg-accent">
-              ✳
-            </span>
-            <strong className="font-semibold text-cg-ink">{providerLabel}</strong>
+      const node =
+        block.kind === "user" ? (
+          <div
+            key={block.key}
+            className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.7] whitespace-pre-wrap"
+          >
+            {block.item.text}
           </div>
-          {block.items.map((item) =>
-            item.kind === "tool" ? (
-              <ToolCard key={item.callId} tool={item} />
-            ) : (
-              <div key={item.id} className="text-body leading-[1.7]">
-                <Markdown text={item.text} />
-              </div>
-            ),
-          )}
-        </div>
-      );
-    return startsAfterRestore ? [restoredNotice, node] : [node];
-  });
+        ) : (
+          <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
+            <div className="flex items-center gap-2 text-ui text-cg-muted">
+              <span aria-hidden="true" className="text-cg-accent">
+                ✳
+              </span>
+              <strong className="font-semibold text-cg-ink">{author}</strong>
+            </div>
+            {block.items.map((item) =>
+              item.kind === "tool" ? (
+                <ToolCard key={item.callId} tool={item} />
+              ) : (
+                <div key={item.id} className="text-body leading-[1.7]">
+                  <Markdown text={item.text} />
+                </div>
+              ),
+            )}
+          </div>
+        );
+      return startsAfterRestore ? [restoredNotice, node] : [node];
+    });
+  }
 
-  const emptyChat = state.loaded && state.items.length === 0;
+  const rendered = renderItems(
+    state.items,
+    state.restoredCount > 0 ? state.restoredCount : -1,
+    providerLabel,
+  );
+  const subagentRendered = activeSubagent
+    ? renderItems(activeSubagent.items, -1, "Subagent")
+    : [];
+
+  const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
     <section
@@ -254,6 +316,33 @@ export function ChatPanel({
               emptyChat ? "min-h-full py-6" : "pt-[35px] pb-20"
             }`}
           >
+            {activeSubagent ? (
+              <>
+                <div className="flex items-center gap-2 text-small text-cg-muted">
+                  <span className="text-micro font-bold tracking-[1.15px] uppercase">
+                    Subagent
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <strong className="truncate font-semibold text-cg-ink">
+                    {activeSubagent.title}
+                  </strong>
+                  <span aria-hidden="true">·</span>
+                  <span>{activeSubagent.status === "running" ? "working" : activeSubagent.status}</span>
+                </div>
+                {subagentRendered.length === 0 ? (
+                  <p className="text-small text-cg-muted">Nothing reported by this subagent yet.</p>
+                ) : null}
+                {subagentRendered}
+                {activeSubagent.status === "running" ? (
+                  <span aria-label="Subagent working" className="-mt-5 flex gap-1" role="status">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              <>
             {state.loaded && state.items.length > 0 ? (
               <div className="flex items-center gap-2 text-small text-cg-muted">
                 <span className="text-micro font-bold tracking-[1.15px] uppercase">
@@ -303,6 +392,8 @@ export function ChatPanel({
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
               </span>
             ) : null}
+              </>
+            )}
           </div>
         </div>
 
@@ -335,6 +426,18 @@ export function ChatPanel({
         </div>
       ) : null}
 
+      <SubagentBar
+        busy={busy && view !== null}
+        mainLabel={providerLabel}
+        selected={activeSubagent ? activeSubagent.id : null}
+        subagents={state.subagents}
+        onSelect={(id) => {
+          stickRef.current = true;
+          setView(id);
+        }}
+        onStop={cancelTurn}
+      />
+
       <form
         className="mx-auto w-full max-w-[840px] flex-none px-[30px] pt-[9px] pb-[23px]"
         onSubmit={(event) => {
@@ -347,8 +450,12 @@ export function ChatPanel({
             ref={composerRef}
             aria-label="Message"
             className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted/70"
-            disabled={!state.loaded}
-            placeholder={`Ask ${providerLabel} to change something…`}
+            disabled={!state.loaded || activeSubagent !== null}
+            placeholder={
+              activeSubagent
+                ? "Read-only: this is a subagent's conversation"
+                : `Ask ${providerLabel} to change something…`
+            }
             rows={2}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -365,15 +472,26 @@ export function ChatPanel({
               <span className="truncate text-ui font-semibold text-cg-ink">{providerLabel}</span>
               <StatusDot status={state.status} />
             </div>
+            {activeSubagent ? (
+              <button
+                className="rounded-md px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
+                type="button"
+                onClick={() => setView(null)}
+              >
+                ← Back to {providerLabel} (Esc)
+              </button>
+            ) : (
             <div className="flex flex-none items-center gap-3">
               <SessionSettings
                 disabled={busy || !state.loaded}
                 disabledReason="Wait for the current turn to finish"
+                agent={session.agent}
                 effort={session.effort}
                 model={session.model}
+                options={options}
                 provider={provider}
-                onChange={(model, effort) => {
-                  void configure(model, effort);
+                onChange={(model, effort, agent) => {
+                  void configure(model, effort, agent);
                 }}
               />
               {busy ? (
@@ -387,6 +505,7 @@ export function ChatPanel({
                 </button>
               ) : null}
             </div>
+            )}
           </div>
         </div>
       </form>

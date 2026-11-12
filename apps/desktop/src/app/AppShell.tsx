@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
   agentListProviders,
+  agentSwitchProvider,
   PROVIDER_LABELS,
   type ProviderDescriptor,
 } from "../lib/agent";
@@ -179,6 +180,30 @@ export function AppShell() {
     [workspace],
   );
 
+  // With a chat open the selector shows (and changes) that chat's harness; otherwise it picks
+  // the harness for the next new chat.
+  const harness: ProviderKind = selectedSession?.provider ?? provider;
+
+  async function onHarnessChange(next: ProviderKind) {
+    onProviderChange(next);
+    if (!selectedSession || selectedSession.provider === next) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await agentSwitchProvider(selectedSession.id, next);
+      setWorkspace((current) => ({
+        ...current,
+        sessions: current.sessions.map((item) => (item.id === updated.id ? updated : item)),
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const sessionId = selectedSession?.id ?? null;
   useEffect(() => {
   }, [sessionId]);
@@ -300,9 +325,11 @@ export function AppShell() {
               disabled: !item.available,
               hint: item.detail ?? undefined,
             }))}
-            title="Provider for new chats"
-            value={provider}
-            onChange={(value) => onProviderChange(value as ProviderKind)}
+            title={selectedSession ? "Harness for this chat" : "Provider for new chats"}
+            value={harness}
+            onChange={(value) => {
+              void onHarnessChange(value as ProviderKind);
+            }}
           />
 
           <Button
