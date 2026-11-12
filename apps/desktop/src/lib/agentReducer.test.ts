@@ -4,6 +4,7 @@ import {
   initialChatState,
   type AgentEvent,
   type ChatState,
+  type SubagentUpdate,
 } from "./agent";
 
 const SESSION = "s1";
@@ -91,11 +92,103 @@ describe("chatReducer", () => {
       type: "loaded",
       snapshot: {
         items: [],
+        subagents: [],
         restoredCount: 3,
         status: "ready",
         pendingPermission: null,
       },
     });
     expect(state).toMatchObject({ loaded: true, restoredCount: 3, status: "ready" });
+  });
+
+  describe("subagents", () => {
+    const sub = (update: SubagentUpdate, title = "Explore"): AgentEvent => ({
+      type: "subagent",
+      sessionId: SESSION,
+      subagentId: "sa1",
+      title,
+      update,
+    });
+
+    it("builds a subagent conversation apart from the main one", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "started" }),
+        sub({ kind: "delta", text: "Look" }),
+        sub({ kind: "delta", text: "ing" }),
+        sub({ kind: "tool", callId: "c1", name: "grep", input: "main" }),
+        sub({ kind: "toolResult", callId: "c1", output: "3 hits", ok: true }),
+        sub({ kind: "done", ok: true }),
+      );
+      expect(state.items).toEqual([]);
+      expect(state.subagents).toHaveLength(1);
+      const [agent] = state.subagents;
+      expect(agent).toMatchObject({ title: "Explore", status: "done" });
+      expect(agent.items[0]).toMatchObject({ kind: "message", text: "Looking" });
+      expect(agent.items[1]).toMatchObject({ kind: "tool", status: "done", output: "3 hits" });
+    });
+
+    it("creates the subagent on its first event and keeps the latest title", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "delta", text: "hi" }, "Subagent"),
+        sub({ kind: "delta", text: "!" }, "Review the diff"),
+      );
+      expect(state.subagents).toHaveLength(1);
+      expect(state.subagents[0].title).toBe("Review the diff");
+      expect(state.subagents[0].status).toBe("running");
+    });
+
+    it("shows what the user sent to a subagent and marks it as working again", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "delta", text: "Done." }),
+        sub({ kind: "done", ok: true }),
+        sub({ kind: "user", text: "also check the tests" }),
+        sub({ kind: "delta", text: "On it." }),
+      );
+      const [agent] = state.subagents;
+      expect(agent.status).toBe("running");
+      expect(agent.items.map((item) => item.kind === "message" && [item.role, item.text])).toEqual([
+        ["assistant", "Done."],
+        ["user", "also check the tests"],
+        ["assistant", "On it."],
+      ]);
+    });
+
+    it("keeps a background subagent running past the turn that launched it", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "detached" }),
+        { type: "turnDone", sessionId: SESSION, turnId: TURN, ok: true },
+      );
+      expect(state.subagents[0]).toMatchObject({ status: "running", detached: true });
+      const finished = apply(state, sub({ kind: "delta", text: "Result." }), sub({ kind: "done", ok: true }));
+      expect(finished.subagents[0]).toMatchObject({ status: "done", detached: false });
+    });
+
+    it("closes subagents still running when the main turn ends", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "tool", callId: "c1", name: "grep", input: "" }),
+        { type: "turnDone", sessionId: SESSION, turnId: TURN, ok: false },
+      );
+      expect(state.subagents[0].status).toBe("failed");
+      expect(state.subagents[0].items[0]).toMatchObject({ status: "failed" });
+    });
+
+    it("loads subagents from a snapshot", () => {
+      const state = chatReducer(initialChatState, {
+        type: "loaded",
+        snapshot: {
+          items: [],
+          subagents: [{ id: "sa9", title: "Old", status: "done", items: [] }],
+          restoredCount: 0,
+          status: "ready",
+          pendingPermission: null,
+        },
+      });
+      expect(state.subagents.map((item) => item.id)).toEqual(["sa9"]);
+    });
   });
 });

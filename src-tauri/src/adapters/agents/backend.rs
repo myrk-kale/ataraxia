@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::domain::agent::SessionOptions;
 use crate::domain::ids::{SessionId, TurnId};
-use crate::domain::{PermissionDecision, PermissionRequestId, Result, ToolCallId};
+use crate::domain::{PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEvent {
@@ -45,9 +46,29 @@ pub enum BackendEvent {
         turn_id: TurnId,
         ok: bool,
     },
+    /// The agent started a turn nobody asked for (for example the report of a background
+    /// subagent). Its events and its `TurnDone` use this id.
+    TurnStarted {
+        turn_id: TurnId,
+    },
+    /// Progress inside a subagent's own conversation.
+    Subagent {
+        id: String,
+        title: String,
+        update: SubagentUpdate,
+    },
     Error {
         message: String,
     },
+}
+
+/// How a message to a subagent is carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentRoute {
+    /// Sent straight to the subagent; the main conversation stays idle.
+    Direct,
+    /// Relayed by the main agent, so the main conversation runs a turn meanwhile.
+    MainTurn,
 }
 
 pub type Emitter = Arc<dyn Fn(BackendEvent) + Send + Sync>;
@@ -59,6 +80,8 @@ pub struct BackendContext {
     pub model: Option<String>,
     /// Reasoning-effort override (`None` = provider default).
     pub effort: Option<String>,
+    /// Named agent to run as (`None` = the provider's default agent).
+    pub agent: Option<String>,
     pub emit: Emitter,
 }
 
@@ -83,8 +106,30 @@ pub trait BackendSession: Send + Sync {
     }
     /// Applies a new model/effort to the running session. Returns `false` when the provider can
     /// only pick them up on a fresh process, in which case the host restarts the session.
-    fn apply_settings(&self, _model: Option<&str>, _effort: Option<&str>) -> bool {
+    fn apply_settings(
+        &self,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+        _agent: Option<&str>,
+    ) -> bool {
         false
+    }
+    /// Sends a message to a subagent. Its answer arrives as `Subagent` events; for
+    /// `SubagentRoute::MainTurn` the main agent also runs `turn_id` and ends it with `TurnDone`.
+    fn message_subagent(
+        &self,
+        _turn_id: TurnId,
+        _subagent_id: &str,
+        _text: &str,
+    ) -> Result<SubagentRoute> {
+        Err(crate::domain::Error::new(
+            crate::domain::ErrorCode::Unsupported,
+            "this provider cannot message a subagent",
+        ))
+    }
+    /// Models, effort levels and agents this session offers; empty when unknown.
+    fn options(&self) -> SessionOptions {
+        SessionOptions::default()
     }
     fn shutdown(&self);
 }

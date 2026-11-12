@@ -10,7 +10,8 @@ pub mod time;
 
 pub use chat::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSnapshot, PendingPermission,
-    PermissionDecision, PermissionRequestId, ToolCallId, ToolCallRecord, ToolStatus,
+    PermissionDecision, PermissionRequestId, SubagentRecord, SubagentStatus, SubagentUpdate,
+    ToolCallId, ToolCallRecord, ToolStatus,
 };
 pub use error::{Error, ErrorCode, Result};
 pub use repo::{RepoInfo, Repository, Worktree, WorktreeInfo};

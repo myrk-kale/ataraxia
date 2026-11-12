@@ -3,12 +3,14 @@
 pub mod backend;
 pub mod claude;
 pub mod codex;
+pub mod definitions;
 pub mod fake;
 pub mod host;
 pub mod opencode;
 pub mod process;
 pub mod registry;
 pub mod rpc;
+pub mod subagent_tail;
 
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;

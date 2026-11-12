@@ -208,8 +208,8 @@ impl Store for SqliteStore {
             conn.execute(
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
-                    created_at, updated_at, last_opened_at, model, effort)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    created_at, updated_at, last_opened_at, model, effort, agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -221,7 +221,8 @@ impl Store for SqliteStore {
                     session.updated_at,
                     session.last_opened_at,
                     session.model,
-                    session.effort
+                    session.effort,
+                    session.agent
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -234,7 +235,7 @@ impl Store for SqliteStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
-                            created_at, updated_at, last_opened_at, model, effort
+                            created_at, updated_at, last_opened_at, model, effort, agent
                      FROM chat_sessions
                      WHERE repository_id = ?1
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -251,7 +252,7 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
-                        created_at, updated_at, last_opened_at, model, effort
+                        created_at, updated_at, last_opened_at, model, effort, agent
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -283,15 +284,39 @@ impl Store for SqliteStore {
         id: SessionId,
         model: Option<&str>,
         effort: Option<&str>,
+        agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()> {
         self.with_conn(|conn| {
             let updated = conn
                 .execute(
                     "UPDATE chat_sessions
-                     SET model = ?2, effort = ?3, updated_at = ?4
+                     SET model = ?2, effort = ?3, agent = ?5, updated_at = ?4
                      WHERE id = ?1",
-                    params![id.0.to_string(), model, effort, updated_at],
+                    params![id.0.to_string(), model, effort, updated_at, agent],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
+    fn update_session_provider(
+        &self,
+        id: SessionId,
+        provider: ProviderKind,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            // Model, effort and agent names are provider-specific, so they reset with it.
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions
+                     SET provider = ?2, model = NULL, effort = NULL, agent = NULL, updated_at = ?3
+                     WHERE id = ?1",
+                    params![id.0.to_string(), provider.as_str(), updated_at],
                 )
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
             if updated == 0 {
@@ -452,6 +477,7 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
         last_opened_at: row.get(8)?,
         model: row.get(9)?,
         effort: row.get(10)?,
+        agent: row.get(11)?,
     })
 }
 
@@ -525,6 +551,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,
@@ -535,6 +562,75 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Chat 1");
         assert!(listed[0].last_opened_at.is_some());
+    }
+
+    #[test]
+    fn session_settings_and_harness_switch_are_stored() {
+        let store = SqliteStore::open_in_memory().expect("open");
+        let now = now_rfc3339().expect("now");
+        let repo = Repository {
+            id: RepositoryId::new(),
+            root: PathBuf::from("/tmp/settings"),
+            name: "settings".into(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_repository(&repo).expect("repo");
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            repository_id: repo.id,
+            path: PathBuf::from("/tmp/settings"),
+            branch: None,
+            head: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_worktree(&worktree).expect("worktree");
+        let session = ChatSession {
+            id: SessionId::new(),
+            repository_id: repo.id,
+            worktree_id: worktree.id,
+            provider: ProviderKind::Claude,
+            title: "Chat".into(),
+            status: SessionStatus::Idle,
+            model: None,
+            effort: None,
+            agent: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_opened_at: None,
+        };
+        store.create_session(&session).expect("session");
+
+        store
+            .update_session_settings(
+                session.id,
+                Some("opus"),
+                Some("high"),
+                Some("reviewer"),
+                &now,
+            )
+            .expect("settings");
+        let saved = store.get_session(session.id).expect("get").expect("some");
+        assert_eq!(saved.model.as_deref(), Some("opus"));
+        assert_eq!(saved.effort.as_deref(), Some("high"));
+        assert_eq!(saved.agent.as_deref(), Some("reviewer"));
+
+        // Names are provider-specific, so a harness switch clears all three.
+        store
+            .update_session_provider(session.id, ProviderKind::Codex, &now)
+            .expect("switch");
+        let switched = store.get_session(session.id).expect("get").expect("some");
+        assert_eq!(switched.provider, ProviderKind::Codex);
+        assert_eq!(
+            (switched.model, switched.effort, switched.agent),
+            (None, None, None)
+        );
+        assert!(
+            store
+                .update_session_provider(SessionId::new(), ProviderKind::Codex, &now)
+                .is_err()
+        );
     }
 
     #[test]
@@ -573,6 +669,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,

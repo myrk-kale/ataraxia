@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
+use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     AgentEvent, ChatItem, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository,
@@ -32,7 +32,19 @@ pub trait AgentRuntime: Send + Sync {
         session_id: &SessionId,
         model: Option<String>,
         effort: Option<String>,
+        agent: Option<String>,
     ) -> Result<ChatSession>;
+    /// Moves a chat to another harness. The transcript stays; the agent starts fresh.
+    fn switch_provider(
+        &self,
+        session_id: &SessionId,
+        provider: ProviderKind,
+    ) -> Result<ChatSession>;
+    /// Sends a message to one of the chat's subagents (shown in its own conversation).
+    fn message_subagent(&self, session_id: &SessionId, subagent_id: &str, text: &str)
+    -> Result<()>;
+    /// Models, efforts and agents the live session offers.
+    fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions>;
 }
 
 /// Outbound channel for agent events (Tauri `emit` in production, a recorder in tests).
@@ -81,6 +93,14 @@ pub trait Store: Send + Sync {
         id: SessionId,
         model: Option<&str>,
         effort: Option<&str>,
+        agent: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()>;
+    /// Changes the harness of a chat; model, effort and agent reset with it.
+    fn update_session_provider(
+        &self,
+        id: SessionId,
+        provider: ProviderKind,
         updated_at: &str,
     ) -> Result<()>;
 

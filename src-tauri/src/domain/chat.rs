@@ -100,6 +100,60 @@ pub enum ChatItem {
     Tool(ToolCallRecord),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+/// A conversation a subagent had while the main agent was working (read-only in the UI).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRecord {
+    pub id: String,
+    pub title: String,
+    pub status: SubagentStatus,
+    /// Keeps running after the turn that started it ends (a background subagent).
+    #[serde(default)]
+    pub detached: bool,
+    pub items: Vec<ChatItem>,
+}
+
+/// One step of a subagent conversation, reported by a provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SubagentUpdate {
+    Started,
+    /// The subagent runs in the background: it outlives the turn and reports later.
+    Detached,
+    /// A message the user sent to this subagent.
+    #[serde(rename_all = "camelCase")]
+    User {
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Delta {
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Tool {
+        call_id: ToolCallId,
+        name: String,
+        input: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolResult {
+        call_id: ToolCallId,
+        output: String,
+        ok: bool,
+    },
+    Done {
+        ok: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionDecision {
@@ -161,6 +215,13 @@ pub enum AgentEvent {
         ok: bool,
     },
     #[serde(rename_all = "camelCase")]
+    Subagent {
+        session_id: SessionId,
+        subagent_id: String,
+        title: String,
+        update: SubagentUpdate,
+    },
+    #[serde(rename_all = "camelCase")]
     Error {
         session_id: SessionId,
         message: String,
@@ -181,6 +242,9 @@ pub struct PendingPermission {
 #[serde(rename_all = "camelCase")]
 pub struct ChatSnapshot {
     pub items: Vec<ChatItem>,
+    /// Subagent conversations of the running agent process (not persisted across restarts).
+    #[serde(default)]
+    pub subagents: Vec<SubagentRecord>,
     /// Leading items that predate the running agent process (restored from disk or a restart).
     pub restored_count: usize,
     pub status: SessionStatus,

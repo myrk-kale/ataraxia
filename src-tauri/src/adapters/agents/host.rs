@@ -9,14 +9,15 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession};
+use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, SubagentRoute};
 use super::registry::ProviderRegistry;
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind};
+use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSession, ChatSnapshot, Error, ErrorCode,
-    PendingPermission, PermissionDecision, Result, SessionStatus, ToolCallRecord, ToolStatus,
+    PendingPermission, PermissionDecision, Result, SessionStatus, SubagentRecord, SubagentStatus,
+    SubagentUpdate, ToolCallRecord, ToolStatus,
 };
 use crate::ports::{AgentRuntime, EventSink, Store};
 
@@ -24,6 +25,7 @@ struct Live {
     backend: Arc<dyn BackendSession>,
     status: SessionStatus,
     transcript: Vec<ChatItem>,
+    subagents: Vec<SubagentRecord>,
     active_turn: Option<TurnId>,
     pending: Option<PendingPermission>,
     /// Leading transcript items from before this agent process started.
@@ -232,6 +234,22 @@ impl Inner {
                 });
                 self.publish_status(session_id, SessionStatus::Ready);
             }
+            BackendEvent::TurnStarted { turn_id } => {
+                if live.active_turn.is_none() {
+                    live.active_turn = Some(turn_id);
+                    live.status = SessionStatus::Working;
+                    self.publish_status(session_id, SessionStatus::Working);
+                }
+            }
+            BackendEvent::Subagent { id, title, update } => {
+                apply_subagent(&mut live.subagents, &id, &title, &update);
+                self.sink.emit_agent(AgentEvent::Subagent {
+                    session_id,
+                    subagent_id: id,
+                    title,
+                    update,
+                });
+            }
             BackendEvent::Error { message } => {
                 let turn = live.active_turn;
                 if let Some(turn_id) = turn {
@@ -271,7 +289,125 @@ fn append_text(transcript: &mut Vec<ChatItem>, role: ChatRole, turn_id: TurnId, 
     }));
 }
 
+/// Applies one update to the subagent's own transcript, creating the record on first sight.
+fn apply_subagent(
+    subagents: &mut Vec<SubagentRecord>,
+    id: &str,
+    title: &str,
+    update: &SubagentUpdate,
+) {
+    let at = match subagents.iter().position(|item| item.id == id) {
+        Some(at) => at,
+        None => {
+            subagents.push(SubagentRecord {
+                id: id.to_string(),
+                title: title.to_string(),
+                status: SubagentStatus::Running,
+                detached: false,
+                items: Vec::new(),
+            });
+            subagents.len() - 1
+        }
+    };
+    let record = &mut subagents[at];
+    if !title.is_empty() && record.title != title {
+        record.title = title.to_string();
+    }
+    match update {
+        SubagentUpdate::Started => record.status = SubagentStatus::Running,
+        SubagentUpdate::Detached => {
+            record.status = SubagentStatus::Running;
+            record.detached = true;
+        }
+        SubagentUpdate::User { text } => {
+            record.status = SubagentStatus::Running;
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: Uuid::new_v4().to_string(),
+                role: ChatRole::User,
+                text: text.clone(),
+                turn_id: None,
+            }));
+        }
+        SubagentUpdate::Delta { text } => {
+            if let Some(ChatItem::Message(last)) = record.items.last_mut() {
+                if last.role == ChatRole::Assistant {
+                    last.text.push_str(text);
+                    return;
+                }
+            }
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: Uuid::new_v4().to_string(),
+                role: ChatRole::Assistant,
+                text: text.clone(),
+                turn_id: None,
+            }));
+        }
+        SubagentUpdate::Tool {
+            call_id,
+            name,
+            input,
+        } => record.items.push(ChatItem::Tool(ToolCallRecord {
+            call_id: *call_id,
+            turn_id: TurnId::new(),
+            name: name.clone(),
+            input: input.clone(),
+            output: None,
+            status: ToolStatus::Running,
+        })),
+        SubagentUpdate::ToolResult {
+            call_id,
+            output,
+            ok,
+        } => {
+            for item in record.items.iter_mut() {
+                if let ChatItem::Tool(tool) = item {
+                    if tool.call_id == *call_id {
+                        tool.output = Some(output.clone());
+                        tool.status = if *ok {
+                            ToolStatus::Done
+                        } else {
+                            ToolStatus::Failed
+                        };
+                    }
+                }
+            }
+        }
+        SubagentUpdate::Done { ok } => {
+            record.detached = false;
+            record.status = if *ok {
+                SubagentStatus::Done
+            } else {
+                SubagentStatus::Failed
+            };
+            for item in record.items.iter_mut() {
+                if let ChatItem::Tool(tool) = item {
+                    if tool.status == ToolStatus::Running {
+                        tool.status = if *ok {
+                            ToolStatus::Done
+                        } else {
+                            ToolStatus::Failed
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
+    // A subagent still open when the turn ends can never report again, unless it was
+    // launched in the background and is meant to outlive the turn.
+    for record in live
+        .subagents
+        .iter_mut()
+        .filter(|record| record.status == SubagentStatus::Running && !record.detached)
+    {
+        record.status = if ok {
+            SubagentStatus::Done
+        } else {
+            SubagentStatus::Failed
+        };
+    }
     for item in live.transcript.iter_mut() {
         if let ChatItem::Tool(tool) = item {
             if tool.turn_id == turn_id && tool.status == ToolStatus::Running {
@@ -315,11 +451,22 @@ fn clean_effort(provider: ProviderKind, effort: Option<String>) -> Result<Option
     if effort.is_empty() {
         return Ok(None);
     }
-    let known = ProviderRegistry::descriptors()
+    let settings = ProviderRegistry::descriptors()
         .into_iter()
         .find(|item| item.kind == provider)
-        .is_some_and(|item| item.settings.efforts.contains(&effort));
-    if known {
+        .map(|item| item.settings)
+        .unwrap_or_default();
+    // Providers that list their own levels (and per model) are checked by the provider itself.
+    let valid = if settings.dynamic {
+        effort.len() <= 40
+            && effort.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && effort
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    } else {
+        settings.efforts.contains(&effort)
+    };
+    if valid {
         Ok(Some(effort))
     } else {
         Err(Error::new(
@@ -329,7 +476,53 @@ fn clean_effort(provider: ProviderKind, effort: Option<String>) -> Result<Option
     }
 }
 
+/// Agent names reach a CLI as an argument, so keep them to plain name characters.
+fn clean_agent(agent: Option<String>) -> Result<Option<String>> {
+    let Some(agent) = agent.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+    if agent.is_empty() {
+        return Ok(None);
+    }
+    let valid = agent.len() <= 100
+        && agent.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && agent
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./ ".contains(c));
+    if valid {
+        Ok(Some(agent))
+    } else {
+        Err(Error::new(ErrorCode::Invalid, "invalid agent name"))
+    }
+}
+
 impl AgentHost {
+    fn ensure_idle(&self, session_id: &SessionId, what: &str) -> Result<()> {
+        let busy = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|live| live.active_turn.is_some() || live.pending.is_some());
+        if busy {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("wait for the current turn to finish before {what}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stops the live process (keeping the saved transcript) and starts it again.
+    fn restart(&self, session_id: &SessionId, session: &ChatSession) -> Result<()> {
+        let removed = self.inner.sessions.lock().remove(session_id);
+        if let Some(live) = removed {
+            self.inner.persist(*session_id, &live.transcript);
+            live.backend.shutdown();
+        }
+        self.start_session(session)
+    }
+
     /// Restarts a provider process that exited since the last turn.
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
         let dead = self
@@ -371,6 +564,7 @@ impl AgentRuntime for AgentHost {
 
     fn start_session(&self, session: &ChatSession) -> Result<()> {
         let mut carried = Vec::new();
+        let mut carried_subagents = Vec::new();
         {
             let mut sessions = self.inner.sessions.lock();
             if let Some(live) = sessions.get(&session.id) {
@@ -387,6 +581,7 @@ impl AgentRuntime for AgentHost {
                     dead.backend.shutdown();
                     // Keep what the user already saw; the provider conversation itself restarts.
                     carried = dead.transcript;
+                    carried_subagents = dead.subagents;
                 }
             }
         }
@@ -429,6 +624,7 @@ impl AgentRuntime for AgentHost {
             cwd: worktree.path,
             model: session.model.clone(),
             effort: session.effort.clone(),
+            agent: session.agent.clone(),
             emit,
         })?;
 
@@ -440,6 +636,7 @@ impl AgentRuntime for AgentHost {
                 status: SessionStatus::Ready,
                 restored_count: carried.len(),
                 transcript: carried,
+                subagents: carried_subagents,
                 active_turn: None,
                 pending: None,
             },
@@ -453,6 +650,7 @@ impl AgentRuntime for AgentHost {
         session_id: &SessionId,
         model: Option<String>,
         effort: Option<String>,
+        agent: Option<String>,
     ) -> Result<ChatSession> {
         let session = self
             .inner
@@ -466,29 +664,20 @@ impl AgentRuntime for AgentHost {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 format!(
-                    "{} does not let Concierge change model or effort",
+                    "{} does not let Concierge change model, effort or agent",
                     session.provider.as_str()
                 ),
             ));
         }
         let model = clean_model(model)?;
         let effort = clean_effort(session.provider, effort)?;
-        {
-            let sessions = self.inner.sessions.lock();
-            if sessions
-                .get(session_id)
-                .is_some_and(|live| live.active_turn.is_some() || live.pending.is_some())
-            {
-                return Err(Error::new(
-                    ErrorCode::Invalid,
-                    "wait for the current turn to finish before changing model or effort",
-                ));
-            }
-        }
+        let agent = clean_agent(agent)?;
+        self.ensure_idle(session_id, "changing model, effort or agent")?;
         self.inner.store.update_session_settings(
             *session_id,
             model.as_deref(),
             effort.as_deref(),
+            agent.as_deref(),
             &now_rfc3339()?,
         )?;
         let updated = self
@@ -504,16 +693,138 @@ impl AgentRuntime for AgentHost {
             .get(session_id)
             .map(|live| Arc::clone(&live.backend));
         if let Some(backend) = live_backend {
-            if !backend.apply_settings(model.as_deref(), effort.as_deref()) {
-                let removed = self.inner.sessions.lock().remove(session_id);
-                if let Some(live) = removed {
-                    self.inner.persist(*session_id, &live.transcript);
-                    live.backend.shutdown();
-                }
-                self.start_session(&updated)?;
+            if !backend.apply_settings(model.as_deref(), effort.as_deref(), agent.as_deref()) {
+                self.restart(session_id, &updated)?;
             }
         }
         Ok(updated)
+    }
+
+    fn switch_provider(
+        &self,
+        session_id: &SessionId,
+        provider: ProviderKind,
+    ) -> Result<ChatSession> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        if session.provider == provider {
+            return Ok(session);
+        }
+        let backend = self.backends.get(&provider).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unsupported,
+                format!("provider {} is not available", provider.as_str()),
+            )
+        })?;
+        backend
+            .availability()
+            .map_err(|reason| Error::new(ErrorCode::Unsupported, reason))?;
+        self.ensure_idle(session_id, "switching the harness")?;
+        self.inner
+            .store
+            .update_session_provider(*session_id, provider, &now_rfc3339()?)?;
+        let updated = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        // The transcript stays on screen; the new harness starts without the old context.
+        self.restart(session_id, &updated)?;
+        Ok(updated)
+    }
+
+    fn message_subagent(
+        &self,
+        session_id: &SessionId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(Error::new(ErrorCode::Invalid, "message is empty"));
+        }
+        self.revive_if_dead(session_id)?;
+        let turn_id = TurnId::new();
+        let (backend, previous) = {
+            let mut sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
+            if live.active_turn.is_some() || live.pending.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "wait for the current turn to finish before messaging a subagent",
+                ));
+            }
+            if !live.subagents.iter().any(|item| item.id == subagent_id) {
+                return Err(Error::new(ErrorCode::NotFound, "subagent not found"));
+            }
+            // Assume the main agent has to relay it; a direct route hands the turn back below.
+            live.active_turn = Some(turn_id);
+            live.status = SessionStatus::Working;
+            (Arc::clone(&live.backend), live.status)
+        };
+        let _ = previous;
+        self.inner
+            .publish_status(*session_id, SessionStatus::Working);
+        // The message shows up in the subagent's conversation right away.
+        self.inner.handle(
+            *session_id,
+            BackendEvent::Subagent {
+                id: subagent_id.to_string(),
+                title: String::new(),
+                update: SubagentUpdate::User {
+                    text: text.to_string(),
+                },
+            },
+        );
+        match backend.message_subagent(turn_id, subagent_id, text) {
+            Ok(SubagentRoute::MainTurn) => Ok(()),
+            Ok(SubagentRoute::Direct) => {
+                let mut sessions = self.inner.sessions.lock();
+                if let Some(live) = sessions.get_mut(session_id) {
+                    if live.active_turn == Some(turn_id) {
+                        live.active_turn = None;
+                        live.status = SessionStatus::Ready;
+                    }
+                }
+                drop(sessions);
+                self.inner.publish_status(*session_id, SessionStatus::Ready);
+                Ok(())
+            }
+            Err(error) => {
+                let mut sessions = self.inner.sessions.lock();
+                if let Some(live) = sessions.get_mut(session_id) {
+                    if live.active_turn == Some(turn_id) {
+                        live.active_turn = None;
+                        live.status = SessionStatus::Ready;
+                    }
+                    if let Some(record) = live
+                        .subagents
+                        .iter_mut()
+                        .find(|item| item.id == subagent_id)
+                    {
+                        record.status = SubagentStatus::Failed;
+                    }
+                }
+                drop(sessions);
+                self.inner.publish_status(*session_id, SessionStatus::Ready);
+                Err(error)
+            }
+        }
+    }
+
+    fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions> {
+        let backend = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .map(|live| Arc::clone(&live.backend));
+        Ok(backend.map(|backend| backend.options()).unwrap_or_default())
     }
 
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId> {
@@ -608,12 +919,14 @@ impl AgentRuntime for AgentHost {
         Ok(match sessions.get(session_id) {
             Some(live) => ChatSnapshot {
                 items: live.transcript.clone(),
+                subagents: live.subagents.clone(),
                 restored_count: live.restored_count,
                 status: live.status,
                 pending_permission: live.pending.clone(),
             },
             None => ChatSnapshot {
                 items: Vec::new(),
+                subagents: Vec::new(),
                 restored_count: 0,
                 status: SessionStatus::Idle,
                 pending_permission: None,
@@ -631,7 +944,7 @@ mod tests {
     use crate::adapters::agents::FakeBackend;
     use crate::app::fakes::FakeStore;
     use crate::domain::ids::{RepositoryId, WorktreeId};
-    use crate::domain::{PermissionRequestId, Repository, Worktree};
+    use crate::domain::{PermissionRequestId, Repository, ToolCallId, Worktree};
 
     #[derive(Default)]
     struct RecordingSink {
@@ -673,6 +986,10 @@ mod tests {
     }
 
     fn harness_with(backend: FakeBackend) -> Harness {
+        harness_with_backend(Arc::new(backend))
+    }
+
+    fn harness_with_backend(backend: Arc<dyn AgentBackend>) -> Harness {
         let store = Arc::new(FakeStore::healthy());
         let repository_id = RepositoryId::new();
         let worktree_id = WorktreeId::new();
@@ -705,6 +1022,7 @@ mod tests {
             status: SessionStatus::Idle,
             model: None,
             effort: None,
+            agent: None,
             created_at: "t".into(),
             updated_at: "t".into(),
             last_opened_at: None,
@@ -712,7 +1030,12 @@ mod tests {
         store.create_session(&session).expect("session");
         let sink = Arc::new(RecordingSink::default());
         let host = AgentHost::new(store.clone(), sink.clone())
-            .with_backend(ProviderKind::Fake, Arc::new(backend));
+            .with_backend(ProviderKind::Fake, backend)
+            // A second harness to switch to.
+            .with_backend(
+                ProviderKind::Codex,
+                Arc::new(FakeBackend::new(Duration::ZERO)),
+            );
         host.start_session(&session).expect("start");
         Harness {
             store,
@@ -741,7 +1064,12 @@ mod tests {
         let h = harness();
         let updated = h
             .host
-            .configure_session(&h.session.id, Some("fake-fast".into()), Some("high".into()))
+            .configure_session(
+                &h.session.id,
+                Some("fake-fast".into()),
+                Some("high".into()),
+                None,
+            )
             .expect("configure");
         assert_eq!(updated.model.as_deref(), Some("fake-fast"));
         assert_eq!(updated.effort.as_deref(), Some("high"));
@@ -776,7 +1104,7 @@ mod tests {
             .items
             .len();
         h.host
-            .configure_session(&h.session.id, None, Some("low".into()))
+            .configure_session(&h.session.id, None, Some("low".into()), None)
             .expect("configure");
         let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
         assert_eq!(snapshot.items.len(), before, "the transcript is kept");
@@ -788,32 +1116,310 @@ mod tests {
         let h = harness();
         assert!(
             h.host
-                .configure_session(&h.session.id, None, Some("turbo".into()))
+                .configure_session(&h.session.id, None, Some("turbo".into()), None)
                 .is_err()
         );
         assert!(
             h.host
-                .configure_session(&h.session.id, Some("--dangerous".into()), None)
+                .configure_session(&h.session.id, Some("--dangerous".into()), None, None)
                 .is_err()
         );
         h.host.prompt(&h.session.id, "hello").expect("prompt");
         assert!(
             h.host
-                .configure_session(&h.session.id, None, Some("low".into()))
+                .configure_session(&h.session.id, None, Some("low".into()), None)
                 .is_err(),
             "a running turn blocks changes"
         );
     }
 
     #[test]
+    fn switching_harness_keeps_the_transcript_and_resets_provider_specific_settings() {
+        let h = harness();
+        h.host
+            .configure_session(
+                &h.session.id,
+                Some("fake-fast".into()),
+                Some("high".into()),
+                Some("reviewer".into()),
+            )
+            .expect("configure");
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        let before = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .len();
+
+        let switched = h
+            .host
+            .switch_provider(&h.session.id, ProviderKind::Codex)
+            .expect("switch");
+        assert_eq!(switched.provider, ProviderKind::Codex);
+        assert_eq!(
+            (switched.model, switched.effort, switched.agent),
+            (None, None, None)
+        );
+        let stored = h
+            .store
+            .get_session(h.session.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(stored.provider, ProviderKind::Codex);
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.items.len(), before);
+        assert_eq!(
+            snapshot.restored_count, before,
+            "the new harness starts fresh"
+        );
+    }
+
+    #[test]
+    fn switching_harness_is_refused_while_busy_or_unavailable() {
+        let h = harness();
+        assert!(
+            h.host
+                .switch_provider(&h.session.id, ProviderKind::OpenCode)
+                .is_err(),
+            "no backend registered for OpenCode"
+        );
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        assert!(
+            h.host
+                .switch_provider(&h.session.id, ProviderKind::Codex)
+                .is_err(),
+            "a running turn blocks the switch"
+        );
+        let stored = h
+            .store
+            .get_session(h.session.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(stored.provider, ProviderKind::Fake);
+    }
+
+    #[test]
+    fn agent_names_are_checked_and_stored() {
+        let h = harness();
+        let updated = h
+            .host
+            .configure_session(&h.session.id, None, None, Some("code-reviewer".into()))
+            .expect("agent");
+        assert_eq!(updated.agent.as_deref(), Some("code-reviewer"));
+        assert!(
+            h.host
+                .configure_session(&h.session.id, None, None, Some("--system-prompt".into()))
+                .is_err()
+        );
+        let options = h.host.session_options(&h.session.id).expect("options");
+        assert!(options.agents.iter().any(|agent| agent.id == "reviewer"));
+    }
+
+    #[test]
+    fn subagent_events_build_a_separate_transcript() {
+        let h = harness();
+        let call_id = ToolCallId::new();
+        let send = |update: SubagentUpdate| {
+            h.host.inner.handle(
+                h.session.id,
+                BackendEvent::Subagent {
+                    id: "sub-1".into(),
+                    title: "Explore".into(),
+                    update,
+                },
+            );
+        };
+        send(SubagentUpdate::Started);
+        send(SubagentUpdate::Delta {
+            text: "Look".into(),
+        });
+        send(SubagentUpdate::Delta { text: "ing".into() });
+        send(SubagentUpdate::Tool {
+            call_id,
+            name: "grep".into(),
+            input: "main".into(),
+        });
+        send(SubagentUpdate::ToolResult {
+            call_id,
+            output: "3 hits".into(),
+            ok: true,
+        });
+        send(SubagentUpdate::Done { ok: true });
+
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(
+            snapshot.items.is_empty(),
+            "the main transcript is untouched"
+        );
+        let [record] = snapshot.subagents.as_slice() else {
+            panic!("expected one subagent, got {:?}", snapshot.subagents);
+        };
+        assert_eq!(record.title, "Explore");
+        assert_eq!(record.status, SubagentStatus::Done);
+        assert!(matches!(
+            &record.items[0],
+            ChatItem::Message(message) if message.text == "Looking"
+        ));
+        assert!(matches!(
+            &record.items[1],
+            ChatItem::Tool(tool) if tool.status == ToolStatus::Done
+                && tool.output.as_deref() == Some("3 hits")
+        ));
+        let events = h.sink.snapshot();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Subagent { subagent_id, .. } if subagent_id == "sub-1"))
+        );
+    }
+
+    fn seed_subagent(h: &Harness) {
+        h.host.inner.handle(
+            h.session.id,
+            BackendEvent::Subagent {
+                id: "sub-1".into(),
+                title: "Explore".into(),
+                update: SubagentUpdate::Done { ok: true },
+            },
+        );
+    }
+
+    #[test]
+    fn a_message_to_a_subagent_lands_in_its_own_conversation_and_gets_an_answer() {
+        let h = harness();
+        seed_subagent(&h);
+        h.host
+            .message_subagent(&h.session.id, "sub-1", "  look at the tests  ")
+            .expect("message");
+
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(
+            snapshot.items.is_empty(),
+            "the main conversation is untouched"
+        );
+        let record = &snapshot.subagents[0];
+        assert_eq!(
+            record.title, "Explore",
+            "an empty title never replaces the real one"
+        );
+        assert!(matches!(
+            &record.items[0],
+            ChatItem::Message(message)
+                if message.role == ChatRole::User && message.text == "look at the tests"
+        ));
+        assert!(matches!(
+            &record.items[1],
+            ChatItem::Message(message) if message.text == "Got it: look at the tests"
+        ));
+        assert_eq!(record.status, SubagentStatus::Done);
+        // A direct route leaves the main agent free for the next prompt.
+        assert_eq!(snapshot.status, SessionStatus::Ready);
+        h.host
+            .prompt(&h.session.id, "next")
+            .expect("main agent is free");
+    }
+
+    #[test]
+    fn messaging_a_subagent_is_refused_when_unknown_empty_or_busy() {
+        let h = harness();
+        seed_subagent(&h);
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "nope", "hi")
+                .is_err()
+        );
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "sub-1", "   ")
+                .is_err()
+        );
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "sub-1", "hi")
+                .is_err(),
+            "a running turn blocks it"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_cannot_reach_subagents_reports_why_and_stays_usable() {
+        struct Mute;
+        impl AgentBackend for Mute {
+            fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+                FakeBackend::new(Duration::ZERO).start(ctx).map(|inner| {
+                    struct Wrapped(Arc<dyn BackendSession>);
+                    impl BackendSession for Wrapped {
+                        fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                            self.0.prompt(turn_id, text)
+                        }
+                        fn cancel(&self) -> Result<()> {
+                            self.0.cancel()
+                        }
+                        fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                            self.0.resolve_permission(decision)
+                        }
+                        fn shutdown(&self) {
+                            self.0.shutdown()
+                        }
+                    }
+                    Arc::new(Wrapped(inner)) as Arc<dyn BackendSession>
+                })
+            }
+        }
+        let h = harness_with_backend(Arc::new(Mute));
+        seed_subagent(&h);
+        let error = h
+            .host
+            .message_subagent(&h.session.id, "sub-1", "hi")
+            .expect_err("unsupported");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.status, SessionStatus::Ready);
+        h.host.prompt(&h.session.id, "still works").expect("prompt");
+    }
+
+    #[test]
+    fn a_subagent_left_running_is_closed_when_the_turn_ends() {
+        let h = harness();
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.inner.handle(
+            h.session.id,
+            BackendEvent::Subagent {
+                id: "sub-1".into(),
+                title: "Explore".into(),
+                update: SubagentUpdate::Started,
+            },
+        );
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.subagents[0].status, SubagentStatus::Failed);
+    }
+
+    #[test]
     fn empty_values_clear_the_override() {
         let h = harness();
         h.host
-            .configure_session(&h.session.id, Some("fake-fast".into()), Some("low".into()))
+            .configure_session(
+                &h.session.id,
+                Some("fake-fast".into()),
+                Some("low".into()),
+                None,
+            )
             .expect("set");
         let cleared = h
             .host
-            .configure_session(&h.session.id, Some("  ".into()), None)
+            .configure_session(&h.session.id, Some("  ".into()), None, None)
             .expect("clear");
         assert_eq!(cleared.model, None);
         assert_eq!(cleared.effort, None);

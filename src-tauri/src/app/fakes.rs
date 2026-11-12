@@ -239,6 +239,7 @@ impl Store for FakeStore {
         id: SessionId,
         model: Option<&str>,
         effort: Option<&str>,
+        agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()> {
         let mut sessions = self.sessions.lock().expect("sessions");
@@ -248,6 +249,26 @@ impl Store for FakeStore {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
         session.model = model.map(str::to_string);
         session.effort = effort.map(str::to_string);
+        session.agent = agent.map(str::to_string);
+        session.updated_at = updated_at.to_string();
+        Ok(())
+    }
+
+    fn update_session_provider(
+        &self,
+        id: SessionId,
+        provider: crate::domain::agent::ProviderKind,
+        updated_at: &str,
+    ) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let session = sessions
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        session.provider = provider;
+        session.model = None;
+        session.effort = None;
+        session.agent = None;
         session.updated_at = updated_at.to_string();
         Ok(())
     }

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     Fake,
+    // kebab-case would spell this "open-code"; the UI, the database and `as_str` use "opencode".
+    #[serde(rename = "opencode")]
     OpenCode,
     Claude,
     Codex,
@@ -88,6 +90,27 @@ impl CapabilityMatrix {
 pub struct ModelChoice {
     pub id: String,
     pub label: String,
+    /// Effort levels this model supports; empty means "use the session-wide list".
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentChoice {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What a live session offers right now (discovered from the provider, not hard-coded).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionOptions {
+    pub models: Vec<ModelChoice>,
+    /// The model used when none is chosen, when the provider says so.
+    pub default_model: Option<String>,
+    /// Effort levels for the current model, lowest to highest.
+    pub efforts: Vec<String>,
+    pub agents: Vec<AgentChoice>,
 }
 
 /// What a provider lets the user tune per chat.
@@ -101,6 +124,16 @@ pub struct ProviderSettings {
     pub efforts: Vec<String>,
     /// Whether any model id can be typed in.
     pub custom_model: bool,
+    /// Models, efforts and agents come from the live session, so values are not checked
+    /// against the lists above.
+    #[serde(default)]
+    pub dynamic: bool,
+    /// Whether the chat can run as a named agent.
+    #[serde(default)]
+    pub agents: bool,
+    /// Whether messages can be sent to a subagent from its own conversation.
+    #[serde(default)]
+    pub subagent_messages: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,4 +145,32 @@ pub struct ProviderDescriptor {
     pub available: bool,
     pub detail: Option<String>,
     pub settings: ProviderSettings,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [ProviderKind; 4] = [
+        ProviderKind::Fake,
+        ProviderKind::OpenCode,
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+    ];
+
+    #[test]
+    fn json_names_match_the_ones_the_ui_and_database_use() {
+        for kind in ALL {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            let back: ProviderKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, kind);
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+        // The UI sends this spelling when creating or switching an OpenCode chat.
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"opencode\"").expect("opencode"),
+            ProviderKind::OpenCode
+        );
+    }
 }

@@ -12,6 +12,7 @@ fn model(id: &str, label: &str) -> ModelChoice {
     ModelChoice {
         id: id.into(),
         label: label.into(),
+        efforts: Vec::new(),
     }
 }
 
@@ -33,6 +34,9 @@ impl ProviderRegistry {
                     models: vec![model("fake-fast", "Fake fast")],
                     efforts: efforts(&["low", "medium", "high"]),
                     custom_model: false,
+                    dynamic: false,
+                    agents: true,
+                    subagent_messages: true,
                 },
             },
             ProviderDescriptor {
@@ -52,7 +56,15 @@ impl ProviderRegistry {
                 },
                 available: true,
                 detail: None,
-                settings: ProviderSettings::default(),
+                settings: ProviderSettings {
+                    configurable: true,
+                    models: Vec::new(),
+                    efforts: Vec::new(),
+                    custom_model: false,
+                    dynamic: true,
+                    agents: true,
+                    subagent_messages: true,
+                },
             },
             ProviderDescriptor {
                 kind: ProviderKind::Claude,
@@ -81,6 +93,9 @@ impl ProviderRegistry {
                     ],
                     efforts: efforts(&["low", "medium", "high", "xhigh", "max"]),
                     custom_model: true,
+                    dynamic: false,
+                    agents: true,
+                    subagent_messages: true,
                 },
             },
             ProviderDescriptor {
@@ -105,6 +120,9 @@ impl ProviderRegistry {
                     models: Vec::new(),
                     efforts: efforts(&["low", "medium", "high", "xhigh"]),
                     custom_model: true,
+                    dynamic: true,
+                    agents: true,
+                    subagent_messages: true,
                 },
             },
         ]
