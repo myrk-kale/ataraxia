@@ -79,7 +79,7 @@ fn approvals_reviewer() -> Option<String> {
     }
 }
 
-fn thread_start_params(cwd: &Path, reviewer: Option<&str>) -> Value {
+fn thread_start_params(cwd: &Path, reviewer: Option<&str>, model: Option<&str>) -> Value {
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
         "approvalPolicy": "on-request",
@@ -87,6 +87,9 @@ fn thread_start_params(cwd: &Path, reviewer: Option<&str>) -> Value {
     });
     if let Some(reviewer) = reviewer {
         params["approvalsReviewer"] = json!(reviewer);
+    }
+    if let Some(model) = model {
+        params["model"] = json!(model);
     }
     params
 }
@@ -111,7 +114,11 @@ impl AgentBackend for CodexBackend {
             client: OnceLock::new(),
             thread_id: OnceLock::new(),
             exit: Mutex::new(None),
-            state: Mutex::new(CodexState::default()),
+            state: Mutex::new(CodexState {
+                model: ctx.model.clone(),
+                effort: ctx.effort.clone(),
+                ..CodexState::default()
+            }),
         });
         let handler_shared = Arc::clone(&shared);
         let client = RpcClient::spawn(
@@ -142,7 +149,11 @@ impl AgentBackend for CodexBackend {
             client.notify_bare("initialized")?;
             let started = client.request(
                 "thread/start",
-                thread_start_params(&ctx.cwd, approvals_reviewer().as_deref()),
+                thread_start_params(
+                    &ctx.cwd,
+                    approvals_reviewer().as_deref(),
+                    ctx.model.as_deref(),
+                ),
                 Some(HANDSHAKE_TIMEOUT),
             )?;
             let thread_id = started
@@ -179,6 +190,9 @@ struct ToolMeta {
 
 #[derive(Default)]
 struct CodexState {
+    /// Model and effort overrides, sent with every `turn/start`.
+    model: Option<String>,
+    effort: Option<String>,
     turn: Option<TurnId>,
     /// Codex's own id for the running turn, needed for `turn/interrupt`.
     codex_turn: Option<String>,
@@ -435,14 +449,21 @@ impl CodexShared {
         let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
             return;
         };
-        let outcome = client.request(
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{ "type": "text", "text": text, "text_elements": [] }]
-            }),
-            Some(HANDSHAKE_TIMEOUT),
-        );
+        let (model, effort) = {
+            let state = self.state.lock();
+            (state.model.clone(), state.effort.clone())
+        };
+        let mut params = json!({
+            "threadId": thread_id,
+            "input": [{ "type": "text", "text": text, "text_elements": [] }]
+        });
+        if let Some(model) = model {
+            params["model"] = json!(model);
+        }
+        if let Some(effort) = effort {
+            params["effort"] = json!(effort);
+        }
+        let outcome = client.request("turn/start", params, Some(HANDSHAKE_TIMEOUT));
         match outcome {
             Ok(result) => {
                 let cancel_now = {
@@ -481,6 +502,14 @@ struct CodexSession {
 }
 
 impl BackendSession for CodexSession {
+    fn apply_settings(&self, model: Option<&str>, effort: Option<&str>) -> bool {
+        // `turn/start` overrides apply to this turn and the following ones, no restart needed.
+        let mut state = self.shared.state.lock();
+        state.model = model.map(str::to_string);
+        state.effort = effort.map(str::to_string);
+        true
+    }
+
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
         if !self.is_alive() {
             return Err(Error::new(
@@ -659,12 +688,14 @@ fn item_result(item: &Value) -> (String, bool) {
 mod tests {
     #[test]
     fn thread_start_routes_approvals_to_the_reviewer() {
-        let params = thread_start_params(Path::new("/work"), Some("auto_review"));
+        let params = thread_start_params(Path::new("/work"), Some("auto_review"), Some("gpt-x"));
+        assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["approvalsReviewer"], "auto_review");
         assert_eq!(params["approvalPolicy"], "on-request");
         assert_eq!(params["sandbox"], "workspace-write");
-        let manual = thread_start_params(Path::new("/work"), None);
+        let manual = thread_start_params(Path::new("/work"), None, None);
         assert!(manual.get("approvalsReviewer").is_none());
+        assert!(manual.get("model").is_none());
     }
 
     use std::sync::mpsc::{self, Receiver};
@@ -688,6 +719,8 @@ mod tests {
             .start(BackendContext {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                model: None,
+                effort: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

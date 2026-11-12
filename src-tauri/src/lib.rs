@@ -39,6 +39,7 @@ pub fn run() {
             tauri_api::terminal_kill,
             tauri_api::agent_list_providers,
             tauri_api::agent_start_session,
+            tauri_api::agent_configure_session,
             tauri_api::agent_prompt,
             tauri_api::agent_cancel,
             tauri_api::agent_resolve_permission,

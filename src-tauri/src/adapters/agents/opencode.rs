@@ -627,6 +627,8 @@ mod tests {
             .start(BackendContext {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                model: None,
+                effort: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -782,6 +784,8 @@ mod tests {
             .start(BackendContext {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                model: None,
+                effort: None,
                 emit: Arc::new(|_| {}),
             })
             .err()

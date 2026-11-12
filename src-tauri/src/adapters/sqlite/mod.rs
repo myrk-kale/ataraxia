@@ -208,8 +208,8 @@ impl Store for SqliteStore {
             conn.execute(
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
-                    created_at, updated_at, last_opened_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    created_at, updated_at, last_opened_at, model, effort)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -219,7 +219,9 @@ impl Store for SqliteStore {
                     session.status.as_str(),
                     session.created_at,
                     session.updated_at,
-                    session.last_opened_at
+                    session.last_opened_at,
+                    session.model,
+                    session.effort
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -232,7 +234,7 @@ impl Store for SqliteStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
-                            created_at, updated_at, last_opened_at
+                            created_at, updated_at, last_opened_at, model, effort
                      FROM chat_sessions
                      WHERE repository_id = ?1
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -249,7 +251,7 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
-                        created_at, updated_at, last_opened_at
+                        created_at, updated_at, last_opened_at, model, effort
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -267,6 +269,29 @@ impl Store for SqliteStore {
                      SET last_opened_at = ?2, updated_at = ?2
                      WHERE id = ?1",
                     params![id.0.to_string(), opened_at],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
+    fn update_session_settings(
+        &self,
+        id: SessionId,
+        model: Option<&str>,
+        effort: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions
+                     SET model = ?2, effort = ?3, updated_at = ?4
+                     WHERE id = ?1",
+                    params![id.0.to_string(), model, effort, updated_at],
                 )
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
             if updated == 0 {
@@ -425,6 +450,8 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
         last_opened_at: row.get(8)?,
+        model: row.get(9)?,
+        effort: row.get(10)?,
     })
 }
 
@@ -496,6 +523,8 @@ mod tests {
             provider: ProviderKind::Fake,
             title: "Chat 1".into(),
             status: SessionStatus::Idle,
+            model: None,
+            effort: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,
@@ -542,6 +571,8 @@ mod tests {
             provider: ProviderKind::Fake,
             title: "Chat".into(),
             status: SessionStatus::Idle,
+            model: None,
+            effort: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,

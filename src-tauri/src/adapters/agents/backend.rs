@@ -55,6 +55,10 @@ pub type Emitter = Arc<dyn Fn(BackendEvent) + Send + Sync>;
 pub struct BackendContext {
     pub session_id: SessionId,
     pub cwd: PathBuf,
+    /// Model override chosen for this chat (`None` = provider default).
+    pub model: Option<String>,
+    /// Reasoning-effort override (`None` = provider default).
+    pub effort: Option<String>,
     pub emit: Emitter,
 }
 
@@ -76,6 +80,11 @@ pub trait BackendSession: Send + Sync {
     /// False once the underlying process is gone; the host then restarts the session on demand.
     fn is_alive(&self) -> bool {
         true
+    }
+    /// Applies a new model/effort to the running session. Returns `false` when the provider can
+    /// only pick them up on a fresh process, in which case the host restarts the session.
+    fn apply_settings(&self, _model: Option<&str>, _effort: Option<&str>) -> bool {
+        false
     }
     fn shutdown(&self);
 }

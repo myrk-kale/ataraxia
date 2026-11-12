@@ -1,7 +1,19 @@
 use crate::domain::agent::{
-    ApprovalEnforcement, CapabilityMatrix, ForkMode, ProviderDescriptor, ProviderKind, SteeringMode,
+    ApprovalEnforcement, CapabilityMatrix, ForkMode, ModelChoice, ProviderDescriptor, ProviderKind,
+    ProviderSettings, SteeringMode,
 };
 use crate::domain::{Error, ErrorCode, Result};
+
+fn efforts(levels: &[&str]) -> Vec<String> {
+    levels.iter().map(|level| (*level).to_string()).collect()
+}
+
+fn model(id: &str, label: &str) -> ModelChoice {
+    ModelChoice {
+        id: id.into(),
+        label: label.into(),
+    }
+}
 
 /// Declares known providers and their MVP capability matrices.
 #[derive(Debug, Default)]
@@ -16,6 +28,12 @@ impl ProviderRegistry {
                 capabilities: CapabilityMatrix::fake(),
                 available: true,
                 detail: None,
+                settings: ProviderSettings {
+                    configurable: true,
+                    models: vec![model("fake-fast", "Fake fast")],
+                    efforts: efforts(&["low", "medium", "high"]),
+                    custom_model: false,
+                },
             },
             ProviderDescriptor {
                 kind: ProviderKind::OpenCode,
@@ -34,6 +52,7 @@ impl ProviderRegistry {
                 },
                 available: true,
                 detail: None,
+                settings: ProviderSettings::default(),
             },
             ProviderDescriptor {
                 kind: ProviderKind::Claude,
@@ -52,6 +71,17 @@ impl ProviderRegistry {
                 },
                 available: true,
                 detail: None,
+                settings: ProviderSettings {
+                    configurable: true,
+                    models: vec![
+                        model("sonnet", "Sonnet"),
+                        model("opus", "Opus"),
+                        model("haiku", "Haiku"),
+                        model("fable", "Fable"),
+                    ],
+                    efforts: efforts(&["low", "medium", "high", "xhigh", "max"]),
+                    custom_model: true,
+                },
             },
             ProviderDescriptor {
                 kind: ProviderKind::Codex,
@@ -70,6 +100,12 @@ impl ProviderRegistry {
                 },
                 available: true,
                 detail: None,
+                settings: ProviderSettings {
+                    configurable: true,
+                    models: Vec::new(),
+                    efforts: efforts(&["low", "medium", "high", "xhigh"]),
+                    custom_model: true,
+                },
             },
         ]
     }
