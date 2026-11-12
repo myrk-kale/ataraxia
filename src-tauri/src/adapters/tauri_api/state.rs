@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};
 
-use crate::adapters::agents::{AgentHost, ClaudeBackend, FakeBackend, OpenCodeBackend};
+use crate::adapters::agents::{
+    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, OpenCodeBackend,
+};
 use crate::adapters::git::GitCli;
 use crate::adapters::pty::NativePtyHost;
 use crate::adapters::sqlite::SqliteStore;
@@ -34,7 +36,8 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     let agents = AgentHost::new(Arc::clone(&store), sink)
         .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
         .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
-        .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()));
+        .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()))
+        .with_backend(ProviderKind::Codex, Arc::new(CodexBackend::new()));
     Ok(AppState {
         git: Arc::new(GitCli),
         store,

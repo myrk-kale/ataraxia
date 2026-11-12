@@ -93,6 +93,11 @@ impl RpcClient {
         self.send(json!({ "method": method, "params": params }))
     }
 
+    /// Notification without a `params` member (e.g. Codex's `initialized`).
+    pub fn notify_bare(&self, method: &str) -> Result<()> {
+        self.send(json!({ "method": method }))
+    }
+
     pub fn respond(&self, id: &Value, result: Value) -> Result<()> {
         self.send(json!({ "id": id, "result": result }))
     }
