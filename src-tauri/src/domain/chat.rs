@@ -123,6 +123,11 @@ pub struct SubagentRecord {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SubagentUpdate {
     Started,
+    /// A message the user sent to this subagent.
+    #[serde(rename_all = "camelCase")]
+    User {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     Delta {
         text: String,

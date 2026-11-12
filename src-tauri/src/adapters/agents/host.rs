@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession};
+use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, SubagentRoute};
 use super::registry::ProviderRegistry;
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{SessionId, TurnId};
@@ -307,6 +307,15 @@ fn apply_subagent(
     }
     match update {
         SubagentUpdate::Started => record.status = SubagentStatus::Running,
+        SubagentUpdate::User { text } => {
+            record.status = SubagentStatus::Running;
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: Uuid::new_v4().to_string(),
+                role: ChatRole::User,
+                text: text.clone(),
+                turn_id: None,
+            }));
+        }
         SubagentUpdate::Delta { text } => {
             if let Some(ChatItem::Message(last)) = record.items.last_mut() {
                 if last.role == ChatRole::Assistant {
@@ -713,6 +722,87 @@ impl AgentRuntime for AgentHost {
         Ok(updated)
     }
 
+    fn message_subagent(
+        &self,
+        session_id: &SessionId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(Error::new(ErrorCode::Invalid, "message is empty"));
+        }
+        self.revive_if_dead(session_id)?;
+        let turn_id = TurnId::new();
+        let (backend, previous) = {
+            let mut sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
+            if live.active_turn.is_some() || live.pending.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "wait for the current turn to finish before messaging a subagent",
+                ));
+            }
+            if !live.subagents.iter().any(|item| item.id == subagent_id) {
+                return Err(Error::new(ErrorCode::NotFound, "subagent not found"));
+            }
+            // Assume the main agent has to relay it; a direct route hands the turn back below.
+            live.active_turn = Some(turn_id);
+            live.status = SessionStatus::Working;
+            (Arc::clone(&live.backend), live.status)
+        };
+        let _ = previous;
+        self.inner
+            .publish_status(*session_id, SessionStatus::Working);
+        // The message shows up in the subagent's conversation right away.
+        self.inner.handle(
+            *session_id,
+            BackendEvent::Subagent {
+                id: subagent_id.to_string(),
+                title: String::new(),
+                update: SubagentUpdate::User {
+                    text: text.to_string(),
+                },
+            },
+        );
+        match backend.message_subagent(turn_id, subagent_id, text) {
+            Ok(SubagentRoute::MainTurn) => Ok(()),
+            Ok(SubagentRoute::Direct) => {
+                let mut sessions = self.inner.sessions.lock();
+                if let Some(live) = sessions.get_mut(session_id) {
+                    if live.active_turn == Some(turn_id) {
+                        live.active_turn = None;
+                        live.status = SessionStatus::Ready;
+                    }
+                }
+                drop(sessions);
+                self.inner.publish_status(*session_id, SessionStatus::Ready);
+                Ok(())
+            }
+            Err(error) => {
+                let mut sessions = self.inner.sessions.lock();
+                if let Some(live) = sessions.get_mut(session_id) {
+                    if live.active_turn == Some(turn_id) {
+                        live.active_turn = None;
+                        live.status = SessionStatus::Ready;
+                    }
+                    if let Some(record) = live
+                        .subagents
+                        .iter_mut()
+                        .find(|item| item.id == subagent_id)
+                    {
+                        record.status = SubagentStatus::Failed;
+                    }
+                }
+                drop(sessions);
+                self.inner.publish_status(*session_id, SessionStatus::Ready);
+                Err(error)
+            }
+        }
+    }
+
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions> {
         let backend = self
             .inner
@@ -882,6 +972,10 @@ mod tests {
     }
 
     fn harness_with(backend: FakeBackend) -> Harness {
+        harness_with_backend(Arc::new(backend))
+    }
+
+    fn harness_with_backend(backend: Arc<dyn AgentBackend>) -> Harness {
         let store = Arc::new(FakeStore::healthy());
         let repository_id = RepositoryId::new();
         let worktree_id = WorktreeId::new();
@@ -922,7 +1016,7 @@ mod tests {
         store.create_session(&session).expect("session");
         let sink = Arc::new(RecordingSink::default());
         let host = AgentHost::new(store.clone(), sink.clone())
-            .with_backend(ProviderKind::Fake, Arc::new(backend))
+            .with_backend(ProviderKind::Fake, backend)
             // A second harness to switch to.
             .with_backend(
                 ProviderKind::Codex,
@@ -1169,6 +1263,112 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, AgentEvent::Subagent { subagent_id, .. } if subagent_id == "sub-1"))
         );
+    }
+
+    fn seed_subagent(h: &Harness) {
+        h.host.inner.handle(
+            h.session.id,
+            BackendEvent::Subagent {
+                id: "sub-1".into(),
+                title: "Explore".into(),
+                update: SubagentUpdate::Done { ok: true },
+            },
+        );
+    }
+
+    #[test]
+    fn a_message_to_a_subagent_lands_in_its_own_conversation_and_gets_an_answer() {
+        let h = harness();
+        seed_subagent(&h);
+        h.host
+            .message_subagent(&h.session.id, "sub-1", "  look at the tests  ")
+            .expect("message");
+
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(
+            snapshot.items.is_empty(),
+            "the main conversation is untouched"
+        );
+        let record = &snapshot.subagents[0];
+        assert_eq!(
+            record.title, "Explore",
+            "an empty title never replaces the real one"
+        );
+        assert!(matches!(
+            &record.items[0],
+            ChatItem::Message(message)
+                if message.role == ChatRole::User && message.text == "look at the tests"
+        ));
+        assert!(matches!(
+            &record.items[1],
+            ChatItem::Message(message) if message.text == "Got it: look at the tests"
+        ));
+        assert_eq!(record.status, SubagentStatus::Done);
+        // A direct route leaves the main agent free for the next prompt.
+        assert_eq!(snapshot.status, SessionStatus::Ready);
+        h.host
+            .prompt(&h.session.id, "next")
+            .expect("main agent is free");
+    }
+
+    #[test]
+    fn messaging_a_subagent_is_refused_when_unknown_empty_or_busy() {
+        let h = harness();
+        seed_subagent(&h);
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "nope", "hi")
+                .is_err()
+        );
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "sub-1", "   ")
+                .is_err()
+        );
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        assert!(
+            h.host
+                .message_subagent(&h.session.id, "sub-1", "hi")
+                .is_err(),
+            "a running turn blocks it"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_cannot_reach_subagents_reports_why_and_stays_usable() {
+        struct Mute;
+        impl AgentBackend for Mute {
+            fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+                FakeBackend::new(Duration::ZERO).start(ctx).map(|inner| {
+                    struct Wrapped(Arc<dyn BackendSession>);
+                    impl BackendSession for Wrapped {
+                        fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                            self.0.prompt(turn_id, text)
+                        }
+                        fn cancel(&self) -> Result<()> {
+                            self.0.cancel()
+                        }
+                        fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                            self.0.resolve_permission(decision)
+                        }
+                        fn shutdown(&self) {
+                            self.0.shutdown()
+                        }
+                    }
+                    Arc::new(Wrapped(inner)) as Arc<dyn BackendSession>
+                })
+            }
+        }
+        let h = harness_with_backend(Arc::new(Mute));
+        seed_subagent(&h);
+        let error = h
+            .host
+            .message_subagent(&h.session.id, "sub-1", "hi")
+            .expect_err("unsupported");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.status, SessionStatus::Ready);
+        h.host.prompt(&h.session.id, "still works").expect("prompt");
     }
 
     #[test]

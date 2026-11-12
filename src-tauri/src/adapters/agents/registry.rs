@@ -36,6 +36,7 @@ impl ProviderRegistry {
                     custom_model: false,
                     dynamic: false,
                     agents: true,
+                    subagent_messages: true,
                 },
             },
             ProviderDescriptor {
@@ -62,6 +63,7 @@ impl ProviderRegistry {
                     custom_model: false,
                     dynamic: true,
                     agents: true,
+                    subagent_messages: true,
                 },
             },
             ProviderDescriptor {
@@ -93,6 +95,7 @@ impl ProviderRegistry {
                     custom_model: true,
                     dynamic: false,
                     agents: true,
+                    subagent_messages: true,
                 },
             },
             ProviderDescriptor {
@@ -119,6 +122,7 @@ impl ProviderRegistry {
                     custom_model: true,
                     dynamic: true,
                     agents: true,
+                    subagent_messages: true,
                 },
             },
         ]

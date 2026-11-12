@@ -14,7 +14,8 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    truncate_output,
 };
 use super::definitions::codex_agents;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
@@ -416,6 +417,16 @@ impl CodexShared {
                     });
                 }
             }
+            "turn/started" => {
+                // A new turn on an existing subagent (for example after the user wrote to it).
+                state.child_synced.remove(&id);
+                state.child_live.insert(id.clone());
+                (self.emit)(BackendEvent::Subagent {
+                    id,
+                    title,
+                    update: SubagentUpdate::Started,
+                });
+            }
             "turn/completed" => {
                 let ok = params
                     .pointer("/turn/status")
@@ -574,6 +585,48 @@ impl CodexShared {
             } else {
                 self.sync_child(state, &thread);
             }
+        }
+    }
+
+    /// Starts a turn on a subagent's own thread. A thread that was unloaded is resumed first.
+    fn run_child_turn(&self, thread: &str, text: &str) {
+        let Some(client) = self.client.get() else {
+            return;
+        };
+        let start = || {
+            client.request(
+                "turn/start",
+                json!({
+                    "threadId": thread,
+                    "input": [{ "type": "text", "text": text, "text_elements": [] }]
+                }),
+                Some(HANDSHAKE_TIMEOUT),
+            )
+        };
+        let outcome = match start() {
+            Ok(result) => Ok(result),
+            Err(_) => client
+                .request(
+                    "thread/resume",
+                    json!({ "threadId": thread }),
+                    Some(HANDSHAKE_TIMEOUT),
+                )
+                .and_then(|_| start()),
+        };
+        if let Err(error) = outcome {
+            let title = Self::child_title(&self.state.lock(), thread);
+            (self.emit)(BackendEvent::Subagent {
+                id: thread.to_string(),
+                title,
+                update: SubagentUpdate::Delta {
+                    text: format!("\n\n(could not reach this subagent: {})", error.message),
+                },
+            });
+            (self.emit)(BackendEvent::Subagent {
+                id: thread.to_string(),
+                title: Self::child_title(&self.state.lock(), thread),
+                update: SubagentUpdate::Done { ok: false },
+            });
         }
     }
 
@@ -797,6 +850,25 @@ impl BackendSession for CodexSession {
         state.effort = effort.map(str::to_string);
         state.agent = agent.map(str::to_string);
         true
+    }
+
+    fn message_subagent(
+        &self,
+        _turn_id: TurnId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<SubagentRoute> {
+        if !self.is_alive() {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                self.shared.with_exit_info("codex is not running".into()),
+            ));
+        }
+        let shared = Arc::clone(&self.shared);
+        let (thread_id, text) = (subagent_id.to_string(), text.to_string());
+        // The reply may take a while; the child's events stream in as notifications meanwhile.
+        thread::spawn(move || shared.run_child_turn(&thread_id, &text));
+        Ok(SubagentRoute::Direct)
     }
 
     fn options(&self) -> SessionOptions {
@@ -1165,6 +1237,51 @@ mod tests {
             updates
                 .iter()
                 .any(|(_, update)| matches!(update, SubagentUpdate::Done { ok: true }))
+        );
+    }
+
+    #[test]
+    fn a_message_to_a_subagent_streams_its_reply_without_a_main_turn() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "spawn please")
+            .expect("prompt");
+        h.until("main turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        let route = h
+            .session
+            .message_subagent(TurnId::new(), "thr_child", "check the tests")
+            .expect("message");
+        assert_eq!(route, SubagentRoute::Direct);
+        let seen = h.until("child reply done", |event| {
+            matches!(
+                event,
+                BackendEvent::Subagent {
+                    update: SubagentUpdate::Done { .. },
+                    ..
+                }
+            )
+        });
+        h.session.shutdown();
+        let updates = subagent_updates(&seen);
+        assert!(
+            updates
+                .iter()
+                .any(|(_, update)| matches!(update, SubagentUpdate::Started))
+        );
+        let reply: String = updates
+            .iter()
+            .filter_map(|(_, update)| match update {
+                SubagentUpdate::Delta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reply, "Reply to: check the tests");
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { .. }))
         );
     }
 

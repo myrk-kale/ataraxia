@@ -5,6 +5,7 @@ Frame shapes mirror real `opencode acp` traffic. The prompt text selects the sce
   tool  -> tool call that asks for permission, then completes or fails
   child -> a subagent (child session) works, then the main agent answers
   state -> replies with the current model, effort and mode
+A prompt addressed to the child session answers under the child's own session id.
   hang  -> streams one chunk and waits for session/cancel
   crash -> writes to stderr and exits non-zero
   other -> short streamed reply
@@ -137,6 +138,12 @@ def main():
             if params["configId"] == "model":
                 CONFIG["effort"] = "default"
             send({"id": frame["id"], "result": {"configOptions": config_options()}})
+        elif method == "session/prompt" and frame["params"]["sessionId"] == CHILD["id"]:
+            text = frame["params"]["prompt"][0]["text"]
+            send({"method": "session/update", "params": {"sessionId": CHILD["id"], "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Child heard: " + text}}}})
+            send({"id": frame["id"], "result": {"stopReason": "end_turn"}})
         elif method == "session/prompt":
             text = frame["params"]["prompt"][0]["text"]
             if text.startswith("tool"):

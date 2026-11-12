@@ -12,6 +12,7 @@ import {
   agentConfigureSession,
   agentGetOptions,
   agentGetSnapshot,
+  agentMessageSubagent,
   agentPrompt,
   agentResolvePermission,
   agentStartSession,
@@ -137,6 +138,7 @@ export function ChatPanel({
   }, [session.provider]);
 
   const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
+  const canWrite = activeSubagent === null || provider?.settings.subagent_messages === true;
 
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
   useLayoutEffect(() => {
@@ -184,7 +186,11 @@ export function ChatPanel({
     setDraft("");
     stickRef.current = true;
     try {
-      await agentPrompt(sessionId, text);
+      if (activeSubagent) {
+        await agentMessageSubagent(sessionId, activeSubagent.id, text);
+      } else {
+        await agentPrompt(sessionId, text);
+      }
     } catch (err) {
       dispatch({ type: "failed", message: errorText(err) });
     }
@@ -330,7 +336,11 @@ export function ChatPanel({
                   <span>{activeSubagent.status === "running" ? "working" : activeSubagent.status}</span>
                 </div>
                 {subagentRendered.length === 0 ? (
-                  <p className="text-small text-cg-muted">Nothing reported by this subagent yet.</p>
+                  <p className="text-small text-cg-muted">
+                    {activeSubagent.status === "running"
+                      ? "Waiting for this subagent to report…"
+                      : "Nothing reported by this subagent."}
+                  </p>
                 ) : null}
                 {subagentRendered}
                 {activeSubagent.status === "running" ? (
@@ -450,10 +460,12 @@ export function ChatPanel({
             ref={composerRef}
             aria-label="Message"
             className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted/70"
-            disabled={!state.loaded || activeSubagent !== null}
+            disabled={!state.loaded || !canWrite}
             placeholder={
               activeSubagent
-                ? "Read-only: this is a subagent's conversation"
+                ? canWrite
+                  ? `Message ${activeSubagent.title}…`
+                  : "This provider cannot message a subagent"
                 : `Ask ${providerLabel} to change something…`
             }
             rows={2}

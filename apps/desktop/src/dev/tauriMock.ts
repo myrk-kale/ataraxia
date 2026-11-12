@@ -66,10 +66,10 @@ if (mode === "subagents") {
 
 const m = (id: string, label: string, efforts: string[] = []) => ({ id, label, efforts });
 const providers = [
-  { kind: "fake", display_name: "Fake", available: true, detail: null, settings: { configurable: true, models: [m("fake-fast", "Fake fast")], efforts: ["low", "medium", "high"], custom_model: false, dynamic: false, agents: true } },
-  { kind: "claude", display_name: "Claude Code", available: true, detail: null, settings: { configurable: true, models: [m("sonnet", "Sonnet"), m("opus", "Opus"), m("haiku", "Haiku"), m("fable", "Fable")], efforts: ["low", "medium", "high", "xhigh", "max"], custom_model: true, dynamic: false, agents: true } },
-  { kind: "codex", display_name: "Codex", available: true, detail: null, settings: { configurable: true, models: [], efforts: ["low", "medium", "high", "xhigh"], custom_model: true, dynamic: true, agents: true } },
-  { kind: "opencode", display_name: "OpenCode", available: true, detail: null, settings: { configurable: true, models: [], efforts: [], custom_model: false, dynamic: true, agents: true } },
+  { kind: "fake", display_name: "Fake", available: true, detail: null, settings: { configurable: true, models: [m("fake-fast", "Fake fast")], efforts: ["low", "medium", "high"], custom_model: false, dynamic: false, agents: true, subagent_messages: true } },
+  { kind: "claude", display_name: "Claude Code", available: true, detail: null, settings: { configurable: true, models: [m("sonnet", "Sonnet"), m("opus", "Opus"), m("haiku", "Haiku"), m("fable", "Fable")], efforts: ["low", "medium", "high", "xhigh", "max"], custom_model: true, dynamic: false, agents: true, subagent_messages: true } },
+  { kind: "codex", display_name: "Codex", available: true, detail: null, settings: { configurable: true, models: [], efforts: ["low", "medium", "high", "xhigh"], custom_model: true, dynamic: true, agents: true, subagent_messages: true } },
+  { kind: "opencode", display_name: "OpenCode", available: true, detail: null, settings: { configurable: true, models: [], efforts: [], custom_model: false, dynamic: true, agents: true, subagent_messages: true } },
 ];
 
 // What each live session would report; Codex and OpenCode discover theirs from the provider.

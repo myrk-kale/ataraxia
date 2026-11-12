@@ -57,6 +57,15 @@ pub enum BackendEvent {
     },
 }
 
+/// How a message to a subagent is carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentRoute {
+    /// Sent straight to the subagent; the main conversation stays idle.
+    Direct,
+    /// Relayed by the main agent, so the main conversation runs a turn meanwhile.
+    MainTurn,
+}
+
 pub type Emitter = Arc<dyn Fn(BackendEvent) + Send + Sync>;
 
 pub struct BackendContext {
@@ -99,6 +108,19 @@ pub trait BackendSession: Send + Sync {
         _agent: Option<&str>,
     ) -> bool {
         false
+    }
+    /// Sends a message to a subagent. Its answer arrives as `Subagent` events; for
+    /// `SubagentRoute::MainTurn` the main agent also runs `turn_id` and ends it with `TurnDone`.
+    fn message_subagent(
+        &self,
+        _turn_id: TurnId,
+        _subagent_id: &str,
+        _text: &str,
+    ) -> Result<SubagentRoute> {
+        Err(crate::domain::Error::new(
+            crate::domain::ErrorCode::Unsupported,
+            "this provider cannot message a subagent",
+        ))
     }
     /// Models, effort levels and agents this session offers; empty when unknown.
     fn options(&self) -> SessionOptions {

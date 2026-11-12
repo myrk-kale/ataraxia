@@ -44,6 +44,7 @@ export type SubagentView = {
 
 export type SubagentUpdate =
   | { kind: "started" }
+  | { kind: "user"; text: string }
   | { kind: "delta"; text: string }
   | { kind: "tool"; callId: string; name: string; input: string }
   | { kind: "toolResult"; callId: string; output: string; ok: boolean }
@@ -144,6 +145,8 @@ export type ProviderSettings = {
   dynamic: boolean;
   /** The chat can run as a named agent. */
   agents: boolean;
+  /** Messages can be sent to a subagent from its own conversation. */
+  subagent_messages: boolean;
 };
 
 export type ProviderDescriptor = {
@@ -173,6 +176,10 @@ export function agentConfigureSession(
 
 export function agentSwitchProvider(sessionId: SessionId, provider: ProviderKind) {
   return invoke<ChatSession>("agent_switch_provider", { sessionId, provider });
+}
+
+export function agentMessageSubagent(sessionId: SessionId, subagentId: string, text: string) {
+  return invoke<void>("agent_message_subagent", { sessionId, subagentId, text });
 }
 
 export function agentGetOptions(sessionId: SessionId) {
@@ -291,6 +298,21 @@ export function applySubagent(
     switch (update.kind) {
       case "started":
         return { ...next, status: "running" };
+      case "user":
+        return {
+          ...next,
+          status: "running",
+          items: [
+            ...next.items,
+            {
+              kind: "message",
+              id: `${id}:${next.items.length}`,
+              role: "user",
+              text: update.text,
+              turnId: null,
+            },
+          ],
+        };
       case "delta": {
         const last = next.items[next.items.length - 1];
         if (last && last.kind === "message" && last.role === "assistant") {

@@ -7,11 +7,13 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter};
+use super::backend::{
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+};
 use crate::domain::agent::{AgentChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
-    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, ToolCallId,
+    Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
 };
 
 const TOOL_NAME: &str = "read_file";
@@ -81,6 +83,27 @@ impl BackendSession for FakeSession {
         _agent: Option<&str>,
     ) -> bool {
         self.live_settings
+    }
+
+    fn message_subagent(
+        &self,
+        _turn_id: TurnId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<SubagentRoute> {
+        (self.emit)(BackendEvent::Subagent {
+            id: subagent_id.to_string(),
+            title: String::new(),
+            update: SubagentUpdate::Delta {
+                text: format!("Got it: {text}"),
+            },
+        });
+        (self.emit)(BackendEvent::Subagent {
+            id: subagent_id.to_string(),
+            title: String::new(),
+            update: SubagentUpdate::Done { ok: true },
+        });
+        Ok(SubagentRoute::Direct)
     }
 
     fn options(&self) -> SessionOptions {

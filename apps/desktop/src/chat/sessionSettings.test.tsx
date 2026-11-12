@@ -16,6 +16,7 @@ function provider(settings: Partial<ProviderDescriptor["settings"]>): ProviderDe
       custom_model: false,
       dynamic: false,
       agents: false,
+      subagent_messages: false,
       ...settings,
     },
   };

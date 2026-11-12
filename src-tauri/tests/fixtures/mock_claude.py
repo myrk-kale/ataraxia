@@ -99,6 +99,11 @@ def run_tool():
 def run_subagent():
     """The main agent delegates to a subagent; its frames carry parent_tool_use_id."""
     agent_id = "toolu_agent"
+    # The stream announces the tool before its input is known, like the real CLI.
+    stream_event({"type": "message_start", "message": {"id": MSG, "role": "assistant", "content": []}})
+    stream_event({"type": "content_block_start", "index": 0,
+                  "content_block": {"type": "tool_use", "id": agent_id, "name": "Agent", "input": {}}})
+    stream_event({"type": "content_block_stop", "index": 0})
     send({"type": "assistant", "parent_tool_use_id": None,
           "message": {"id": MSG, "role": "assistant", "content": [
               {"type": "tool_use", "id": agent_id, "name": "Agent",
@@ -115,12 +120,27 @@ def run_subagent():
           "message": {"id": "msg_child_2", "role": "assistant",
                       "content": [{"type": "text", "text": "Found 1 entry point."}]}})
     send({"type": "user", "parent_tool_use_id": None, "message": {"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": agent_id, "content": "agentId: a1", "is_error": False}]}})
+        {"type": "tool_result", "tool_use_id": agent_id, "content": "Done.\nagentId: a1b2c3", "is_error": False}]}})
     stream_text(["Summary done."], "msg_mock_2")
     send({"type": "assistant", "parent_tool_use_id": None,
           "message": {"id": "msg_mock_2", "role": "assistant",
                       "content": [{"type": "text", "text": "Summary done."}]}})
     result(text="Summary done.")
+
+
+def run_relay(text):
+    """The main agent passes a message on to the subagent (SendMessage) and reports back."""
+    agent_id = "toolu_agent"
+    send({"type": "assistant", "parent_tool_use_id": None,
+          "message": {"id": "msg_relay", "role": "assistant", "content": [
+              {"type": "tool_use", "id": "toolu_send", "name": "SendMessage",
+               "input": {"to": "a1b2c3", "message": text}}]}})
+    send({"type": "assistant", "parent_tool_use_id": agent_id,
+          "message": {"id": "msg_child_3", "role": "assistant",
+                      "content": [{"type": "text", "text": "Resumed and replying."}]}})
+    send({"type": "user", "parent_tool_use_id": None, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_send", "content": "delivered", "is_error": False}]}})
+    result(text="Relayed.")
 
 
 def run_hang():
@@ -143,6 +163,8 @@ def main():
                 run_tool()
             elif text.startswith("subagent"):
                 run_subagent()
+            elif text.startswith("Use the SendMessage tool"):
+                run_relay(text)
             elif text.startswith("hang"):
                 run_hang()
             elif text.startswith("crash"):

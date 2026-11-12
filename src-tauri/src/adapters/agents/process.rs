@@ -18,6 +18,26 @@ use parking_lot::Mutex;
 use crate::domain::{Error, ErrorCode, Result};
 
 const STDERR_TAIL_LINES: usize = 20;
+/// Set to a file path to append every line exchanged with a provider CLI (`<` from it, `>` to
+/// it). Off by default: the log holds the full conversation.
+const DEBUG_FRAMES_ENV: &str = "CONCIERGE_DEBUG_FRAMES";
+
+fn debug_frame(direction: char, program: &Path, line: &str) {
+    let Some(path) = std::env::var_os(DEBUG_FRAMES_ENV) else {
+        return;
+    };
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{direction} {name} {line}");
+    }
+}
 
 /// Directories where user-installed agent CLIs commonly live.
 fn well_known_dirs() -> Vec<PathBuf> {
@@ -117,6 +137,7 @@ impl ExitInfo {
 }
 
 pub struct ManagedProcess {
+    program: PathBuf,
     child: Mutex<Child>,
     stdin: Mutex<Option<ChildStdin>>,
     alive: Arc<AtomicBool>,
@@ -173,15 +194,18 @@ impl ManagedProcess {
         });
 
         let process = Arc::new(Self {
+            program: spec.program.clone(),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             alive: Arc::new(AtomicBool::new(true)),
         });
 
         let watcher = Arc::clone(&process);
+        let program = spec.program.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
                 if !line.trim().is_empty() {
+                    debug_frame('<', &program, &line);
                     on_line(line);
                 }
             }
@@ -207,6 +231,7 @@ impl ManagedProcess {
     }
 
     pub fn write_line(&self, line: &str) -> Result<()> {
+        debug_frame('>', &self.program, line);
         let mut guard = self.stdin.lock();
         let stdin = guard
             .as_mut()

@@ -139,6 +139,23 @@ describe("chatReducer", () => {
       expect(state.subagents[0].status).toBe("running");
     });
 
+    it("shows what the user sent to a subagent and marks it as working again", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "delta", text: "Done." }),
+        sub({ kind: "done", ok: true }),
+        sub({ kind: "user", text: "also check the tests" }),
+        sub({ kind: "delta", text: "On it." }),
+      );
+      const [agent] = state.subagents;
+      expect(agent.status).toBe("running");
+      expect(agent.items.map((item) => item.kind === "message" && [item.role, item.text])).toEqual([
+        ["assistant", "Done."],
+        ["user", "also check the tests"],
+        ["assistant", "On it."],
+      ]);
+    });
+
     it("closes subagents still running when the main turn ends", () => {
       const state = apply(
         initialChatState,

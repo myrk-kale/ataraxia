@@ -40,6 +40,9 @@ pub trait AgentRuntime: Send + Sync {
         session_id: &SessionId,
         provider: ProviderKind,
     ) -> Result<ChatSession>;
+    /// Sends a message to one of the chat's subagents (shown in its own conversation).
+    fn message_subagent(&self, session_id: &SessionId, subagent_id: &str, text: &str)
+    -> Result<()>;
     /// Models, efforts and agents the live session offers.
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions>;
 }

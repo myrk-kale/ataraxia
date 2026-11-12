@@ -148,6 +148,16 @@ def main():
                     {"type": "commandExecution", "id": "rc1", "command": "git diff", "cwd": "/work",
                      "status": "completed", "aggregatedOutput": "diff --git", "exitCode": 0},
                     {"type": "agentMessage", "id": "rm1", "text": "All good."}]}]}}})
+        elif method == "thread/resume":
+            send({"id": frame["id"], "result": {"thread": {"id": frame["params"]["threadId"]}}})
+        elif method == "turn/start" and frame["params"]["threadId"] == CHILD:
+            text = frame["params"]["input"][0]["text"]
+            send({"id": frame["id"], "result": {"turn": {"id": "child_turn_2", "status": "inProgress"}}})
+            child_notify("turn/started", turn={"id": "child_turn_2", "status": "inProgress"})
+            child_notify("item/agentMessage/delta", turnId="child_turn_2", itemId="cm2",
+                         delta="Reply to: ")
+            child_notify("item/agentMessage/delta", turnId="child_turn_2", itemId="cm2", delta=text)
+            child_notify("turn/completed", turn={"id": "child_turn_2", "status": "completed"})
         elif method == "turn/start":
             send({"id": frame["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}})
             text = frame["params"]["input"][0]["text"]

@@ -199,6 +199,19 @@ pub fn agent_switch_provider(
 }
 
 #[tauri::command(async)]
+pub fn agent_message_subagent(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    subagent_id: String,
+    text: String,
+) -> std::result::Result<(), String> {
+    state
+        .agent_runtime()
+        .message_subagent(&session_id, &subagent_id, &text)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
 pub fn agent_get_options(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,

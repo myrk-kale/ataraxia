@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    truncate_output,
 };
 use super::definitions::claude_agents;
 use super::process::{ExitInfo, ManagedProcess, SpawnSpec, resolve_binary};
@@ -212,6 +213,9 @@ struct ClaudeState {
     subagent_titles: HashMap<String, String>,
     /// Tool_use ids that happened inside a subagent → the call id shown in its transcript.
     child_tools: HashMap<String, ToolCallId>,
+    /// Agent/Task tool_use id → the `agentId` Claude reports when the subagent returns; it is
+    /// what `SendMessage` needs to reach it again.
+    agent_ids: HashMap<String, String>,
 }
 
 struct ClaudeShared {
@@ -381,12 +385,19 @@ impl ClaudeShared {
                 if let Some(name) = &new_name {
                     meta.name = name.clone();
                 }
+                let (call_id, name, input) = (meta.id, meta.name.clone(), meta.input.clone());
                 (self.emit)(BackendEvent::ToolUpdate {
                     turn_id,
-                    call_id: meta.id,
+                    call_id,
                     name: new_name,
                     input: new_input,
                 });
+                // The stream announces a tool before its input is known, so the subagent's
+                // title is only available once the full message arrives.
+                if is_subagent_tool(&name) {
+                    self.note_subagent(state, tool_use_id, &input);
+                }
+                return call_id;
             }
             return meta.id;
         }
@@ -407,7 +418,9 @@ impl ClaudeShared {
             name: name.to_string(),
             input,
         });
-        if is_subagent_tool(name) {
+        // Announced by the stream before its input is known: wait for the full message, which
+        // carries the description the title is made from.
+        if is_subagent_tool(name) && !subagent_input.is_empty() {
             self.note_subagent(state, tool_use_id, &subagent_input);
         }
         id
@@ -525,7 +538,7 @@ impl ClaudeShared {
     }
 
     fn on_user(&self, frame: &Value) {
-        let state = self.state.lock();
+        let mut state = self.state.lock();
         let Some(turn_id) = state.turn else {
             return;
         };
@@ -536,30 +549,42 @@ impl ClaudeShared {
             if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                 continue;
             }
-            let Some(meta) = block
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .and_then(|id| state.tools.get(id))
-            else {
+            let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(call_id) = state.tools.get(tool_use_id).map(|meta| meta.id) else {
                 continue;
             };
             let is_error = block
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) {
-                if let Some(title) = state.subagent_titles.get(tool_use_id) {
-                    (self.emit)(BackendEvent::Subagent {
-                        id: tool_use_id.to_string(),
-                        title: title.clone(),
-                        update: SubagentUpdate::Done { ok: !is_error },
-                    });
+            let output = tool_result_text(block.get("content"));
+            // A subagent whose input never arrived still has to show up, if only generically.
+            let unseen = state
+                .tools
+                .get(tool_use_id)
+                .filter(|meta| is_subagent_tool(&meta.name))
+                .map(|meta| meta.input.clone())
+                .filter(|_| !state.subagent_titles.contains_key(tool_use_id));
+            if let Some(input) = unseen {
+                self.note_subagent(&mut state, tool_use_id, &input);
+            }
+            if let Some(title) = state.subagent_titles.get(tool_use_id).cloned() {
+                // Claude reports the id needed to reach this subagent again once it returns.
+                if let Some(agent_id) = parse_agent_id(&output) {
+                    state.agent_ids.insert(tool_use_id.to_string(), agent_id);
                 }
+                (self.emit)(BackendEvent::Subagent {
+                    id: tool_use_id.to_string(),
+                    title,
+                    update: SubagentUpdate::Done { ok: !is_error },
+                });
             }
             (self.emit)(BackendEvent::ToolResult {
                 turn_id,
-                call_id: meta.id,
-                output: truncate_output(tool_result_text(block.get("content"))),
+                call_id,
+                output: truncate_output(output),
                 ok: !is_error,
             });
         }
@@ -707,6 +732,34 @@ struct ClaudeSession {
 }
 
 impl BackendSession for ClaudeSession {
+    fn message_subagent(
+        &self,
+        turn_id: TurnId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<SubagentRoute> {
+        let (agent_id, title) = {
+            let state = self.shared.state.lock();
+            (
+                state.agent_ids.get(subagent_id).cloned(),
+                state
+                    .subagent_titles
+                    .get(subagent_id)
+                    .cloned()
+                    .unwrap_or_else(|| "Subagent".to_string()),
+            )
+        };
+        let Some(agent_id) = agent_id else {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "Claude only reports a subagent's id when it finishes, so it cannot be reached yet",
+            ));
+        };
+        // The main agent carries the message, so this is an ordinary turn.
+        self.prompt(turn_id, &relay_prompt(&agent_id, &title, text))?;
+        Ok(SubagentRoute::MainTurn)
+    }
+
     fn options(&self) -> SessionOptions {
         SessionOptions {
             models: ["sonnet", "opus", "haiku", "fable"]
@@ -813,6 +866,25 @@ impl BackendSession for ClaudeSession {
             process.kill();
         }
     }
+}
+
+/// The `agentId: <id>` line Claude appends to a finished Agent/Task result.
+fn parse_agent_id(text: &str) -> Option<String> {
+    let rest = text.split("agentId:").nth(1)?;
+    let id: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Claude reaches a finished subagent through the main agent's `SendMessage` tool.
+fn relay_prompt(agent_id: &str, title: &str, text: &str) -> String {
+    format!(
+        "Use the SendMessage tool to send the following message to the subagent \"{title}\" \
+         (agent id {agent_id}). Do not do the work yourself; pass it on and report its answer.\n\n{text}"
+    )
 }
 
 fn is_subagent_tool(name: &str) -> bool {
@@ -1051,6 +1123,84 @@ mod tests {
             event,
             BackendEvent::Tool { name, .. } if name == "Grep"
         )));
+    }
+
+    #[test]
+    fn the_subagent_title_comes_from_the_full_message_not_the_empty_stream_announcement() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "subagent please")
+            .expect("prompt");
+        let seen = h.until("turn done", is_turn_done);
+        h.session.shutdown();
+        let titles: Vec<&str> = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Subagent { title, .. } => Some(title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!titles.is_empty());
+        assert!(
+            titles.iter().all(|title| *title == "Explore the repo"),
+            "generic placeholder leaked: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn a_finished_subagent_can_be_messaged_through_the_main_agent() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "subagent please")
+            .expect("prompt");
+        h.until("first turn done", is_turn_done);
+
+        let turn = TurnId::new();
+        let route = h
+            .session
+            .message_subagent(turn, "toolu_agent", "also check the tests")
+            .expect("message");
+        assert_eq!(route, SubagentRoute::MainTurn);
+        let seen = h.until("relay done", is_turn_done);
+        h.session.shutdown();
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::Tool { name, .. } if name == "SendMessage"
+        )));
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::Subagent { id, update: SubagentUpdate::Delta { text }, .. }
+                if id == "toolu_agent" && text == "Resumed and replying."
+        )));
+        assert!(matches!(
+            seen.last(),
+            Some(BackendEvent::TurnDone { turn_id, ok: true }) if *turn_id == turn
+        ));
+    }
+
+    #[test]
+    fn a_subagent_that_has_not_returned_yet_cannot_be_reached() {
+        let h = start();
+        let error = h
+            .session
+            .message_subagent(TurnId::new(), "toolu_unknown", "hi")
+            .expect_err("no agent id yet");
+        h.session.shutdown();
+        assert!(error.message.contains("id"), "{}", error.message);
+    }
+
+    #[test]
+    fn agent_id_is_read_from_the_tool_result_text() {
+        assert_eq!(
+            parse_agent_id("Done.\nagentId: a1b2c3"),
+            Some("a1b2c3".into())
+        );
+        assert_eq!(
+            parse_agent_id("agentId: abc-123 (use SendMessage)"),
+            Some("abc-123".into())
+        );
+        assert_eq!(parse_agent_id("no id here"), None);
+        assert!(relay_prompt("a1", "Explore", "hi").contains("agent id a1"));
     }
 
     #[test]

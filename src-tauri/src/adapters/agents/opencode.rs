@@ -14,7 +14,8 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    truncate_output,
 };
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
@@ -178,6 +179,9 @@ struct AcpState {
     active: Option<QueuedPermission>,
     /// Tool calls made inside child sessions → the call id shown in the subagent transcript.
     child_calls: HashMap<String, ToolCallId>,
+    /// Child sessions seen so far (id → title), so updates addressed to one are recognised
+    /// even without the `_meta` marker.
+    children: HashMap<String, String>,
 }
 
 /// A subagent's child session, as marked by OpenCode on its updates.
@@ -370,8 +374,11 @@ impl AcpShared {
             Incoming::Notification { method, params } => {
                 if method == "session/update" {
                     if let Some(update) = params.get("update") {
-                        // Child (subagent) sessions ride on the prompt's session with a marker.
-                        let child = child_session(&params).or_else(|| child_session(update));
+                        // Child (subagent) sessions ride on the prompt's session with a marker,
+                        // or arrive under their own session id once prompted directly.
+                        let child = child_session(&params)
+                            .or_else(|| child_session(update))
+                            .or_else(|| self.known_child(&params));
                         match child {
                             Some(child) => self.on_child_update(&child, update),
                             None => self.on_update(update),
@@ -423,15 +430,23 @@ impl AcpShared {
         }
     }
 
+    /// The child session a `session/update` is addressed to, if it names one already seen.
+    fn known_child(&self, params: &Value) -> Option<ChildSession> {
+        let id = params.get("sessionId").and_then(Value::as_str)?;
+        let title = self.state.lock().children.get(id)?.clone();
+        Some(ChildSession {
+            id: id.to_string(),
+            title,
+        })
+    }
+
     fn on_child_update(&self, child: &ChildSession, update: &Value) {
         let kind = update
             .get("sessionUpdate")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let mut state = self.state.lock();
-        if state.turn.is_none() {
-            return;
-        }
+        state.children.insert(child.id.clone(), child.title.clone());
         let emit = |update: SubagentUpdate| {
             (self.emit)(BackendEvent::Subagent {
                 id: child.id.clone(),
@@ -629,6 +644,59 @@ impl AcpShared {
         }
     }
 
+    /// Prompts a child session directly and reports how it ended.
+    fn run_child_prompt(&self, child: &str, text: &str) {
+        let title = self
+            .state
+            .lock()
+            .children
+            .get(child)
+            .cloned()
+            .unwrap_or_else(|| "Subagent".to_string());
+        let emit = |update: SubagentUpdate, title: &str| {
+            (self.emit)(BackendEvent::Subagent {
+                id: child.to_string(),
+                title: title.to_string(),
+                update,
+            });
+        };
+        emit(SubagentUpdate::Started, &title);
+        let Some(client) = self.client.get() else {
+            return;
+        };
+        let outcome = client.request(
+            "session/prompt",
+            json!({
+                "sessionId": child,
+                "prompt": [{ "type": "text", "text": text }]
+            }),
+            None,
+        );
+        match outcome {
+            Ok(result) => {
+                let reason = result
+                    .get("stopReason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("end_turn");
+                emit(
+                    SubagentUpdate::Done {
+                        ok: reason == "end_turn",
+                    },
+                    &title,
+                );
+            }
+            Err(error) => {
+                emit(
+                    SubagentUpdate::Delta {
+                        text: format!("\n\n(could not reach this subagent: {})", error.message),
+                    },
+                    &title,
+                );
+                emit(SubagentUpdate::Done { ok: false }, &title);
+            }
+        }
+    }
+
     fn run_prompt(&self, turn_id: TurnId, text: String) {
         let Some(client) = self.client.get() else {
             return;
@@ -682,6 +750,24 @@ struct AcpSession {
 }
 
 impl BackendSession for AcpSession {
+    fn message_subagent(
+        &self,
+        _turn_id: TurnId,
+        subagent_id: &str,
+        text: &str,
+    ) -> Result<SubagentRoute> {
+        if !self.is_alive() {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                self.shared.with_exit_info("opencode is not running".into()),
+            ));
+        }
+        let shared = Arc::clone(&self.shared);
+        let (child, text) = (subagent_id.to_string(), text.to_string());
+        thread::spawn(move || shared.run_child_prompt(&child, &text));
+        Ok(SubagentRoute::Direct)
+    }
+
     fn apply_settings(
         &self,
         model: Option<&str>,
@@ -994,6 +1080,51 @@ mod tests {
         assert!(h.session.apply_settings(None, None, None));
         assert_eq!(state_line(&h), "model=mock/smart effort=default mode=build");
         h.session.shutdown();
+    }
+
+    #[test]
+    fn a_message_to_a_subagent_is_answered_in_its_own_conversation() {
+        let h = start();
+        // The child has to be seen first, as it is in a real run.
+        h.session
+            .prompt(TurnId::new(), "child please")
+            .expect("prompt");
+        h.until("turn done", is_turn_done);
+        let route = h
+            .session
+            .message_subagent(TurnId::new(), "ses_child", "run the tests")
+            .expect("message");
+        assert_eq!(route, SubagentRoute::Direct);
+        let seen = h.until("child reply done", |event| {
+            matches!(
+                event,
+                BackendEvent::Subagent {
+                    update: SubagentUpdate::Done { .. },
+                    ..
+                }
+            )
+        });
+        h.session.shutdown();
+        let reply: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Subagent {
+                    id,
+                    title,
+                    update: SubagentUpdate::Delta { text },
+                } => {
+                    assert_eq!((id.as_str(), title.as_str()), ("ses_child", "Explore"));
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reply, "Child heard: run the tests");
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Delta { .. }))
+        );
     }
 
     #[test]

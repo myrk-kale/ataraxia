@@ -131,6 +131,9 @@ pub struct ProviderSettings {
     /// Whether the chat can run as a named agent.
     #[serde(default)]
     pub agents: bool,
+    /// Whether messages can be sent to a subagent from its own conversation.
+    #[serde(default)]
+    pub subagent_messages: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,6 +15,7 @@ function provider(dynamic: boolean, efforts: string[] = []): ProviderDescriptor 
       custom_model: true,
       dynamic,
       agents: true,
+      subagent_messages: true,
     },
   };
 }
