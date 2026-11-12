@@ -207,6 +207,11 @@ struct CodexState {
     agent: Option<String>,
     /// Subagent threads: thread id → title, and what was already reported for them.
     child_titles: HashMap<String, String>,
+    /// Threads whose title came from the thread itself (nickname/role), which beats a title
+    /// guessed from the spawn prompt.
+    child_named: HashSet<String>,
+    /// Threads whose name has already been looked up, so it happens once.
+    child_looked_up: HashSet<String>,
     child_calls: HashMap<String, ToolCallId>,
     child_live: HashSet<String>,
     child_synced: HashSet<String>,
@@ -256,6 +261,19 @@ impl CodexShared {
     }
 
     fn on_notification(&self, method: &str, params: &Value) {
+        // A subagent's thread announces itself with its nickname and role.
+        if method == "thread/started" {
+            if let (Some(thread), Some(main)) = (params.get("thread"), self.thread_id.get()) {
+                let id = thread.get("id").and_then(Value::as_str);
+                if let (Some(id), Some(title)) = (id, thread_title(thread)) {
+                    if id != main {
+                        let mut state = self.state.lock();
+                        self.name_child(&mut state, id, title, true);
+                    }
+                }
+            }
+            return;
+        }
         // Spawned subagents run in their own threads; keep them out of the main conversation.
         if let (Some(thread), Some(main)) = (
             params.get("threadId").and_then(Value::as_str),
@@ -285,6 +303,9 @@ impl CodexShared {
             }
             "item/started" => {
                 if let Some(item) = params.get("item") {
+                    if item.get("type").and_then(Value::as_str) == Some("collabAgentToolCall") {
+                        self.on_collab(&mut state, item);
+                    }
                     self.announce_item(&mut state, turn_id, item);
                 }
             }
@@ -358,6 +379,18 @@ impl CodexShared {
     /// Progress of a spawned subagent's own thread, when the server streams it.
     fn on_child_notification(&self, thread: &str, method: &str, params: &Value) {
         let mut state = self.state.lock();
+        // Its events can arrive before anything told us what this thread is.
+        if !state.child_titles.contains_key(thread) {
+            state
+                .child_titles
+                .insert(thread.to_string(), "Subagent".to_string());
+        }
+        if !state.child_named.contains(thread) && state.child_looked_up.insert(thread.to_string()) {
+            if let Some(me) = self.me.get().and_then(Weak::upgrade) {
+                let thread = thread.to_string();
+                thread::spawn(move || me.look_up_child_name(&thread));
+            }
+        }
         let title = Self::child_title(&state, thread);
         let id = thread.to_string();
         match method {
@@ -453,16 +486,8 @@ impl CodexShared {
         if spawns {
             if let Some(threads) = item.get("receiverThreadIds").and_then(Value::as_array) {
                 for thread in threads.iter().filter_map(Value::as_str) {
-                    if state.child_titles.contains_key(thread) {
-                        continue;
-                    }
                     let title = prompt.clone().unwrap_or_else(|| "Subagent".to_string());
-                    state.child_titles.insert(thread.to_string(), title.clone());
-                    (self.emit)(BackendEvent::Subagent {
-                        id: thread.to_string(),
-                        title,
-                        update: SubagentUpdate::Started,
-                    });
+                    self.name_child(state, thread, title, false);
                 }
             }
         }
@@ -476,6 +501,45 @@ impl CodexShared {
                     self.sync_child(state, thread);
                 }
             }
+        }
+    }
+
+    /// Sets a subagent's title and tells the UI. A title taken from the thread itself wins over
+    /// one guessed from the spawn prompt, and nothing is announced when it did not change.
+    fn name_child(&self, state: &mut CodexState, thread: &str, title: String, from_thread: bool) {
+        if from_thread {
+            state.child_named.insert(thread.to_string());
+        } else if state.child_named.contains(thread) {
+            return;
+        }
+        let current = state.child_titles.get(thread);
+        let placeholder = current.is_none_or(|current| current == "Subagent");
+        if current == Some(&title) || (!from_thread && !placeholder) {
+            return;
+        }
+        state.child_titles.insert(thread.to_string(), title.clone());
+        (self.emit)(BackendEvent::Subagent {
+            id: thread.to_string(),
+            title,
+            update: SubagentUpdate::Started,
+        });
+    }
+
+    /// Asks the server what a subagent thread is called (its nickname and role).
+    fn look_up_child_name(&self, thread: &str) {
+        let Some(client) = self.client.get() else {
+            return;
+        };
+        let Ok(result) = client.request(
+            "thread/read",
+            json!({ "threadId": thread }),
+            Some(INTERRUPT_TIMEOUT),
+        ) else {
+            return;
+        };
+        if let Some(title) = result.get("thread").and_then(thread_title) {
+            let mut state = self.state.lock();
+            self.name_child(&mut state, thread, title, true);
         }
     }
 
@@ -980,6 +1044,27 @@ fn prompt_text(agent: Option<&str>, text: &str) -> String {
     }
 }
 
+/// A readable name for a subagent thread: its nickname (with role), else its name or preview.
+fn thread_title(thread: &Value) -> Option<String> {
+    let text = |key: &str| {
+        thread
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    match (text("agentNickname"), text("agentRole")) {
+        (Some(nick), Some(role)) if !role.eq_ignore_ascii_case(nick) => {
+            Some(format!("{nick} ({role})"))
+        }
+        (Some(nick), _) => Some(nick.to_string()),
+        (None, Some(role)) => Some(role.to_string()),
+        (None, None) => text("name")
+            .map(str::to_string)
+            .or_else(|| text("preview").map(first_line_title)),
+    }
+}
+
 fn first_line_title(prompt: &str) -> String {
     let line = prompt
         .lines()
@@ -1170,6 +1255,13 @@ mod tests {
         assert!(updates.iter().any(|(title, update)| {
             *title == "Review the diff" && matches!(update, SubagentUpdate::Started)
         }));
+        // The thread names itself afterwards, and that beats the prompt-derived guess.
+        // (Its role repeats the nickname here, so only the nickname is shown.)
+        assert_eq!(
+            updates.iter().rev().map(|(title, _)| *title).next(),
+            Some("Reviewer")
+        );
+        assert!(updates.iter().all(|(title, _)| *title != "Subagent"));
         let streamed: String = updates
             .iter()
             .filter_map(|(_, update)| match update {
@@ -1201,6 +1293,64 @@ mod tests {
             })
             .collect();
         assert_eq!(main_text, "Reviewed.");
+    }
+
+    #[test]
+    fn a_subagent_seen_only_through_its_events_is_named_by_looking_its_thread_up() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "spawnfirst please")
+            .expect("prompt");
+        let mut seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        // The lookup answers after the mock finishes its turn; the title follows.
+        seen.extend(h.until(
+            "named",
+            |event| matches!(event, BackendEvent::Subagent { title, .. } if title == "Reviewer"),
+        ));
+        h.session.shutdown();
+        let updates = subagent_updates(&seen);
+        assert!(
+            updates.iter().any(|(title, _)| *title == "Reviewer"),
+            "{updates:?}"
+        );
+        // It was settled with the turn although nothing ever announced it by spawn.
+        assert!(
+            updates
+                .iter()
+                .any(|(_, update)| matches!(update, SubagentUpdate::Delta { .. }))
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|(_, update)| matches!(update, SubagentUpdate::Done { .. }))
+        );
+    }
+
+    #[test]
+    fn thread_titles_prefer_nickname_and_role_then_name_then_preview() {
+        let title = |value: Value| thread_title(&value);
+        assert_eq!(
+            title(json!({"agentNickname": "Ada", "agentRole": "explorer"})),
+            Some("Ada (explorer)".into())
+        );
+        assert_eq!(
+            title(json!({"agentNickname": "Reviewer", "agentRole": "reviewer"})),
+            Some("Reviewer".into()),
+            "a role that repeats the nickname is not shown twice"
+        );
+        assert_eq!(title(json!({"agentNickname": "Ada"})), Some("Ada".into()));
+        assert_eq!(title(json!({"agentRole": "worker"})), Some("worker".into()));
+        assert_eq!(
+            title(json!({"name": " Fix tests "})),
+            Some("Fix tests".into())
+        );
+        assert_eq!(
+            title(json!({"preview": "Map the repo\nthen report"})),
+            Some("Map the repo".into())
+        );
+        assert_eq!(title(json!({"agentNickname": "", "preview": ""})), None);
     }
 
     #[test]

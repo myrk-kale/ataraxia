@@ -234,6 +234,13 @@ impl Inner {
                 });
                 self.publish_status(session_id, SessionStatus::Ready);
             }
+            BackendEvent::TurnStarted { turn_id } => {
+                if live.active_turn.is_none() {
+                    live.active_turn = Some(turn_id);
+                    live.status = SessionStatus::Working;
+                    self.publish_status(session_id, SessionStatus::Working);
+                }
+            }
             BackendEvent::Subagent { id, title, update } => {
                 apply_subagent(&mut live.subagents, &id, &title, &update);
                 self.sink.emit_agent(AgentEvent::Subagent {
@@ -296,6 +303,7 @@ fn apply_subagent(
                 id: id.to_string(),
                 title: title.to_string(),
                 status: SubagentStatus::Running,
+                detached: false,
                 items: Vec::new(),
             });
             subagents.len() - 1
@@ -307,6 +315,10 @@ fn apply_subagent(
     }
     match update {
         SubagentUpdate::Started => record.status = SubagentStatus::Running,
+        SubagentUpdate::Detached => {
+            record.status = SubagentStatus::Running;
+            record.detached = true;
+        }
         SubagentUpdate::User { text } => {
             record.status = SubagentStatus::Running;
             record.items.push(ChatItem::Message(ChatMessage {
@@ -361,6 +373,7 @@ fn apply_subagent(
             }
         }
         SubagentUpdate::Done { ok } => {
+            record.detached = false;
             record.status = if *ok {
                 SubagentStatus::Done
             } else {
@@ -382,11 +395,12 @@ fn apply_subagent(
 }
 
 fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
-    // A subagent still open when the turn ends can never report again.
+    // A subagent still open when the turn ends can never report again, unless it was
+    // launched in the background and is meant to outlive the turn.
     for record in live
         .subagents
         .iter_mut()
-        .filter(|record| record.status == SubagentStatus::Running)
+        .filter(|record| record.status == SubagentStatus::Running && !record.detached)
     {
         record.status = if ok {
             SubagentStatus::Done

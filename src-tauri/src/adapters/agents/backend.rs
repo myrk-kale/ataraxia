@@ -46,6 +46,11 @@ pub enum BackendEvent {
         turn_id: TurnId,
         ok: bool,
     },
+    /// The agent started a turn nobody asked for (for example the report of a background
+    /// subagent). Its events and its `TurnDone` use this id.
+    TurnStarted {
+        turn_id: TurnId,
+    },
     /// Progress inside a subagent's own conversation.
     Subagent {
         id: String,

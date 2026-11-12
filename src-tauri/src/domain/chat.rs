@@ -115,6 +115,9 @@ pub struct SubagentRecord {
     pub id: String,
     pub title: String,
     pub status: SubagentStatus,
+    /// Keeps running after the turn that started it ends (a background subagent).
+    #[serde(default)]
+    pub detached: bool,
     pub items: Vec<ChatItem>,
 }
 
@@ -123,6 +126,8 @@ pub struct SubagentRecord {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SubagentUpdate {
     Started,
+    /// The subagent runs in the background: it outlives the turn and reports later.
+    Detached,
     /// A message the user sent to this subagent.
     #[serde(rename_all = "camelCase")]
     User {

@@ -10,6 +10,7 @@ pub mod opencode;
 pub mod process;
 pub mod registry;
 pub mod rpc;
+pub mod subagent_tail;
 
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;

@@ -39,11 +39,14 @@ export type SubagentView = {
   id: string;
   title: string;
   status: SubagentStatus;
+  /** Keeps running after the turn that started it ends (a background subagent). */
+  detached?: boolean;
   items: ChatItem[];
 };
 
 export type SubagentUpdate =
   | { kind: "started" }
+  | { kind: "detached" }
   | { kind: "user"; text: string }
   | { kind: "delta"; text: string }
   | { kind: "tool"; callId: string; name: string; input: string }
@@ -298,6 +301,8 @@ export function applySubagent(
     switch (update.kind) {
       case "started":
         return { ...next, status: "running" };
+      case "detached":
+        return { ...next, status: "running", detached: true };
       case "user":
         return {
           ...next,
@@ -363,6 +368,7 @@ export function applySubagent(
       case "done":
         return {
           ...next,
+          detached: false,
           status: update.ok ? "done" : "failed",
           items: settleItems(next.items, update.ok),
         };
@@ -453,9 +459,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ...state,
             pending: null,
             items: settleTools(state.items, event.turnId, event.ok),
-            // A subagent still open when the turn ends can never report again.
+            // A subagent still open when the turn ends can never report again, unless it runs
+            // in the background and is meant to outlive the turn.
             subagents: state.subagents.map((item) =>
-              item.status === "running"
+              item.status === "running" && !item.detached
                 ? {
                     ...item,
                     status: event.ok ? "done" : "failed",

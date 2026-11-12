@@ -3,10 +3,11 @@
 
 Frame shapes follow Codex's app-server protocol: thread/start, turn/start, `item/*` and
 `turn/*` notifications, and string-id server requests for approvals. The first word of the
-prompt selects the scenario: tool | spawn | spawnquiet | hang | crash | anything else.
+prompt selects the scenario: tool | spawn | spawnfirst | spawnquiet | hang | crash | anything else.
 """
 import json
 import sys
+import time
 
 THREAD = "thr_mock"
 CHILD = "thr_child"
@@ -83,11 +84,16 @@ def collab_item(status, agent_status):
             "agentsStates": {CHILD: {"status": agent_status, "message": None}}}
 
 
+def child_thread():
+    return {"id": CHILD, "agentNickname": "Reviewer", "agentRole": "reviewer", "turns": []}
+
+
 def run_spawn():
     """The subagent's thread streams on the same connection."""
     start_turn()
     notify("item/started", turnId=TURN, item=collab_item("inProgress", "pendingInit"))
     notify("item/completed", turnId=TURN, item=collab_item("completed", "running"))
+    send({"method": "thread/started", "params": {"thread": child_thread()}})
     child_notify("turn/started", turn={"id": "child_turn", "status": "inProgress"})
     child_notify("item/agentMessage/delta", turnId="child_turn", itemId="cm1", delta="Looks ")
     child_notify("item/agentMessage/delta", turnId="child_turn", itemId="cm1", delta="fine.")
@@ -98,6 +104,17 @@ def run_spawn():
                  item={**cmd, "status": "completed", "aggregatedOutput": "diff --git", "exitCode": 0})
     child_notify("turn/completed", turn={"id": "child_turn", "status": "completed"})
     notify("item/agentMessage/delta", turnId=TURN, itemId="msg1", delta="Reviewed.")
+    complete()
+
+
+def run_spawnfirst():
+    """The child's events arrive before anything names it; only thread/read knows its name."""
+    start_turn()
+    child_notify("turn/started", turn={"id": "child_turn", "status": "inProgress"})
+    child_notify("item/agentMessage/delta", turnId="child_turn", itemId="cm1", delta="Working.")
+    time.sleep(0.3)  # lets the name lookup finish before the turn ends
+    child_notify("turn/completed", turn={"id": "child_turn", "status": "completed"})
+    notify("item/agentMessage/delta", turnId=TURN, itemId="msg1", delta="Done.")
     complete()
 
 
@@ -142,7 +159,9 @@ def main():
                  "supportedReasoningEfforts": []}]}})
         elif method == "thread/read":
             assert frame["params"]["threadId"] == CHILD
-            assert frame["params"].get("includeTurns") is True
+            if not frame["params"].get("includeTurns"):
+                send({"id": frame["id"], "result": {"thread": child_thread()}})
+                continue
             send({"id": frame["id"], "result": {"thread": {
                 "id": CHILD, "agentNickname": "Reviewer", "turns": [{"id": "ct", "items": [
                     {"type": "commandExecution", "id": "rc1", "command": "git diff", "cwd": "/work",
@@ -165,6 +184,8 @@ def main():
                 run_tool()
             elif text.startswith("spawnquiet"):
                 run_spawnquiet()
+            elif text.startswith("spawnfirst"):
+                run_spawnfirst()
             elif text.startswith("spawn"):
                 run_spawn()
             elif text.startswith("hang"):

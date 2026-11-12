@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
@@ -19,6 +20,7 @@ use super::backend::{
 };
 use super::definitions::claude_agents;
 use super::process::{ExitInfo, ManagedProcess, SpawnSpec, resolve_binary};
+use super::subagent_tail::{TailSpec, spawn_tail};
 use crate::domain::agent::{ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
@@ -216,6 +218,12 @@ struct ClaudeState {
     /// Agent/Task tool_use id → the `agentId` Claude reports when the subagent returns; it is
     /// what `SendMessage` needs to reach it again.
     agent_ids: HashMap<String, String>,
+    /// Background subagents: tool_use id → the transcript file that follows them, and the flag
+    /// that stops the tail reading it.
+    tails: HashMap<String, (PathBuf, Arc<AtomicBool>)>,
+    /// A background subagent was launched: the agent may speak again without being asked
+    /// (to report it), so frames outside a turn start one instead of being dropped.
+    background_seen: bool,
 }
 
 struct ClaudeShared {
@@ -278,7 +286,7 @@ impl ClaudeShared {
             return;
         };
         let mut state = self.state.lock();
-        let Some(turn_id) = state.turn else {
+        let Some(turn_id) = self.turn_or_unprompted(&mut state) else {
             return;
         };
         let index = event.get("index").and_then(Value::as_u64);
@@ -326,7 +334,7 @@ impl ClaudeShared {
 
     fn on_assistant(&self, frame: &Value) {
         let mut state = self.state.lock();
-        let Some(turn_id) = state.turn else {
+        let Some(turn_id) = self.turn_or_unprompted(&mut state) else {
             return;
         };
         let message_id = frame
@@ -442,11 +450,23 @@ impl ClaudeShared {
         });
     }
 
+    /// The running turn, or, once a background subagent exists, a new one for output nobody
+    /// asked for (the report that follows the subagent finishing).
+    fn turn_or_unprompted(&self, state: &mut ClaudeState) -> Option<TurnId> {
+        if let Some(turn_id) = state.turn {
+            return Some(turn_id);
+        }
+        if !state.background_seen || state.cancel_requested {
+            return None;
+        }
+        let turn_id = TurnId::new();
+        state.turn = Some(turn_id);
+        (self.emit)(BackendEvent::TurnStarted { turn_id });
+        Some(turn_id)
+    }
+
     fn on_child_assistant(&self, parent: &str, frame: &Value) {
         let mut state = self.state.lock();
-        if state.turn.is_none() {
-            return;
-        }
         let title = state
             .subagent_titles
             .get(parent)
@@ -497,6 +517,38 @@ impl ClaudeShared {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Starts following a background subagent's transcript, replacing an earlier tail.
+    fn follow(
+        &self,
+        state: &mut ClaudeState,
+        subagent_id: &str,
+        title: &str,
+        path: PathBuf,
+        from_end: bool,
+    ) {
+        if let Some((_, stop)) = state.tails.remove(subagent_id) {
+            stop.store(true, Ordering::SeqCst);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        state
+            .tails
+            .insert(subagent_id.to_string(), (path.clone(), Arc::clone(&stop)));
+        spawn_tail(TailSpec {
+            path,
+            id: subagent_id.to_string(),
+            title: title.to_string(),
+            emit: Arc::clone(&self.emit),
+            stop,
+            from_end,
+        });
+    }
+
+    fn stop_tails(&self) {
+        for (_, stop) in self.state.lock().tails.values() {
+            stop.store(true, Ordering::SeqCst);
         }
     }
 
@@ -571,15 +623,29 @@ impl ClaudeShared {
                 self.note_subagent(&mut state, tool_use_id, &input);
             }
             if let Some(title) = state.subagent_titles.get(tool_use_id).cloned() {
-                // Claude reports the id needed to reach this subagent again once it returns.
+                // Claude reports the id needed to reach this subagent again.
                 if let Some(agent_id) = parse_agent_id(&output) {
                     state.agent_ids.insert(tool_use_id.to_string(), agent_id);
                 }
-                (self.emit)(BackendEvent::Subagent {
-                    id: tool_use_id.to_string(),
-                    title,
-                    update: SubagentUpdate::Done { ok: !is_error },
-                });
+                if !is_error && is_background_launch(&output) {
+                    // Not finished: it keeps working after this turn and reports later. Its
+                    // transcript file is how its progress can be followed meanwhile.
+                    state.background_seen = true;
+                    (self.emit)(BackendEvent::Subagent {
+                        id: tool_use_id.to_string(),
+                        title: title.clone(),
+                        update: SubagentUpdate::Detached,
+                    });
+                    if let Some(path) = parse_output_file(&output) {
+                        self.follow(&mut state, tool_use_id, &title, path, false);
+                    }
+                } else {
+                    (self.emit)(BackendEvent::Subagent {
+                        id: tool_use_id.to_string(),
+                        title,
+                        update: SubagentUpdate::Done { ok: !is_error },
+                    });
+                }
             }
             (self.emit)(BackendEvent::ToolResult {
                 turn_id,
@@ -755,6 +821,14 @@ impl BackendSession for ClaudeSession {
                 "Claude only reports a subagent's id when it finishes, so it cannot be reached yet",
             ));
         };
+        // The subagent's transcript keeps growing once it is resumed: follow it from here.
+        {
+            let mut state = self.shared.state.lock();
+            if let Some((path, _)) = state.tails.get(subagent_id).cloned() {
+                self.shared
+                    .follow(&mut state, subagent_id, &title, path, true);
+            }
+        }
         // The main agent carries the message, so this is an ordinary turn.
         self.prompt(turn_id, &relay_prompt(&agent_id, &title, text))?;
         Ok(SubagentRoute::MainTurn)
@@ -862,10 +936,24 @@ impl BackendSession for ClaudeSession {
     }
 
     fn shutdown(&self) {
+        self.shared.stop_tails();
         if let Some(process) = self.shared.process.get() {
             process.kill();
         }
     }
+}
+
+/// True for the result of an Agent/Task call that returned before the subagent finished.
+fn is_background_launch(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("async agent launched") || lower.contains("async_launched")
+}
+
+/// The `output_file: <path>` line of a background launch: the subagent's live transcript.
+fn parse_output_file(output: &str) -> Option<PathBuf> {
+    let rest = output.split("output_file:").nth(1)?;
+    let path = rest.lines().next()?.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// The `agentId: <id>` line Claude appends to a finished Agent/Task result.
@@ -910,7 +998,7 @@ fn capitalize(word: &str) -> String {
         .unwrap_or_default()
 }
 
-fn input_text(input: Option<&Value>) -> Option<String> {
+pub(super) fn input_text(input: Option<&Value>) -> Option<String> {
     match input {
         None | Some(Value::Null) => None,
         Some(Value::Object(map)) if map.is_empty() => None,
@@ -918,7 +1006,7 @@ fn input_text(input: Option<&Value>) -> Option<String> {
     }
 }
 
-fn tool_result_text(content: Option<&Value>) -> String {
+pub(super) fn tool_result_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(items)) => items
@@ -1145,6 +1233,111 @@ mod tests {
             titles.iter().all(|title| *title == "Explore the repo"),
             "generic placeholder leaked: {titles:?}"
         );
+    }
+
+    #[test]
+    fn a_background_subagent_is_followed_through_its_transcript_and_the_late_report_is_shown() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "background please")
+            .expect("prompt");
+        let first = h.until("launch turn done", is_turn_done);
+        let rest = h.until("late report done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let all: Vec<&BackendEvent> = first.iter().chain(rest.iter()).collect();
+
+        let position = |wanted: fn(&SubagentUpdate) -> bool| {
+            all.iter().position(|event| match event {
+                BackendEvent::Subagent { id, update, .. } => id == "toolu_bg" && wanted(update),
+                _ => false,
+            })
+        };
+        // Launching is not finishing: it is only reported as done after the work was seen.
+        let detached = position(|update| matches!(update, SubagentUpdate::Detached))
+            .expect("launch reported as detached");
+        let done = position(|update| matches!(update, SubagentUpdate::Done { ok: true }))
+            .expect("finished once its transcript says so");
+        assert!(detached < done);
+        assert!(
+            position(|update| matches!(update, SubagentUpdate::User { text } if text == "Explore the repo"))
+                .is_some()
+        );
+        assert!(
+            position(
+                |update| matches!(update, SubagentUpdate::Tool { name, .. } if name == "Grep")
+            )
+            .is_some()
+        );
+        assert!(
+            position(|update| matches!(
+                update,
+                SubagentUpdate::ToolResult { ok: true, output, .. } if output == "src/main.rs"
+            ))
+            .is_some()
+        );
+        let text = position(
+            |update| matches!(update, SubagentUpdate::Delta { text } if text == "Found 1 entry point."),
+        )
+        .expect("its answer streamed in");
+        assert!(text < done);
+
+        // The title is the real one from the first announcement on.
+        let titles: Vec<_> = all
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Subagent { title, .. } => Some(title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            titles.iter().all(|title| *title == "Explorar a codebase"),
+            "{titles:?}"
+        );
+
+        // The main agent speaks twice: the launch, then the report nobody asked for.
+        assert_eq!(deltas(&first), "Launched in the background.");
+        let started = rest
+            .iter()
+            .position(|event| matches!(event, BackendEvent::TurnStarted { .. }))
+            .expect("the unprompted turn is announced");
+        assert_eq!(deltas(&rest[started..]), "The subagent finished.");
+    }
+
+    #[test]
+    fn output_without_a_background_subagent_is_still_ignored_outside_a_turn() {
+        let h = start();
+        h.session.prompt(TurnId::new(), "hello").expect("prompt");
+        h.until("turn done", is_turn_done);
+        h.session.shutdown();
+        // Nothing was launched, so no stray turn can have been invented.
+        assert!(
+            h.events
+                .try_iter()
+                .all(|event| !matches!(event, BackendEvent::TurnStarted { .. }))
+        );
+    }
+
+    #[test]
+    fn background_launches_and_their_files_are_recognised_in_the_real_result_text() {
+        let real = "Async agent launched successfully. (This tool result is internal metadata \u{2014} never quote it.)\n\
+            agentId: a241b83d4303976a4 (internal ID - do not mention to user. Use SendMessage with to: 'a241b83d4303976a4')\n\
+            The agent is working in the background.\n\
+            output_file: /private/tmp/claude-501/-Users-me-proj/048fa7e1/tasks/a241b83d4303976a4.output\n";
+        assert!(is_background_launch(real));
+        assert!(is_background_launch("status: async_launched"));
+        assert!(!is_background_launch(
+            "agentId: abc\nThe subagent finished."
+        ));
+        assert_eq!(parse_agent_id(real), Some("a241b83d4303976a4".into()));
+        assert_eq!(
+            parse_output_file(real),
+            Some(PathBuf::from(
+                "/private/tmp/claude-501/-Users-me-proj/048fa7e1/tasks/a241b83d4303976a4.output"
+            ))
+        );
+        assert_eq!(parse_output_file("no file here"), None);
     }
 
     #[test]

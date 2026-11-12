@@ -156,6 +156,17 @@ describe("chatReducer", () => {
       ]);
     });
 
+    it("keeps a background subagent running past the turn that launched it", () => {
+      const state = apply(
+        initialChatState,
+        sub({ kind: "detached" }),
+        { type: "turnDone", sessionId: SESSION, turnId: TURN, ok: true },
+      );
+      expect(state.subagents[0]).toMatchObject({ status: "running", detached: true });
+      const finished = apply(state, sub({ kind: "delta", text: "Result." }), sub({ kind: "done", ok: true }));
+      expect(finished.subagents[0]).toMatchObject({ status: "done", detached: false });
+    });
+
     it("closes subagents still running when the main turn ends", () => {
       const state = apply(
         initialChatState,
