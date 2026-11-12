@@ -2,12 +2,14 @@
 
 mod state;
 
-use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
-use crate::domain::{Error, Result};
-use state::AppState;
+use base64::Engine as _;
 
-pub use state::build_app_state;
+use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
+use crate::domain::{Error, Result};
+use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
+
+pub use state::{AppState, build_app_state};
 
 fn map_error(error: Error) -> String {
     error.to_string()
@@ -80,4 +82,60 @@ pub fn workspace_open_session(
     session_id: SessionId,
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| workspace.open_session(session_id))
+}
+
+#[tauri::command]
+pub fn terminal_ensure(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+) -> std::result::Result<PtyEnsureResponse, String> {
+    state
+        .pty_host()
+        .ensure_session(PtySpawnRequest {
+            worktree_id,
+            cwd: cwd.into(),
+            cols,
+            rows,
+        })
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn terminal_write(
+    state: tauri::State<'_, AppState>,
+    session_id: PtySessionId,
+    data: String,
+) -> std::result::Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|error| Error::new(crate::domain::ErrorCode::Invalid, error.to_string()))
+        .map_err(map_error)?;
+    state
+        .pty_host()
+        .write(&session_id, &bytes)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn terminal_resize(
+    state: tauri::State<'_, AppState>,
+    session_id: PtySessionId,
+    cols: u16,
+    rows: u16,
+) -> std::result::Result<(), String> {
+    state
+        .pty_host()
+        .resize(&session_id, cols, rows)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn terminal_kill(
+    state: tauri::State<'_, AppState>,
+    session_id: PtySessionId,
+) -> std::result::Result<(), String> {
+    state.pty_host().kill(&session_id).map_err(map_error)
 }

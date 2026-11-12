@@ -12,7 +12,7 @@ pub mod domain;
 pub mod ports;
 
 use adapters::tauri_api;
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,7 +33,18 @@ pub fn run() {
             tauri_api::workspace_select_worktree,
             tauri_api::workspace_create_session,
             tauri_api::workspace_open_session,
+            tauri_api::terminal_ensure,
+            tauri_api::terminal_write,
+            tauri_api::terminal_resize,
+            tauri_api::terminal_kill,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Concierge");
+        .build(tauri::generate_context!())
+        .expect("error while building Concierge")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<tauri_api::AppState>() {
+                    state.pty.shutdown_all();
+                }
+            }
+        });
 }
