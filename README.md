@@ -68,7 +68,7 @@ Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/f
 
 ## Empty chat
 
-Opening the app plays a short intro: animated dot waves (white on the dark theme, black on the light one) bloom out of the centre of the window, shock rings run through them, and the interface (already rendered underneath) opens up as a circle that sweeps to the corners with a bright crest of dots on its edge, all in about 1.9 seconds. With reduced motion enabled the intro is skipped. The code is `apps/desktop/src/chat/IntroWaves.tsx` (timing in `intro.ts`, drawing in `wave.ts`).
+Opening the app plays "The Imprint" (1.1 s): the brand mark, a Λ, is stamped small in the middle of the window in thin strokes, then comes apart into three segments that travel to real parts of the interface (the header rule, the composer edge and the brand mark in the header) while the backdrop fades, so the mark becomes the interface with no cut. It is skipped with reduced motion enabled. Timing and geometry are in `apps/desktop/src/intro/timeline.ts`, the animation in `Imprint.tsx` and the header icon in `BrandMark.tsx`.
 
 ## Shortcuts
 

@@ -26,10 +26,6 @@
   --cg-green: #397e66;
   --cg-red: #b55d63;
   --cg-amber: #e4ad67;
-  /* Wave dots (r g b): black on the light background, white on the dark one. The boost
-     is how much stronger they need to be to read against this background. */
-  --cg-wave: 0 0 0;
-  --cg-wave-boost: 1.5;
   --cg-primary: #252724;
   --cg-primary-hover: #464844;
   --cg-on-primary: #ffffff;
@@ -61,8 +57,6 @@
   --cg-green: #6eae8e;
   --cg-red: #d98a90;
   --cg-amber: #e4ad67;
-  --cg-wave: 255 255 255;
-  --cg-wave-boost: 1.3;
   --cg-primary: #e8e9e6;
   --cg-primary-hover: #ffffff;
   --cg-on-primary: #151614;
@@ -190,6 +184,11 @@ button:disabled {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* While the opening plays, the header mark is drawn by the animation itself. */
+:root[data-intro-running] [data-intro="mark"] {
+  opacity: 0;
 }
 
 @keyframes cg-pulse {
