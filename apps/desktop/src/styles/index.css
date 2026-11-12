@@ -186,6 +186,11 @@ button:disabled {
   }
 }
 
+/* While the opening plays, the logo in the header is drawn by the animation itself. */
+:root[data-intro-running] [data-intro="mark"] {
+  opacity: 0;
+}
+
 @keyframes cg-pulse {
   50% {
     opacity: 0.35;

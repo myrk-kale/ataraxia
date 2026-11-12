@@ -24,12 +24,12 @@ import {
   type ProviderKind,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
+import { BrandMark } from "../intro/BrandMark";
 import { EdgeNav } from "./EdgeNav";
 import { SessionsPanel } from "./SessionsPanel";
 import { Toast } from "./Toast";
 import { isTypingTarget, nextSpace, SPACES, type SpaceId } from "./spaces";
 import { useThemeMode } from "./theme";
-import { Wordmark } from "./Wordmark";
 
 const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
 
@@ -265,7 +265,7 @@ export function AppShell() {
     <div className="relative flex h-full flex-col bg-cg-panel text-cg-ink">
       <header className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line px-[29px]">
         <div className="flex min-w-0 items-center gap-2.5 text-ui font-semibold whitespace-nowrap">
-          <Wordmark />
+          <BrandMark />
           {workspace.repositories.length === 0 ? (
             <button
               className="rounded-[5px] py-1.5 text-cg-ink hover:text-cg-accent"

@@ -66,6 +66,10 @@ pnpm typecheck && pnpm test && pnpm build
 
 Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
 
+## Opening
+
+Opening the app draws ATARAXIA in the middle of the window, letter by letter, in thin strokes (the A is a bare Λ). After a short hold the other letters fade and the first A travels to the corner of the header, where it stays as the logo, while the interface that was already rendered underneath is uncovered (about 2.5 s). It is skipped with reduced motion enabled. The letters are paths, not a font: `apps/desktop/src/intro/glyphs.ts` (shapes), `timeline.ts` (timing), `Intro.tsx` (animation) and `BrandMark.tsx` (the header logo).
+
 ## Shortcuts
 
 - `Shift + ←/→` — previous/next space
