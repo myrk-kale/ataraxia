@@ -1,7 +1,15 @@
 import { useEffect, useRef } from "react";
-import { drawWaves, parseWaveColor, type WaveColor } from "./wave";
+import {
+  addRipple,
+  drawWaves,
+  parseWaveColor,
+  RIPPLE_LIFE_MS,
+  type Ripple,
+  type WaveColor,
+} from "./wave";
 
-const FALLBACK_COLOR: WaveColor = { r: 190, g: 233, b: 161 };
+// Used only if the theme tokens cannot be read: the dark theme is the default look.
+const FALLBACK_COLOR: WaveColor = { r: 255, g: 255, b: 255 };
 const FRAME_MS = 33;
 const BASE_INTENSITY = 0.5;
 /** Behind messages the field stays visible but gives way to the text. */
@@ -46,12 +54,18 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
     let elapsed = 0;
     let last = performance.now();
     let frameId = 0;
+    let ripples: Ripple[] = [];
 
     const paint = () => {
+      // Spent ripples are dropped here so a finished click costs nothing.
+      if (ripples.length > 0 && ripples.every((ripple) => elapsed - ripple.t0 >= RIPPLE_LIFE_MS)) {
+        ripples = [];
+      }
       drawWaves(ctx, width, height, elapsed, {
         intensity: BASE_INTENSITY,
         gain: (quietRef.current ? QUIET_GAIN : 1) * palette.boost,
         color: palette.color,
+        ripples,
       });
     };
     redrawRef.current = paint;
@@ -92,6 +106,25 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
       }
     };
 
+    // Clicking the empty background stirs the field. Only surfaces marked `data-wave-surface`
+    // count, so buttons, inputs and message text never trigger it. People who prefer reduced
+    // motion get no moving effect at all.
+    const stirAt = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        event.button !== 0 ||
+        !running() ||
+        !(target instanceof HTMLElement) ||
+        !target.hasAttribute("data-wave-surface")
+      ) {
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      ripples = addRipple(ripples, event.clientX - rect.left, event.clientY - rect.top, elapsed);
+    };
+    const surface = canvas.parentElement;
+    surface?.addEventListener("pointerdown", stirAt);
+
     const sizeObserver = new ResizeObserver(resize);
     sizeObserver.observe(canvas);
     // The theme switches by changing the root element's class, which moves the palette.
@@ -110,6 +143,7 @@ export function WaveBackground({ quiet }: { quiet: boolean }) {
 
     return () => {
       cancelAnimationFrame(frameId);
+      surface?.removeEventListener("pointerdown", stirAt);
       sizeObserver.disconnect();
       themeObserver.disconnect();
       document.removeEventListener("visibilitychange", sync);

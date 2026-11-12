@@ -36,3 +36,40 @@ export const AXOLOTL_ROWS: readonly string[] = [
 ];
 
 export const AXOLOTL_ART = AXOLOTL_ROWS.join("\n");
+
+const BLANK = "\u2800";
+
+/** The braille cells that draw the two eyes: [row, first column, last column]. */
+export const EYE_CELLS: ReadonlyArray<readonly [number, number, number]> = [
+  [9, 20, 22],
+  [10, 19, 21],
+  [11, 19, 20],
+  [9, 35, 37],
+  [10, 36, 38],
+  [11, 36, 37],
+];
+
+/** Where the closed lid is drawn: [row, first column, last column], a short line per eye. */
+const LIDS: ReadonlyArray<readonly [number, number, number]> = [
+  [10, 19, 21],
+  [10, 36, 38],
+];
+const LID_GLYPH = "\u2824";
+
+/** The same art with both eyes shut: the eye cells are cleared and a thin lid line remains. */
+export function closeEyes(rows: readonly string[]): string[] {
+  const out = rows.map((row) => [...row]);
+  for (const [row, from, to] of EYE_CELLS) {
+    for (let col = from; col <= to; col += 1) {
+      out[row][col] = BLANK;
+    }
+  }
+  for (const [row, from, to] of LIDS) {
+    for (let col = from; col <= to; col += 1) {
+      out[row][col] = LID_GLYPH;
+    }
+  }
+  return out.map((row) => row.join(""));
+}
+
+export const AXOLOTL_CLOSED_ART = closeEyes(AXOLOTL_ROWS).join("\n");

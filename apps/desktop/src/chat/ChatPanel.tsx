@@ -314,16 +314,23 @@ export function ChatPanel({
   return (
     <section
       className="cg-page-in relative isolate flex h-full min-h-0 flex-col"
+      data-wave-surface
       onKeyDown={onPanelKeyDown}
     >
       {/* The waves stay for the whole chat; the axolotl (in the Hero) is only for an empty one. */}
       <WaveBackground quiet={!emptyChat} />
-      <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
+      <div className="relative min-h-0 flex-1" data-wave-surface>
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto"
+          data-wave-surface
+          onScroll={onScroll}
+        >
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-[33px] px-8 ${
               emptyChat ? "min-h-full py-6" : "pt-[35px] pb-20"
             }`}
+            data-wave-surface
           >
             {activeSubagent ? (
               <>

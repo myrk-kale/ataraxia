@@ -26,9 +26,10 @@
   --cg-green: #397e66;
   --cg-red: #b55d63;
   --cg-amber: #e4ad67;
-  /* Wave dots (r g b) and how much stronger they need to be on this background. */
-  --cg-wave: 57 126 102;
-  --cg-wave-boost: 3.4;
+  /* Wave dots (r g b): black on the light background, white on the dark one. The boost
+     is how much stronger they need to be to read against this background. */
+  --cg-wave: 0 0 0;
+  --cg-wave-boost: 1.5;
   --cg-primary: #252724;
   --cg-primary-hover: #464844;
   --cg-on-primary: #ffffff;
@@ -60,8 +61,8 @@
   --cg-green: #6eae8e;
   --cg-red: #d98a90;
   --cg-amber: #e4ad67;
-  --cg-wave: 190 233 161;
-  --cg-wave-boost: 2.4;
+  --cg-wave: 255 255 255;
+  --cg-wave-boost: 1.3;
   --cg-primary: #e8e9e6;
   --cg-primary-hover: #ffffff;
   --cg-on-primary: #151614;
@@ -193,8 +194,11 @@ button:disabled {
 
 .cg-axolotl {
   animation: cg-axolotl-float 6s ease-in-out infinite;
-  /* A faint halo of the wave colour; it only reads on the dark background. */
-  text-shadow: 0 0 14px rgb(var(--cg-wave) / 0.14);
+}
+
+/* A faint halo around the art; it only reads on the dark background. */
+:root.dark .cg-axolotl {
+  text-shadow: 0 0 14px rgb(var(--cg-wave) / 0.12);
 }
 
 @keyframes cg-axolotl-float {

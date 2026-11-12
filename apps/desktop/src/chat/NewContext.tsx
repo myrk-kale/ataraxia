@@ -20,7 +20,10 @@ export function NewContext({
   onOpenRepository: () => void;
 }) {
   return (
-    <section className="cg-page-in relative isolate flex h-full flex-col overflow-y-auto">
+    <section
+      className="cg-page-in relative isolate flex h-full flex-col overflow-y-auto"
+      data-wave-surface
+    >
       <WaveBackground quiet={false} />
       <Hero contextLabel={contextLabel}>
         <div className="mt-8 flex justify-center">

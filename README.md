@@ -68,7 +68,7 @@ Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/f
 
 ## Empty chat
 
-An empty chat shows the Concierge axolotl floating over animated dot waves. Once the conversation starts the axolotl goes away and the waves stay behind it, turned down so the text reads. The waves follow the light and dark themes, pause while the window is hidden and stand still with reduced motion enabled.
+An empty chat shows the Concierge axolotl floating (and blinking now and then) over animated dot waves. The waves are white on the dark theme and black on the light one. Clicking the empty background stirs them: the dots scatter around the click and settle again. Once the conversation starts the axolotl goes away and the waves stay behind it, turned down so the text reads. They pause while the window is hidden, and with reduced motion enabled they stand still and the axolotl does not blink.
 
 ## Shortcuts
 

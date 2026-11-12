@@ -10,8 +10,8 @@ export function Hero({
   children?: ReactNode;
 }) {
   return (
-    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center">
-      <div className="mb-5">
+    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center" data-wave-surface>
+      <div className="mb-5" data-wave-surface>
         <Axolotl />
       </div>
       <h1 className="mb-[9px] text-display font-semibold tracking-[-0.6px]">
