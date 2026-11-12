@@ -24,6 +24,8 @@ use crate::domain::{
 
 const BINARY_NAME: &str = "claude";
 const OVERRIDE_ENV: &str = "CONCIERGE_CLAUDE_BIN";
+const PERMISSION_MODE_ENV: &str = "CONCIERGE_CLAUDE_PERMISSION_MODE";
+const DEFAULT_PERMISSION_MODE: &str = "auto";
 
 enum Launcher {
     Resolve,
@@ -52,22 +54,7 @@ impl ClaudeBackend {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
             Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| {
-                    let args = [
-                        "-p",
-                        "--input-format",
-                        "stream-json",
-                        "--output-format",
-                        "stream-json",
-                        "--verbose",
-                        "--include-partial-messages",
-                        "--permission-prompt-tool",
-                        "stdio",
-                    ]
-                    .map(String::from)
-                    .to_vec();
-                    (program, args)
-                })
+                .map(|program| (program, launch_args(permission_mode().as_deref())))
                 .ok_or_else(|| {
                     format!(
                         "claude CLI not found. Install Claude Code or set {OVERRIDE_ENV} to its path."
@@ -75,6 +62,38 @@ impl ClaudeBackend {
                 }),
         }
     }
+}
+
+/// Permission mode passed to `claude --permission-mode`. Defaults to `auto`; set
+/// `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode, or to an empty value to defer to the
+/// user's own Claude settings.
+fn permission_mode() -> Option<String> {
+    match std::env::var(PERMISSION_MODE_ENV) {
+        Ok(value) if value.trim().is_empty() => None,
+        Ok(value) => Some(value.trim().to_string()),
+        Err(_) => Some(DEFAULT_PERMISSION_MODE.to_string()),
+    }
+}
+
+fn launch_args(mode: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--permission-prompt-tool",
+        "stdio",
+    ]
+    .map(String::from)
+    .to_vec();
+    if let Some(mode) = mode {
+        args.push("--permission-mode".into());
+        args.push(mode.into());
+    }
+    args
 }
 
 impl Default for ClaudeBackend {
@@ -651,6 +670,14 @@ fn permission_detail(tool_name: &str, input: &Value, request: &Value) -> String 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn launch_args_carry_the_permission_mode() {
+        let args = launch_args(Some("auto"));
+        let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+        assert_eq!(args[at + 1], "auto");
+        assert!(!launch_args(None).contains(&"--permission-mode".to_string()));
+    }
+
     use std::sync::mpsc::{self, Receiver};
     use std::thread;
     use std::time::{Duration, Instant};
