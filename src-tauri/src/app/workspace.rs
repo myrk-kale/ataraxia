@@ -191,6 +191,8 @@ impl<'a> WorkspaceService<'a> {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| format!("Chat {count}")),
             status: SessionStatus::Idle,
+            model: None,
+            effort: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: Some(now.clone()),

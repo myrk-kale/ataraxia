@@ -25,6 +25,14 @@ pub trait AgentRuntime: Send + Sync {
         decision: PermissionDecision,
     ) -> Result<()>;
     fn snapshot(&self, session_id: &SessionId) -> Result<ChatSnapshot>;
+    /// Stores a new model/effort for the chat and applies it. Providers that cannot switch on a
+    /// live process restart the session (the transcript stays, the agent starts fresh).
+    fn configure_session(
+        &self,
+        session_id: &SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<ChatSession>;
 }
 
 /// Outbound channel for agent events (Tauri `emit` in production, a recorder in tests).
@@ -66,6 +74,13 @@ pub trait Store: Send + Sync {
         &self,
         id: SessionId,
         status: SessionStatus,
+        updated_at: &str,
+    ) -> Result<()>;
+    fn update_session_settings(
+        &self,
+        id: SessionId,
+        model: Option<&str>,
+        effort: Option<&str>,
         updated_at: &str,
     ) -> Result<()>;
 

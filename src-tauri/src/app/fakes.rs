@@ -234,6 +234,24 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    fn update_session_settings(
+        &self,
+        id: SessionId,
+        model: Option<&str>,
+        effort: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let session = sessions
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        session.model = model.map(str::to_string);
+        session.effort = effort.map(str::to_string);
+        session.updated_at = updated_at.to_string();
+        Ok(())
+    }
+
     fn update_session_status(
         &self,
         id: SessionId,

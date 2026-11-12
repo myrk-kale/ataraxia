@@ -288,6 +288,47 @@ fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
     live.status = SessionStatus::Ready;
 }
 
+/// A model id is handed to a CLI as an argument, so keep it to plain id characters.
+fn clean_model(model: Option<String>) -> Result<Option<String>> {
+    let Some(model) = model.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+    if model.is_empty() {
+        return Ok(None);
+    }
+    let valid = model.len() <= 100
+        && model.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._:/[]@-".contains(c));
+    if valid {
+        Ok(Some(model))
+    } else {
+        Err(Error::new(ErrorCode::Invalid, "invalid model id"))
+    }
+}
+
+fn clean_effort(provider: ProviderKind, effort: Option<String>) -> Result<Option<String>> {
+    let Some(effort) = effort.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+    if effort.is_empty() {
+        return Ok(None);
+    }
+    let known = ProviderRegistry::descriptors()
+        .into_iter()
+        .find(|item| item.kind == provider)
+        .is_some_and(|item| item.settings.efforts.contains(&effort));
+    if known {
+        Ok(Some(effort))
+    } else {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            format!("{} does not support effort \"{effort}\"", provider.as_str()),
+        ))
+    }
+}
+
 impl AgentHost {
     /// Restarts a provider process that exited since the last turn.
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
@@ -386,6 +427,8 @@ impl AgentRuntime for AgentHost {
         let started = backend.start(BackendContext {
             session_id,
             cwd: worktree.path,
+            model: session.model.clone(),
+            effort: session.effort.clone(),
             emit,
         })?;
 
@@ -403,6 +446,74 @@ impl AgentRuntime for AgentHost {
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
         Ok(())
+    }
+
+    fn configure_session(
+        &self,
+        session_id: &SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<ChatSession> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let descriptor = ProviderRegistry::descriptors()
+            .into_iter()
+            .find(|item| item.kind == session.provider);
+        if !descriptor.is_some_and(|item| item.settings.configurable) {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "{} does not let Concierge change model or effort",
+                    session.provider.as_str()
+                ),
+            ));
+        }
+        let model = clean_model(model)?;
+        let effort = clean_effort(session.provider, effort)?;
+        {
+            let sessions = self.inner.sessions.lock();
+            if sessions
+                .get(session_id)
+                .is_some_and(|live| live.active_turn.is_some() || live.pending.is_some())
+            {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "wait for the current turn to finish before changing model or effort",
+                ));
+            }
+        }
+        self.inner.store.update_session_settings(
+            *session_id,
+            model.as_deref(),
+            effort.as_deref(),
+            &now_rfc3339()?,
+        )?;
+        let updated = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+
+        let live_backend = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .map(|live| Arc::clone(&live.backend));
+        if let Some(backend) = live_backend {
+            if !backend.apply_settings(model.as_deref(), effort.as_deref()) {
+                let removed = self.inner.sessions.lock().remove(session_id);
+                if let Some(live) = removed {
+                    self.inner.persist(*session_id, &live.transcript);
+                    live.backend.shutdown();
+                }
+                self.start_session(&updated)?;
+            }
+        }
+        Ok(updated)
     }
 
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId> {
@@ -558,6 +669,10 @@ mod tests {
     }
 
     fn harness() -> Harness {
+        harness_with(FakeBackend::new(Duration::ZERO))
+    }
+
+    fn harness_with(backend: FakeBackend) -> Harness {
         let store = Arc::new(FakeStore::healthy());
         let repository_id = RepositoryId::new();
         let worktree_id = WorktreeId::new();
@@ -588,16 +703,16 @@ mod tests {
             provider: ProviderKind::Fake,
             title: "Chat".into(),
             status: SessionStatus::Idle,
+            model: None,
+            effort: None,
             created_at: "t".into(),
             updated_at: "t".into(),
             last_opened_at: None,
         };
         store.create_session(&session).expect("session");
         let sink = Arc::new(RecordingSink::default());
-        let host = AgentHost::new(store.clone(), sink.clone()).with_backend(
-            ProviderKind::Fake,
-            Arc::new(FakeBackend::new(Duration::ZERO)),
-        );
+        let host = AgentHost::new(store.clone(), sink.clone())
+            .with_backend(ProviderKind::Fake, Arc::new(backend));
         host.start_session(&session).expect("start");
         Harness {
             store,
@@ -619,6 +734,89 @@ mod tests {
             AgentEvent::TurnDone { ok, .. } => Some(*ok),
             _ => None,
         })
+    }
+
+    #[test]
+    fn configure_applies_live_without_restarting_the_agent() {
+        let h = harness();
+        let updated = h
+            .host
+            .configure_session(&h.session.id, Some("fake-fast".into()), Some("high".into()))
+            .expect("configure");
+        assert_eq!(updated.model.as_deref(), Some("fake-fast"));
+        assert_eq!(updated.effort.as_deref(), Some("high"));
+        let stored = h
+            .store
+            .get_session(h.session.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(stored.effort.as_deref(), Some("high"));
+        assert_eq!(
+            h.host
+                .snapshot(&h.session.id)
+                .expect("snapshot")
+                .restored_count,
+            0
+        );
+    }
+
+    #[test]
+    fn configure_restarts_providers_that_read_settings_at_launch() {
+        let h = harness_with(FakeBackend::new(Duration::ZERO).restarting_on_settings());
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        let before = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .len();
+        h.host
+            .configure_session(&h.session.id, None, Some("low".into()))
+            .expect("configure");
+        let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert_eq!(snapshot.items.len(), before, "the transcript is kept");
+        assert_eq!(snapshot.restored_count, before, "the agent starts fresh");
+    }
+
+    #[test]
+    fn configure_rejects_bad_values_and_busy_turns() {
+        let h = harness();
+        assert!(
+            h.host
+                .configure_session(&h.session.id, None, Some("turbo".into()))
+                .is_err()
+        );
+        assert!(
+            h.host
+                .configure_session(&h.session.id, Some("--dangerous".into()), None)
+                .is_err()
+        );
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        assert!(
+            h.host
+                .configure_session(&h.session.id, None, Some("low".into()))
+                .is_err(),
+            "a running turn blocks changes"
+        );
+    }
+
+    #[test]
+    fn empty_values_clear_the_override() {
+        let h = harness();
+        h.host
+            .configure_session(&h.session.id, Some("fake-fast".into()), Some("low".into()))
+            .expect("set");
+        let cleared = h
+            .host
+            .configure_session(&h.session.id, Some("  ".into()), None)
+            .expect("clear");
+        assert_eq!(cleared.model, None);
+        assert_eq!(cleared.effort, None);
     }
 
     #[test]

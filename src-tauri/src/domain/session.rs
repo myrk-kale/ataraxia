@@ -53,6 +53,12 @@ pub struct ChatSession {
     pub provider: ProviderKind,
     pub title: String,
     pub status: SessionStatus,
+    /// Model override for this chat; `None` lets the provider pick its default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Reasoning effort override; `None` keeps the provider's default.
+    #[serde(default)]
+    pub effort: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_opened_at: Option<String>,

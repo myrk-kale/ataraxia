@@ -1,8 +1,124 @@
 @import "tailwindcss";
 @import "@heroui/styles";
+@import "@fontsource-variable/geist/index.css";
+@import "@fontsource-variable/geist-mono/index.css";
 
-:root {
-  color-scheme: light dark;
+/*
+ * Design tokens follow the interactive prototype: a warm, near-white canvas, hairline
+ * borders, one muted violet accent and a near-black primary action. The dark set is
+ * derived from the same roles (the prototype itself is light-only).
+ */
+:root,
+:root.light {
+  color-scheme: light;
+  --cg-canvas: #fafaf9;
+  --cg-panel: #ffffff;
+  --cg-sidebar: #fbfbfa;
+  --cg-line: #eae9e6;
+  --cg-line-strong: #dbdad5;
+  --cg-ink: #232522;
+  --cg-muted: #898b87;
+  --cg-muted-strong: #656965;
+  --cg-tint: #f4f4f1;
+  --cg-bubble: #f4f4f2;
+  --cg-accent: #7465a6;
+  --cg-accent-bg: #f0edf8;
+  --cg-green: #397e66;
+  --cg-red: #b55d63;
+  --cg-amber: #e4ad67;
+  --cg-primary: #252724;
+  --cg-primary-hover: #464844;
+  --cg-on-primary: #ffffff;
+  --cg-tip-bg: #282b28;
+  --cg-tip-fg: #ffffff;
+  --cg-add-bg: #ebf5ef;
+  --cg-add-fg: #2c7153;
+  --cg-del-bg: #f9eeee;
+  --cg-del-fg: #a95c62;
+  --cg-float: rgba(255, 255, 255, 0.85);
+  --cg-shadow: 0 22px 75px rgba(21, 24, 22, 0.12);
+  --cg-backdrop: rgba(33, 35, 33, 0.18);
+}
+
+:root.dark {
+  color-scheme: dark;
+  --cg-canvas: #111211;
+  --cg-panel: #161715;
+  --cg-sidebar: #1a1b19;
+  --cg-line: #272926;
+  --cg-line-strong: #363833;
+  --cg-ink: #e8e9e6;
+  --cg-muted: #8b8e89;
+  --cg-muted-strong: #a9aca6;
+  --cg-tint: #1f211e;
+  --cg-bubble: #222420;
+  --cg-accent: #a99cd8;
+  --cg-accent-bg: #2a2740;
+  --cg-green: #6eae8e;
+  --cg-red: #d98a90;
+  --cg-amber: #e4ad67;
+  --cg-primary: #e8e9e6;
+  --cg-primary-hover: #ffffff;
+  --cg-on-primary: #151614;
+  --cg-tip-bg: #e8e9e6;
+  --cg-tip-fg: #151614;
+  --cg-add-bg: rgba(110, 174, 142, 0.14);
+  --cg-add-fg: #86c3a4;
+  --cg-del-bg: rgba(217, 138, 144, 0.14);
+  --cg-del-fg: #e2a0a5;
+  --cg-float: rgba(22, 23, 21, 0.85);
+  --cg-shadow: 0 22px 75px rgba(0, 0, 0, 0.5);
+  --cg-backdrop: rgba(0, 0, 0, 0.45);
+}
+
+@theme inline {
+  --color-cg-canvas: var(--cg-canvas);
+  --color-cg-panel: var(--cg-panel);
+  --color-cg-sidebar: var(--cg-sidebar);
+  --color-cg-line: var(--cg-line);
+  --color-cg-line-strong: var(--cg-line-strong);
+  --color-cg-ink: var(--cg-ink);
+  --color-cg-muted: var(--cg-muted);
+  --color-cg-muted-strong: var(--cg-muted-strong);
+  --color-cg-tint: var(--cg-tint);
+  --color-cg-bubble: var(--cg-bubble);
+  --color-cg-accent: var(--cg-accent);
+  --color-cg-accent-bg: var(--cg-accent-bg);
+  --color-cg-green: var(--cg-green);
+  --color-cg-red: var(--cg-red);
+  --color-cg-amber: var(--cg-amber);
+  --color-cg-primary: var(--cg-primary);
+  --color-cg-primary-hover: var(--cg-primary-hover);
+  --color-cg-on-primary: var(--cg-on-primary);
+  --color-cg-tip-bg: var(--cg-tip-bg);
+  --color-cg-tip-fg: var(--cg-tip-fg);
+  --color-cg-add-bg: var(--cg-add-bg);
+  --color-cg-add-fg: var(--cg-add-fg);
+  --color-cg-del-bg: var(--cg-del-bg);
+  --color-cg-del-fg: var(--cg-del-fg);
+  --color-cg-float: var(--cg-float);
+
+  /*
+   * Type scale, largest to smallest. Each step has one job so hierarchy reads at a glance:
+   * display (hero), title (dialogs, h1), heading (h2, session names), body (chat text),
+   * ui (controls, breadcrumb), small (secondary text), micro (eyebrow labels), nano (counts).
+   */
+  --text-display: 30px;
+  --text-title: 20px;
+  --text-heading: 16px;
+  --text-body: 14.5px;
+  --text-ui: 13px;
+  --text-small: 12px;
+  --text-micro: 11px;
+  --text-nano: 10px;
+
+  --font-sans:
+    "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif,
+    system-ui, sans-serif;
+  --font-mono:
+    "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
+  --shadow-cg-float: var(--cg-shadow);
 }
 
 html,
@@ -11,21 +127,73 @@ body,
   height: 100%;
 }
 
+html {
+  font-size: 14px;
+}
+
 body {
   margin: 0;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  background: var(--cg-panel);
+  color: var(--cg-ink);
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cg-line-strong) transparent;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus,
+:focus-visible {
+  outline: none;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--cg-accent) 28%, transparent);
+}
+
+.cg-page-in {
+  animation: cg-page-in 0.22s ease both;
+}
+
+@keyframes cg-page-in {
+  from {
+    opacity: 0.1;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cg-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.cg-pulse {
+  animation: cg-pulse 1.3s infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

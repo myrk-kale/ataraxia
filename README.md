@@ -21,6 +21,7 @@ Shell, workspace persistence, a retractable real PTY terminal, and the Chat spac
   - Codex → custom app-server
   - Provider CLIs are found on `PATH` plus common install dirs; override with `CONCIERGE_OPENCODE_BIN`, `CONCIERGE_CLAUDE_BIN`, `CONCIERGE_CODEX_BIN`
   - Claude Code starts with `--permission-mode auto`; set `CONCIERGE_CLAUDE_PERMISSION_MODE` to another mode (e.g. `acceptEdits`), or to an empty value to use your own Claude settings
+  - Model and reasoning effort are set per chat from the composer. Claude Code reads them at launch (`--model`, `--effort`), so a change restarts the agent and keeps the transcript; Codex sends them with each turn. OpenCode is not configurable from Concierge yet
   - Codex starts with `on-request` approvals, the `workspace-write` sandbox and `approvalsReviewer: auto_review` (a reviewer agent decides eligible requests); set `CONCIERGE_CODEX_APPROVALS_REVIEWER=user` to be asked for everything, or empty to use your own Codex config
 
 ## Workspace layout
@@ -44,10 +45,11 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Frontend only:
+Frontend only (the browser gets a built-in Tauri mock, dev builds only, so the UI renders with sample data):
 
 ```bash
 pnpm dev
+# http://localhost:1420/?state=empty|fresh|permission|working|restored previews other chat states
 ```
 
 Rust checks:

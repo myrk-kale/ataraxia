@@ -85,6 +85,25 @@ impl CapabilityMatrix {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub id: String,
+    pub label: String,
+}
+
+/// What a provider lets the user tune per chat.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    /// False when the provider has no way to change model or effort from Concierge.
+    pub configurable: bool,
+    /// Known model presets; the provider default is always offered on top.
+    pub models: Vec<ModelChoice>,
+    /// Effort levels, lowest to highest. Empty when the provider has no such knob.
+    pub efforts: Vec<String>,
+    /// Whether any model id can be typed in.
+    pub custom_model: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderDescriptor {
     pub kind: ProviderKind,
     pub display_name: String,
@@ -92,4 +111,5 @@ pub struct ProviderDescriptor {
     /// False when the provider's CLI cannot be found on this machine.
     pub available: bool,
     pub detail: Option<String>,
+    pub settings: ProviderSettings,
 }

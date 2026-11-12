@@ -50,11 +50,15 @@ impl ClaudeBackend {
         }
     }
 
-    fn command(&self) -> std::result::Result<(PathBuf, Vec<String>), String> {
+    fn command(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
             Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| (program, launch_args(permission_mode().as_deref())))
+                .map(|program| (program, launch_args(permission_mode().as_deref(), model, effort)))
                 .ok_or_else(|| {
                     format!(
                         "claude CLI not found. Install Claude Code or set {OVERRIDE_ENV} to its path."
@@ -75,7 +79,7 @@ fn permission_mode() -> Option<String> {
     }
 }
 
-fn launch_args(mode: Option<&str>) -> Vec<String> {
+fn launch_args(mode: Option<&str>, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -93,6 +97,14 @@ fn launch_args(mode: Option<&str>) -> Vec<String> {
         args.push("--permission-mode".into());
         args.push(mode.into());
     }
+    if let Some(model) = model {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    if let Some(effort) = effort {
+        args.push("--effort".into());
+        args.push(effort.into());
+    }
     args
 }
 
@@ -104,12 +116,12 @@ impl Default for ClaudeBackend {
 
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command().map(|_| ())
+        self.command(None, None).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let (program, args) = self
-            .command()
+            .command(ctx.model.as_deref(), ctx.effort.as_deref())
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(ClaudeShared {
             emit: ctx.emit,
@@ -672,10 +684,16 @@ fn permission_detail(tool_name: &str, input: &Value, request: &Value) -> String 
 mod tests {
     #[test]
     fn launch_args_carry_the_permission_mode() {
-        let args = launch_args(Some("auto"));
+        let args = launch_args(Some("auto"), None, None);
         let at = args.iter().position(|a| a == "--permission-mode").unwrap();
         assert_eq!(args[at + 1], "auto");
-        assert!(!launch_args(None).contains(&"--permission-mode".to_string()));
+        assert!(!launch_args(None, None, None).contains(&"--permission-mode".to_string()));
+        let tuned = launch_args(None, Some("opus"), Some("high"));
+        let at = tuned.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(tuned[at + 1], "opus");
+        let at = tuned.iter().position(|a| a == "--effort").unwrap();
+        assert_eq!(tuned[at + 1], "high");
+        assert!(!launch_args(None, None, None).contains(&"--model".to_string()));
     }
 
     use std::sync::mpsc::{self, Receiver};
@@ -700,6 +718,8 @@ mod tests {
             .start(BackendContext {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                model: None,
+                effort: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

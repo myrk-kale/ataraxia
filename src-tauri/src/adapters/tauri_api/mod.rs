@@ -9,7 +9,7 @@ use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
 use crate::domain::agent::{ProviderDescriptor, ProviderKind};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
-    ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
+    ChatSession, ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
 };
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
@@ -169,6 +169,19 @@ pub fn agent_start_session(
     state
         .agent_runtime()
         .start_session(&session)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn agent_configure_session(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    model: Option<String>,
+    effort: Option<String>,
+) -> std::result::Result<ChatSession, String> {
+    state
+        .agent_runtime()
+        .configure_session(&session_id, model, effort)
         .map_err(map_error)
 }
 

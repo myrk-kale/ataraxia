@@ -5,6 +5,7 @@ use crate::domain::{Error, ErrorCode, Result};
 
 const MIGRATION_001: &str = include_str!("../../../migrations/001_workspace.sql");
 const MIGRATION_002: &str = include_str!("../../../migrations/002_chat_items.sql");
+const MIGRATION_003: &str = include_str!("../../../migrations/003_session_settings.sql");
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -42,6 +43,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         let applied_at = now_rfc3339()?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
+            [applied_at],
+        )
+        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+    }
+
+    if current < 3 {
+        conn.execute_batch(MIGRATION_003)
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+        let applied_at = now_rfc3339()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
             [applied_at],
         )
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;

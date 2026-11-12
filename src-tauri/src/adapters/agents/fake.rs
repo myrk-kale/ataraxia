@@ -18,11 +18,21 @@ const TOOL_INPUT: &str = "{\"path\":\"README.md\"}";
 
 pub struct FakeBackend {
     step_delay: Duration,
+    live_settings: bool,
 }
 
 impl FakeBackend {
     pub fn new(step_delay: Duration) -> Self {
-        Self { step_delay }
+        Self {
+            step_delay,
+            live_settings: true,
+        }
+    }
+
+    /// Behaves like providers that only read model/effort at process start (tests).
+    pub fn restarting_on_settings(mut self) -> Self {
+        self.live_settings = false;
+        self
     }
 }
 
@@ -37,6 +47,7 @@ impl AgentBackend for FakeBackend {
         Ok(Arc::new(FakeSession {
             emit: ctx.emit,
             step_delay: self.step_delay,
+            live_settings: self.live_settings,
             state: Arc::new(Mutex::new(FakeState::default())),
         }))
     }
@@ -57,10 +68,15 @@ struct Pending {
 struct FakeSession {
     emit: Emitter,
     step_delay: Duration,
+    live_settings: bool,
     state: Arc<Mutex<FakeState>>,
 }
 
 impl BackendSession for FakeSession {
+    fn apply_settings(&self, _model: Option<&str>, _effort: Option<&str>) -> bool {
+        self.live_settings
+    }
+
     fn prompt(&self, turn_id: TurnId, _text: &str) -> Result<()> {
         let cancel = Arc::new(AtomicBool::new(false));
         self.state.lock().cancel = Some(Arc::clone(&cancel));

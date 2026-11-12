@@ -61,7 +61,7 @@ describe("ToolCard", () => {
       />,
     );
     expect(html).toContain("done");
-    expect(html).toContain("bg-emerald-500/15");
-    expect(html).toContain("bg-red-500/15");
+    expect(html).toContain("bg-cg-add-bg");
+    expect(html).toContain("bg-cg-del-bg");
   });
 });
