@@ -42,6 +42,9 @@ export type ChatSession = {
   model: string | null;
   effort: string | null;
   agent: string | null;
+  /** `chat` for the user's chats; hidden children (BTW, discussions) use other kinds. */
+  kind?: "chat" | "btw" | "delegate" | "decision" | "analysis";
+  parent_session_id?: SessionId | null;
   created_at: string;
   updated_at: string;
   last_opened_at: string | null;
@@ -55,6 +58,16 @@ export type WorkspaceSnapshot = {
   sessions: ChatSession[];
   selected_session_id: SessionId | null;
 };
+
+/** A local branch as the selector shows it. */
+export type BranchView = {
+  name: string;
+  current: boolean;
+  /** The worktree that already has it open, when it is one of the repository's. */
+  worktree_id: WorktreeId | null;
+};
+
+export type BranchList = { branches: BranchView[]; workspace: WorkspaceSnapshot };
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -105,4 +118,14 @@ export function workspaceCreateSession(
 
 export function workspaceOpenSession(sessionId: SessionId) {
   return invoke<WorkspaceSnapshot>("workspace_open_session", { sessionId });
+}
+
+/** Every local branch, read from git each time. */
+export function workspaceListBranches(worktreeId: WorktreeId) {
+  return invoke<BranchList>("workspace_list_branches", { worktreeId });
+}
+
+/** Tries to move to a branch; when git refuses, the rejection says why and nothing changed. */
+export function workspaceSelectBranch(worktreeId: WorktreeId, name: string) {
+  return invoke<WorkspaceSnapshot>("workspace_select_branch", { worktreeId, name });
 }

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod chat;
 pub mod error;
 pub mod ids;
+pub mod insight;
 pub mod repo;
 pub mod session;
 pub mod time;
@@ -14,5 +15,12 @@ pub use chat::{
     ToolCallId, ToolCallRecord, ToolStatus,
 };
 pub use error::{Error, ErrorCode, Result};
-pub use repo::{RepoInfo, Repository, Worktree, WorktreeInfo};
-pub use session::{ChatSession, SessionStatus};
+pub use insight::{
+    Alternative, Artifact, ArtifactId, ArtifactKind, ArtifactStatus, BtwMode, BtwTask, BtwTaskId,
+    ChangedFile, Checkpoint, CheckpointSource, CodeRef, CommitInfo, Decision, DecisionCommit,
+    DecisionId, DecisionKind, DecisionMessage, DecisionRevision, DecisionState, FileChange,
+    FlowPreset, FlowPresetId, GitRefs, Hunk, InsightEvent, RefInfo, ReturnPolicy, ReviewComment,
+    ReviewMark, ReviewState, RiskMarker, Symbol, UnitPriority,
+};
+pub use repo::{BranchInfo, RepoInfo, Repository, Worktree, WorktreeInfo};
+pub use session::{ChatSession, SessionKind, SessionStatus};

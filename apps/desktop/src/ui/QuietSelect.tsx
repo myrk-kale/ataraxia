@@ -43,11 +43,13 @@ interface QuietSelectProps {
   className?: string;
   disabled?: boolean;
   title?: string;
+  /** Called each time the list opens, so a list that can go stale is read again. */
+  onOpen?: () => void;
   onChange: (value: string) => void;
 }
 
 const ITEM =
-  "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-small outline-none hover:bg-cg-tint focus-visible:bg-cg-tint disabled:cursor-not-allowed disabled:opacity-50";
+  "flex w-full items-center gap-2 rounded-cg-md px-2.5 py-2 text-left text-small outline-none hover:bg-cg-tint focus-visible:bg-cg-tint disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * A borderless picker that reads as plain text with a small chevron. The list is a native
@@ -66,6 +68,7 @@ export function QuietSelect({
   className = "",
   disabled,
   title,
+  onOpen,
   onChange,
 }: QuietSelectProps) {
   const menuId = useId();
@@ -123,6 +126,7 @@ export function QuietSelect({
       setQuery("");
       return;
     }
+    onOpen?.();
     const list = items();
     const current = list.find((item) => item.getAttribute("aria-selected") === "true");
     if (searchable) {
@@ -135,6 +139,13 @@ export function QuietSelect({
   }
 
   function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      // Esc closes this list and nothing behind it: a dialog around the select stays open.
+      event.stopPropagation();
+      close();
+      triggerRef.current?.focus();
+      return;
+    }
     const list = items();
     const at = list.indexOf(document.activeElement as HTMLButtonElement);
     const move = (index: number) => {
@@ -178,7 +189,7 @@ export function QuietSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={ariaLabel}
-        className={`inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-[5px] py-1.5 outline-none hover:text-cg-ink focus-visible:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+        className={`inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-cg-sm py-1.5 outline-none hover:text-cg-ink focus-visible:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
         disabled={disabled}
         title={title}
         type="button"
@@ -201,7 +212,7 @@ export function QuietSelect({
 
       <div
         ref={menuRef}
-        className="cg-page-in fixed inset-auto m-0 max-h-[min(360px,70vh)] max-w-[340px] overflow-auto rounded-xl border border-cg-line bg-cg-panel p-1.5 text-cg-ink shadow-[0_18px_50px_rgba(27,30,26,0.12)]"
+        className="fixed inset-auto m-0 max-h-[min(360px,70vh)] max-w-[340px] overflow-auto rounded-cg-lg border border-cg-line bg-cg-panel p-1.5 text-cg-ink shadow-cg-pop"
         id={menuId}
         popover="auto"
         style={{
@@ -222,7 +233,7 @@ export function QuietSelect({
                 ref={searchRef}
                 aria-label={`Search ${ariaLabel.toLowerCase()}`}
                 autoComplete="off"
-                className="min-w-0 flex-1 border-0 bg-transparent text-small text-cg-ink outline-none placeholder:text-cg-muted/70"
+                className="min-w-0 flex-1 border-0 bg-transparent text-small text-cg-ink outline-none placeholder:text-cg-muted"
                 placeholder="Search…"
                 spellCheck={false}
                 type="text"

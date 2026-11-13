@@ -12,17 +12,18 @@ describe("StatusDot", () => {
     expect(render("ready")).toContain("bg-cg-green");
   });
 
-  it("is a pulsing yellow while busy or waiting", () => {
+  it("is amber while busy or waiting, and says so in words", () => {
     for (const status of ["starting", "working", "waiting-permission", "stopping"] as const) {
       const html = render(status);
       expect(html).toContain("bg-cg-amber");
-      expect(html).toContain("cg-pulse");
+      expect(html).not.toContain("animate");
     }
+    expect(render("waiting-permission")).toContain("Needs approval");
   });
 
-  it("is red when stopped or failed, with an accessible label", () => {
+  it("is red when stopped or failed, with the word as well as the colour", () => {
     expect(render("failed")).toContain("bg-cg-red");
     expect(render("stopped")).toContain("bg-cg-red");
-    expect(render("failed")).toContain('aria-label="Failed"');
+    expect(render("failed")).toContain("Failed");
   });
 });

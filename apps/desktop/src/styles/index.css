@@ -2,6 +2,7 @@
 @import "@heroui/styles";
 @import "@fontsource-variable/geist/index.css";
 @import "@fontsource-variable/geist-mono/index.css";
+@import "@xyflow/react/dist/style.css";
 
 /*
  * Design tokens follow the interactive prototype: a warm, near-white canvas, hairline
@@ -17,26 +18,38 @@
   --cg-line: #eae9e6;
   --cg-line-strong: #dbdad5;
   --cg-ink: #232522;
-  --cg-muted: #898b87;
-  --cg-muted-strong: #656965;
+  --cg-muted: #686b66;
+  --cg-muted-strong: #50534e;
+  --cg-control: #898b86;
   --cg-tint: #f4f4f1;
   --cg-bubble: #f4f4f2;
-  --cg-accent: #7465a6;
+  --cg-accent: #665698;
   --cg-accent-bg: #f0edf8;
-  --cg-green: #397e66;
-  --cg-red: #b55d63;
-  --cg-amber: #e4ad67;
+  --cg-green: #2c6b55;
+  --cg-red: #a4444c;
+  --cg-amber: #b57712;
+  --cg-amber-text: #8a5a12;
   --cg-primary: #252724;
   --cg-primary-hover: #464844;
   --cg-on-primary: #ffffff;
   --cg-tip-bg: #282b28;
   --cg-tip-fg: #ffffff;
   --cg-add-bg: #ebf5ef;
-  --cg-add-fg: #2c7153;
+  --cg-add-fg: #276549;
   --cg-del-bg: #f9eeee;
-  --cg-del-fg: #a95c62;
-  --cg-float: rgba(255, 255, 255, 0.85);
+  --cg-del-fg: #8a3d44;
+  --cg-float: #ffffff;
   --cg-shadow: 0 22px 75px rgba(21, 24, 22, 0.12);
+  --cg-shadow-pop: 0 18px 50px rgba(27, 30, 26, 0.12);
+  --cg-shadow-lift: 0 3px 15px rgba(38, 41, 37, 0.06);
+  --cg-mark-claude-bg: #f6e9e2;
+  --cg-mark-claude-fg: #8a4a2f;
+  --cg-mark-codex-bg: #e3efe9;
+  --cg-mark-codex-fg: #2a6a52;
+  --cg-mark-opencode-bg: #e6eaf5;
+  --cg-mark-opencode-fg: #41528a;
+  --cg-mark-demo-bg: #ecece8;
+  --cg-mark-demo-fg: #50534e;
   --cg-backdrop: rgba(33, 35, 33, 0.18);
 }
 
@@ -47,6 +60,7 @@
   --cg-sidebar: #1a1b19;
   --cg-line: #272926;
   --cg-line-strong: #363833;
+  --cg-control: #6f726c;
   --cg-ink: #e8e9e6;
   --cg-muted: #8b8e89;
   --cg-muted-strong: #a9aca6;
@@ -57,6 +71,7 @@
   --cg-green: #6eae8e;
   --cg-red: #d98a90;
   --cg-amber: #e4ad67;
+  --cg-amber-text: #e4ad67;
   --cg-primary: #e8e9e6;
   --cg-primary-hover: #ffffff;
   --cg-on-primary: #151614;
@@ -66,9 +81,55 @@
   --cg-add-fg: #86c3a4;
   --cg-del-bg: rgba(217, 138, 144, 0.14);
   --cg-del-fg: #e2a0a5;
-  --cg-float: rgba(22, 23, 21, 0.85);
+  --cg-float: #161715;
   --cg-shadow: 0 22px 75px rgba(0, 0, 0, 0.5);
+  --cg-shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
+  --cg-shadow-lift: 0 3px 15px rgba(0, 0, 0, 0.4);
+  --cg-mark-claude-bg: #3a2a22;
+  --cg-mark-claude-fg: #e8b79f;
+  --cg-mark-codex-bg: #1f3329;
+  --cg-mark-codex-fg: #8fcfae;
+  --cg-mark-opencode-bg: #252b40;
+  --cg-mark-opencode-fg: #a9b8ee;
+  --cg-mark-demo-bg: #2a2c28;
+  --cg-mark-demo-fg: #b5b8b1;
   --cg-backdrop: rgba(0, 0, 0, 0.45);
+}
+
+
+/*
+ * The Ataraxia theme on top of HeroUI v3: its tokens point at the roles above, so every HeroUI
+ * component (dialog, drawer, tooltip, tabs, switch, kbd, ...) wears the prototype's look in
+ * light and dark without per-component overrides.
+ */
+:root,
+:root.light,
+:root.dark {
+  --background: var(--cg-panel);
+  --foreground: var(--cg-ink);
+  --surface: var(--cg-panel);
+  --surface-foreground: var(--cg-ink);
+  --overlay: var(--cg-panel);
+  --overlay-foreground: var(--cg-ink);
+  --overlay-shadow: var(--cg-shadow);
+  --muted: var(--cg-muted);
+  --default: var(--cg-tint);
+  --default-foreground: var(--cg-ink);
+  --accent: var(--cg-primary);
+  --accent-foreground: var(--cg-on-primary);
+  --accent-soft: var(--cg-accent-bg);
+  --accent-soft-foreground: var(--cg-accent);
+  --border: var(--cg-line);
+  --separator: var(--cg-line);
+  --focus: var(--cg-ink);
+  --field-background: var(--cg-panel);
+  --field-foreground: var(--cg-ink);
+  --field-placeholder: var(--cg-muted);
+  --field-border: var(--cg-control);
+  --success: var(--cg-green);
+  --danger: var(--cg-red);
+  --warning: var(--cg-amber);
+  --radius: 0.5rem;
 }
 
 @theme inline {
@@ -77,6 +138,7 @@
   --color-cg-sidebar: var(--cg-sidebar);
   --color-cg-line: var(--cg-line);
   --color-cg-line-strong: var(--cg-line-strong);
+  --color-cg-control: var(--cg-control);
   --color-cg-ink: var(--cg-ink);
   --color-cg-muted: var(--cg-muted);
   --color-cg-muted-strong: var(--cg-muted-strong);
@@ -87,6 +149,15 @@
   --color-cg-green: var(--cg-green);
   --color-cg-red: var(--cg-red);
   --color-cg-amber: var(--cg-amber);
+  --color-cg-amber-text: var(--cg-amber-text);
+  --color-cg-mark-claude-bg: var(--cg-mark-claude-bg);
+  --color-cg-mark-claude-fg: var(--cg-mark-claude-fg);
+  --color-cg-mark-codex-bg: var(--cg-mark-codex-bg);
+  --color-cg-mark-codex-fg: var(--cg-mark-codex-fg);
+  --color-cg-mark-opencode-bg: var(--cg-mark-opencode-bg);
+  --color-cg-mark-opencode-fg: var(--cg-mark-opencode-fg);
+  --color-cg-mark-demo-bg: var(--cg-mark-demo-bg);
+  --color-cg-mark-demo-fg: var(--cg-mark-demo-fg);
   --color-cg-primary: var(--cg-primary);
   --color-cg-primary-hover: var(--cg-primary-hover);
   --color-cg-on-primary: var(--cg-on-primary);
@@ -99,9 +170,9 @@
   --color-cg-float: var(--cg-float);
 
   /*
-   * Type scale, largest to smallest. Each step has one job so hierarchy reads at a glance:
-   * display (hero), title (dialogs, h1), heading (h2, session names), body (chat text),
-   * ui (controls, breadcrumb), small (secondary text), micro (eyebrow labels), nano (counts).
+   * Type scale, largest to smallest. Nothing that informs is smaller than 12px. Each step has one
+   * job: display (hero), title (dialogs, h1), heading (h2, session names), body (chat text),
+   * ui (controls, breadcrumb), small (secondary text, section labels, counts).
    */
   --text-display: 30px;
   --text-title: 20px;
@@ -109,8 +180,14 @@
   --text-body: 14.5px;
   --text-ui: 13px;
   --text-small: 12px;
-  --text-micro: 11px;
-  --text-nano: 10px;
+
+  /*
+   * Three radii, each tied to a role: sm for rows, chips and icon buttons; md for buttons, inputs
+   * and menu items; lg for dialogs, panels and the composer. Round is only for dots and pills.
+   */
+  --radius-cg-sm: 6px;
+  --radius-cg-md: 9px;
+  --radius-cg-lg: 14px;
 
   --font-sans:
     "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif,
@@ -119,6 +196,8 @@
     "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
     Monaco, Consolas, monospace;
   --shadow-cg-float: var(--cg-shadow);
+  --shadow-cg-pop: var(--cg-shadow-pop);
+  --shadow-cg-lift: var(--cg-shadow-lift);
 }
 
 html,
@@ -154,16 +233,69 @@ select {
   font: inherit;
 }
 
-button {
+button,
+summary,
+[role="button"],
+[role="tab"],
+[role="switch"],
+[role="option"] {
   cursor: pointer;
 }
 
-button:disabled {
+button:disabled,
+[aria-disabled="true"] {
   cursor: not-allowed;
 }
 
-:focus,
-:focus-visible {
+/*
+ * Pointer users get no rings; keyboard users see where they are with a plain ring in the text
+ * colour (never the violet accent, which is for links and the selected item). Text fields show
+ * their focus with their own border instead of a ring around the box.
+ */
+:focus {
+  outline: none;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="switch"]:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role="separator"]:focus-visible,
+[data-focus-visible="true"] {
+  outline: 1.5px solid var(--cg-ink);
+  outline-offset: 2px;
+}
+
+/*
+ * An item of a menu or list is already a row on a panel: its focus is a tinted row with a thin
+ * line inside it, not a ring around it.
+ */
+[role="option"]:focus-visible,
+[role="menuitem"]:focus-visible {
+  outline: none;
+  background-color: var(--cg-tint);
+  box-shadow: inset 0 0 0 1px var(--cg-control);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--cg-ink);
+}
+
+/*
+ * A field that sits inside a rounded surface (the composer, the BTW bar) hands its focus to the
+ * surface: a thin line in the control colour, so the whole box says it is the one being typed in.
+ */
+.cg-field:focus-within {
+  box-shadow: inset 0 0 0 1px var(--cg-control);
+}
+
+.cg-field input:focus-visible,
+.cg-field textarea:focus-visible {
   outline: none;
 }
 
@@ -171,34 +303,9 @@ button:disabled {
   background: color-mix(in srgb, var(--cg-accent) 28%, transparent);
 }
 
-.cg-page-in {
-  animation: cg-page-in 0.22s ease both;
-}
-
-@keyframes cg-page-in {
-  from {
-    opacity: 0.1;
-    transform: translateY(7px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 /* While the opening plays, the logo in the header is drawn by the animation itself. */
 :root[data-intro-running] [data-intro="mark"] {
   opacity: 0;
-}
-
-@keyframes cg-pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.cg-pulse {
-  animation: cg-pulse 1.3s infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -210,4 +317,35 @@ button:disabled {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Code review marks inside Monaco. */
+.cg-line-added {
+  background: var(--cg-add-bg);
+}
+.cg-line-removed {
+  background: var(--cg-del-bg);
+}
+.cg-gutter-added,
+.cg-gutter-removed {
+  width: 3px !important;
+  margin-left: 3px;
+  border-radius: 2px;
+}
+.cg-gutter-added {
+  background: var(--cg-add-fg);
+}
+.cg-gutter-removed {
+  background: var(--cg-del-fg);
+}
+.cg-glyph-comment {
+  margin-left: 4px;
+  width: 8px !important;
+  height: 8px !important;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--cg-accent);
+}
+.cg-unit-range {
+  background: var(--cg-accent-bg);
 }

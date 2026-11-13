@@ -1,5 +1,7 @@
 // Browser-only stand-in for the Tauri IPC so the UI can be reviewed with `pnpm dev`.
 // Never loaded inside the real app (main.tsx checks for __TAURI_INTERNALS__).
+import { handleInsights } from "./insightsMock";
+
 export {};
 
 const now = new Date().toISOString();
@@ -80,6 +82,14 @@ const optionsByProvider: Record<string, unknown> = {
   opencode: { models: ["Daybreak Blue", "Daybreak Red", "GPT-4.1", "GPT-4.1 Fast", "GPT-4.1 mini", "GPT-4.1 mini Fast", "GPT-4o", "GPT-4o (2024-08-06)", "GPT-4o (2024-11-20)", "GPT-4o Fast", "GPT-5", "GPT-5 mini", "o3", "o4-mini"].map((n) => m("openai/" + n, "openai/" + n)).concat([m("anthropic/claude-sonnet-5-5", "anthropic/Claude Sonnet 5.5")]), default_model: "anthropic/claude-sonnet-5-5", efforts: ["low", "high"], agents: [{ id: "build", label: "build", description: "Full access" }, { id: "plan", label: "plan", description: "Read-only planning" }] },
 };
 
+const callbacks = new Map<number, (event: unknown) => void>();
+const listeners: Record<string, number[]> = {};
+function emit(event: string, payload: unknown) {
+  for (const handler of listeners[event] ?? []) {
+    callbacks.get(handler)?.({ event, id: handler, payload });
+  }
+}
+
 function handle(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "core_status": return "ready";
@@ -105,15 +115,43 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       target.agent = (args?.agent as string | null) ?? null;
       return target;
     }
+    case "workspace_list_branches": {
+      const current = worktrees.find((item) => item.id === args?.worktreeId)?.branch ?? "main";
+      const names = ["main", "feature/course-mask", "fix/prohibited-question-feedback", "fix/node-24-cve-2025-55130", "feature/diff-target", "feature/spec-v1.1-remaining", "chore/bump-deps", "release/2.3", "hotfix/token-expiry", "dirty/conflicts-with-your-edits"];
+      return { branches: names.map((name) => ({ name, current: name === current, worktree_id: worktrees.find((item) => item.branch === name && name !== current)?.id ?? null })), workspace: { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) } };
+    }
+    case "workspace_select_branch": {
+      const name = String(args?.name);
+      if (name === "dirty/conflicts-with-your-edits") {
+        throw new Error("could not switch to `dirty/conflicts-with-your-edits`: error: Your local changes to the following files would be overwritten by checkout:\n\tsrc/studio/auth/tokens.py\nPlease commit your changes or stash them before you switch branches.");
+      }
+      const target = worktrees.find((item) => item.id === args?.worktreeId)!;
+      const open = worktrees.find((item) => item.branch === name);
+      if (open) {
+        snapshot.selected_worktree_id = open.id;
+      } else {
+        target.branch = name;
+      }
+      return { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) };
+    }
     case "workspace_bootstrap":
     case "workspace_select_repository":
     case "workspace_select_worktree":
     case "workspace_create_session":
     case "workspace_open_session":
     case "workspace_open_repository": return snapshot;
-    case "plugin:event|listen": return 1;
+    case "plugin:event|listen": {
+      const target = args as { event: string; handler: number } | undefined;
+      if (target) {
+        (listeners[target.event] ??= []).push(target.handler);
+      }
+      return 1;
+    }
     case "terminal_ensure": return { sessionId: "p1", created: true };
-    default: return null;
+    default: {
+      const result = handleInsights(cmd, args, emit);
+      return result.handled ? result.value : null;
+    }
   }
 }
 
@@ -121,7 +159,10 @@ let callbackId = 0;
 const w = window as unknown as Record<string, unknown>;
 w.__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise.resolve(handle(cmd, args)),
-  transformCallback: () => ++callbackId,
+  transformCallback: (callback: (event: unknown) => void) => {
+    callbacks.set(++callbackId, callback);
+    return callbackId;
+  },
   unregisterCallback: () => undefined,
   convertFileSrc: (p: string) => p,
 };

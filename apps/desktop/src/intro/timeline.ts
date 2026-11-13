@@ -66,6 +66,7 @@ export function wordPlacement(width: number, height: number): Placement {
   return { ox: (width - layout().width * s) / 2, oy: height / 2 - cap / 2, s };
 }
 
+/** The opening plays every time the app opens, except for people who prefer reduced motion. */
 export function introEnabled(): boolean {
   return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }

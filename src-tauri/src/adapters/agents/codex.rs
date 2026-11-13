@@ -82,11 +82,16 @@ fn approvals_reviewer() -> Option<String> {
     }
 }
 
-fn thread_start_params(cwd: &Path, reviewer: Option<&str>, model: Option<&str>) -> Value {
+fn thread_start_params(
+    cwd: &Path,
+    reviewer: Option<&str>,
+    model: Option<&str>,
+    read_only: bool,
+) -> Value {
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
         "approvalPolicy": "on-request",
-        "sandbox": "workspace-write"
+        "sandbox": if read_only { "read-only" } else { "workspace-write" }
     });
     if let Some(reviewer) = reviewer {
         params["approvalsReviewer"] = json!(reviewer);
@@ -159,6 +164,7 @@ impl AgentBackend for CodexBackend {
                     &ctx.cwd,
                     approvals_reviewer().as_deref(),
                     ctx.model.as_deref(),
+                    ctx.read_only,
                 ),
                 Some(HANDSHAKE_TIMEOUT),
             )?;
@@ -1464,12 +1470,21 @@ mod tests {
 
     #[test]
     fn thread_start_routes_approvals_to_the_reviewer() {
-        let params = thread_start_params(Path::new("/work"), Some("auto_review"), Some("gpt-x"));
+        let params = thread_start_params(
+            Path::new("/work"),
+            Some("auto_review"),
+            Some("gpt-x"),
+            false,
+        );
         assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["approvalsReviewer"], "auto_review");
         assert_eq!(params["approvalPolicy"], "on-request");
         assert_eq!(params["sandbox"], "workspace-write");
-        let manual = thread_start_params(Path::new("/work"), None, None);
+        let manual = thread_start_params(Path::new("/work"), None, None, false);
+        assert_eq!(
+            thread_start_params(Path::new("/work"), None, None, true)["sandbox"],
+            "read-only"
+        );
         assert!(manual.get("approvalsReviewer").is_none());
         assert!(manual.get("model").is_none());
     }
@@ -1493,6 +1508,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = backend
             .start(BackendContext {
+                read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
                 model: None,

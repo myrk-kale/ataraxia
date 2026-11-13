@@ -1,3 +1,4 @@
+import { I18nProvider } from "@heroui/react";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { AppShell } from "./app/AppShell";
@@ -14,8 +15,10 @@ async function start() {
   }
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <AppShell />
-      <Intro />
+      <I18nProvider locale="en-US">
+        <AppShell />
+        <Intro />
+      </I18nProvider>
     </React.StrictMode>,
   );
 }

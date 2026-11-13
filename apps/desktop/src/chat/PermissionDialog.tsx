@@ -28,13 +28,13 @@ export function PermissionDialog({
     <dialog
       ref={ref}
       aria-labelledby="permission-title"
-      className="m-auto w-[min(30rem,calc(100vw-2rem))] rounded-[15px] border border-cg-line-strong bg-cg-panel p-0 text-cg-ink shadow-cg-float backdrop:bg-[var(--cg-backdrop)] backdrop:backdrop-blur-[3px]"
+      className="m-auto w-[min(30rem,calc(100vw-2rem))] rounded-cg-lg border border-cg-line-strong bg-cg-panel p-0 text-cg-ink shadow-cg-float backdrop:bg-[var(--cg-backdrop)] backdrop:backdrop-blur-[3px]"
       onCancel={(event) => event.preventDefault()}
     >
       {pending ? (
         <div className="space-y-5 px-8 py-7">
           <div>
-            <span className="text-micro font-bold tracking-[1.15px] text-cg-muted-strong uppercase">
+            <span className="text-small font-semibold text-cg-muted-strong">
               Permission needed
             </span>
             <h2
@@ -44,7 +44,7 @@ export function PermissionDialog({
               {pending.detail}
             </h2>
           </div>
-          <p className="rounded-[9px] bg-cg-tint px-3.5 py-3 font-mono text-small text-cg-muted-strong">
+          <p className="rounded-cg-md bg-cg-tint px-3.5 py-3 font-mono text-small text-cg-muted-strong">
             {pending.toolName}
           </p>
           <div className="flex justify-end gap-2.5">

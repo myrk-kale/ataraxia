@@ -1,5 +1,6 @@
 //! SQLite persistence adapter.
 
+mod insights;
 mod migrations;
 
 use std::path::{Path, PathBuf};
@@ -10,7 +11,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::domain::agent::ProviderKind;
 use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
-    ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionStatus, Worktree,
+    ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus,
+    Worktree,
 };
 use crate::ports::Store;
 
@@ -47,6 +49,15 @@ impl SqliteStore {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Number of MCP calls recorded so far (tests and diagnostics).
+    pub fn audit_count(&self) -> i64 {
+        self.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM mcp_audit", [], |row| row.get(0))
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        })
+        .unwrap_or(0)
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -208,8 +219,9 @@ impl Store for SqliteStore {
             conn.execute(
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
-                    created_at, updated_at, last_opened_at, model, effort, agent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    created_at, updated_at, last_opened_at, model, effort, agent,
+                    kind, parent_session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -222,7 +234,9 @@ impl Store for SqliteStore {
                     session.last_opened_at,
                     session.model,
                     session.effort,
-                    session.agent
+                    session.agent,
+                    session.kind.as_str(),
+                    session.parent_session_id.map(|id| id.0.to_string())
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -235,9 +249,10 @@ impl Store for SqliteStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
-                            created_at, updated_at, last_opened_at, model, effort, agent
+                            created_at, updated_at, last_opened_at, model, effort, agent,
+                            kind, parent_session_id
                      FROM chat_sessions
-                     WHERE repository_id = ?1
+                     WHERE repository_id = ?1 AND kind = 'chat'
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
                 )
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -252,7 +267,8 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
-                        created_at, updated_at, last_opened_at, model, effort, agent
+                        created_at, updated_at, last_opened_at, model, effort, agent,
+                            kind, parent_session_id
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -478,6 +494,11 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
         model: row.get(9)?,
         effort: row.get(10)?,
         agent: row.get(11)?,
+        kind: SessionKind::parse(&row.get::<_, String>(12)?).unwrap_or_default(),
+        parent_session_id: match row.get::<_, Option<String>>(13)? {
+            Some(value) => Some(parse_session_id(&value)?),
+            None => None,
+        },
     })
 }
 
@@ -552,6 +573,8 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            kind: SessionKind::Chat,
+            parent_session_id: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,
@@ -596,6 +619,8 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            kind: SessionKind::Chat,
+            parent_session_id: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,
@@ -670,6 +695,8 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            kind: SessionKind::Chat,
+            parent_session_id: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             last_opened_at: None,

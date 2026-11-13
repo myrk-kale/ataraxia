@@ -35,12 +35,12 @@ const components: Components = {
   ),
   hr: () => <hr className="my-4 border-cg-line" />,
   pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-[9px] bg-cg-tint p-[15px] font-mono text-small leading-[1.95] [&>code]:bg-transparent [&>code]:p-0">
+    <pre className="my-2 overflow-x-auto rounded-cg-md bg-cg-tint p-4.5 font-mono text-small leading-[1.95] [&>code]:bg-transparent [&>code]:p-0">
       {children}
     </pre>
   ),
   code: ({ children }) => (
-    <code className="rounded bg-cg-tint px-1.5 py-0.5 font-mono text-[0.85em]">
+    <code className="rounded-cg-sm bg-cg-tint px-1.5 py-0.5 font-mono text-[0.85em]">
       {children}
     </code>
   ),

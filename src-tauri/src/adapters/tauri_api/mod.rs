@@ -1,6 +1,7 @@
 //! Tauri commands: the driving adapter at the UI edge.
 
 mod events;
+mod insights;
 mod state;
 
 use base64::Engine as _;
@@ -13,7 +14,8 @@ use crate::domain::{
 };
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
-pub use state::{AppState, build_app_state};
+pub use insights::*;
+pub use state::{AppState, build_app_state, follow_git};
 
 fn map_error(error: Error) -> String {
     error.to_string()
@@ -66,6 +68,27 @@ pub fn workspace_select_worktree(
     worktree_id: WorktreeId,
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| workspace.select_worktree(worktree_id))
+}
+
+/// Every local branch of the repository, refreshed from git each time the selector opens.
+#[tauri::command(async)]
+pub fn workspace_list_branches(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+) -> std::result::Result<crate::app::workspace::BranchList, String> {
+    with_workspace(&state, |workspace| workspace.list_branches(worktree_id))
+}
+
+/// Tries to move to a branch; when git refuses, the error says why and nothing changed.
+#[tauri::command(async)]
+pub fn workspace_select_branch(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    name: String,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.select_branch(worktree_id, &name)
+    })
 }
 
 #[tauri::command]
@@ -228,6 +251,8 @@ pub fn agent_prompt(
     session_id: SessionId,
     text: String,
 ) -> std::result::Result<TurnId, String> {
+    // Marks where the working tree stands, so this turn's changes become a checkpoint.
+    state.engine.turn_started(session_id);
     state
         .agent_runtime()
         .prompt(&session_id, &text)

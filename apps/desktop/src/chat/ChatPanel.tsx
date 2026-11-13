@@ -27,6 +27,7 @@ import {
 import type { ChatSession } from "../lib/workspace";
 import { toBlocks } from "./blocks";
 import { Hero } from "./Hero";
+import { ProviderMark } from "./ProviderMark";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { SubagentBar } from "./SubagentBar";
@@ -37,11 +38,18 @@ import { ToolCard } from "./ToolCard";
 const STICK_THRESHOLD_PX = 80;
 const MAX_COMPOSER_PX = 160;
 
-const SUGGESTIONS = [
-  "Give me a tour of this repository",
-  "Find TODO and FIXME comments",
-  "Summarize the most recent commits",
-];
+const TRUNK_BRANCHES = new Set(["main", "master", "trunk", "develop"]);
+
+/** Starting points that name the repository and branch the chat is about. */
+export function suggestionsFor(contextLabel: string | null): string[] {
+  const [repository, branch] = (contextLabel ?? "").split(" · ");
+  const onFeature = Boolean(branch) && !TRUNK_BRANCHES.has(branch ?? "");
+  return [
+    onFeature ? `Explain what changed on ${branch} and why` : `Give me a tour of ${repository || "this repository"}`,
+    "Find TODO and FIXME comments and group them by area",
+    onFeature ? `Review ${branch} for bugs before I merge` : "Summarize the most recent commits",
+  ];
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -260,7 +268,7 @@ export function ChatPanel({
   const providerLabel = PROVIDER_LABELS[session.provider] ?? session.provider;
 
   // The divider sits before the first item produced by the running agent process.
-  function renderItems(items: ChatItem[], restoredSplit: number, author: string) {
+  function renderItems(items: ChatItem[], restoredSplit: number, author: string, mark: boolean) {
     const blocks = toBlocks(items, restoredSplit);
     let seen = 0;
     return blocks.flatMap((block) => {
@@ -272,16 +280,14 @@ export function ChatPanel({
         block.kind === "user" ? (
           <div
             key={block.key}
-            className="max-w-[min(80%,600px)] self-end rounded-2xl bg-cg-bubble px-[19px] py-[15px] text-body leading-[1.7] whitespace-pre-wrap"
+            className="max-w-[min(80%,600px)] self-end rounded-cg-lg bg-cg-bubble px-5.5 py-4.5 text-body leading-[1.7] whitespace-pre-wrap"
           >
             {block.item.text}
           </div>
         ) : (
           <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
             <div className="flex items-center gap-2 text-ui text-cg-muted">
-              <span aria-hidden="true" className="text-cg-accent">
-                ✳
-              </span>
+              {mark ? <ProviderMark provider={session.provider} size={18} /> : null}
               <strong className="font-semibold text-cg-ink">{author}</strong>
             </div>
             {block.items.map((item) =>
@@ -303,26 +309,27 @@ export function ChatPanel({
     state.items,
     state.restoredCount > 0 ? state.restoredCount : -1,
     providerLabel,
+    true,
   );
   const subagentRendered = activeSubagent
-    ? renderItems(activeSubagent.items, -1, "Subagent")
+    ? renderItems(activeSubagent.items, -1, "Subagent", false)
     : [];
 
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
-    <section className="cg-page-in flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+    <section className="flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
           <div
-            className={`mx-auto flex max-w-[780px] flex-col gap-[33px] px-8 ${
-              emptyChat ? "min-h-full py-6" : "pt-[35px] pb-20"
+            className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
+              emptyChat ? "min-h-full py-6" : "pt-10 pb-20"
             }`}
           >
             {activeSubagent ? (
               <>
                 <div className="flex items-center gap-2 text-small text-cg-muted">
-                  <span className="text-micro font-bold tracking-[1.15px] uppercase">
+                  <span className="text-small font-semibold">
                     Subagent
                   </span>
                   <span aria-hidden="true">·</span>
@@ -352,7 +359,7 @@ export function ChatPanel({
               <>
             {state.loaded && state.items.length > 0 ? (
               <div className="flex items-center gap-2 text-small text-cg-muted">
-                <span className="text-micro font-bold tracking-[1.15px] uppercase">
+                <span className="text-small font-semibold">
                   Coding session
                 </span>
                 <span aria-hidden="true">·</span>
@@ -369,10 +376,10 @@ export function ChatPanel({
             {emptyChat ? (
               <Hero contextLabel={contextLabel}>
                 <div className="mt-8 flex flex-wrap justify-center gap-2">
-                  {SUGGESTIONS.map((suggestion) => (
+                  {suggestionsFor(contextLabel).map((suggestion) => (
                     <button
                       key={suggestion}
-                      className="rounded-lg border border-cg-line px-3 py-2 text-small text-cg-muted-strong hover:border-cg-line-strong hover:text-cg-ink"
+                      className="rounded-cg-md border border-cg-line px-3 py-2 text-small text-cg-muted-strong hover:border-cg-line-strong hover:text-cg-ink"
                       type="button"
                       onClick={() => {
                         setDraft(suggestion);
@@ -420,11 +427,11 @@ export function ChatPanel({
       {state.error ? (
         <div
           role="alert"
-          className="mx-auto mb-2 flex w-full max-w-[780px] items-center justify-between rounded-[9px] bg-cg-del-bg px-3.5 py-2.5 text-small text-cg-del-fg"
+          className="mx-auto mb-2 flex w-full max-w-[780px] items-center justify-between rounded-cg-md bg-cg-del-bg px-3.5 py-2.5 text-small text-cg-del-fg"
         >
           <span className="min-w-0 break-words">{state.error}</span>
           <button
-            className="ml-3 shrink-0 text-micro underline"
+            className="ml-3 shrink-0 text-small underline"
             type="button"
             onClick={() => dispatch({ type: "dismissError" })}
           >
@@ -436,6 +443,7 @@ export function ChatPanel({
       <SubagentBar
         busy={busy && view !== null}
         mainLabel={providerLabel}
+        provider={session.provider}
         selected={activeSubagent ? activeSubagent.id : null}
         subagents={state.subagents}
         onSelect={(id) => {
@@ -446,17 +454,17 @@ export function ChatPanel({
       />
 
       <form
-        className="mx-auto w-full max-w-[840px] flex-none px-[30px] pt-[9px] pb-[23px]"
+        className="mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5"
         onSubmit={(event) => {
           event.preventDefault();
           void send();
         }}
       >
-        <div className="rounded-[14px] bg-cg-tint px-4 py-3.5">
+        <div className="cg-field rounded-cg-lg bg-cg-tint px-4 py-3.5">
           <textarea
             ref={composerRef}
             aria-label="Message"
-            className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted/70"
+            className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
             disabled={!state.loaded || !canWrite}
             placeholder={
               activeSubagent
@@ -472,18 +480,13 @@ export function ChatPanel({
           />
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
             <div className="flex min-w-0 items-center gap-2.5">
-              <span
-                aria-hidden="true"
-                className="grid h-6 w-6 flex-none place-items-center rounded-[7px] bg-cg-accent-bg text-[13px] leading-none text-cg-accent"
-              >
-                ✳
-              </span>
+              <ProviderMark provider={session.provider} size={24} />
               <span className="truncate text-ui font-semibold text-cg-ink">{providerLabel}</span>
               <StatusDot status={state.status} />
             </div>
             {activeSubagent ? (
               <button
-                className="rounded-md px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
+                className="rounded-cg-sm px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
                 type="button"
                 onClick={() => setView(null)}
               >
@@ -506,7 +509,7 @@ export function ChatPanel({
               {busy ? (
                 <button
                   aria-label="Stop"
-                  className="grid h-[29px] w-[29px] place-items-center rounded-lg bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
+                  className="grid h-[29px] w-[29px] place-items-center rounded-cg-md bg-cg-primary text-cg-on-primary hover:bg-cg-primary-hover"
                   type="button"
                   onClick={cancelTurn}
                 >

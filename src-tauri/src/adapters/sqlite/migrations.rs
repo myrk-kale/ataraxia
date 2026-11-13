@@ -3,11 +3,31 @@ use rusqlite::Connection;
 use crate::domain::time::now_rfc3339;
 use crate::domain::{Error, ErrorCode, Result};
 
-const MIGRATION_001: &str = include_str!("../../../migrations/001_workspace.sql");
-const MIGRATION_002: &str = include_str!("../../../migrations/002_chat_items.sql");
-const MIGRATION_003: &str = include_str!("../../../migrations/003_session_settings.sql");
-const MIGRATION_004: &str = include_str!("../../../migrations/004_session_agent.sql");
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../../../migrations/001_workspace.sql")),
+    (2, include_str!("../../../migrations/002_chat_items.sql")),
+    (
+        3,
+        include_str!("../../../migrations/003_session_settings.sql"),
+    ),
+    (4, include_str!("../../../migrations/004_session_agent.sql")),
+    (5, include_str!("../../../migrations/005_insights.sql")),
+    (6, include_str!("../../../migrations/006_diff_target.sql")),
+    (
+        7,
+        include_str!("../../../migrations/007_decision_threads.sql"),
+    ),
+    (
+        8,
+        include_str!("../../../migrations/008_agent_requests.sql"),
+    ),
+];
 
+fn io(error: rusqlite::Error) -> Error {
+    Error::new(ErrorCode::Io, error.to_string())
+}
+
+/// Applies every pending migration, each in its own transaction with its version row.
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -15,7 +35,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             applied_at TEXT NOT NULL
         );",
     )
-    .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+    .map_err(io)?;
 
     let current: i64 = conn
         .query_row(
@@ -23,53 +43,20 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             [],
             |row| row.get(0),
         )
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+        .map_err(io)?;
 
-    if current < 1 {
-        // 001_workspace.sql also creates schema_migrations; ignore that duplicate
-        // by running the domain tables section after ensuring migrations table exists.
-        conn.execute_batch(MIGRATION_001)
-            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+    for (version, sql) in MIGRATIONS {
+        if current >= *version {
+            continue;
+        }
         let applied_at = now_rfc3339()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
-            [applied_at],
-        )
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+        let script = format!(
+            "BEGIN;\n{sql}\nINSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ({version}, '{applied_at}');\nCOMMIT;"
+        );
+        if let Err(error) = conn.execute_batch(&script) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(io(error));
+        }
     }
-
-    if current < 2 {
-        conn.execute_batch(MIGRATION_002)
-            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-        let applied_at = now_rfc3339()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
-            [applied_at],
-        )
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-    }
-
-    if current < 3 {
-        conn.execute_batch(MIGRATION_003)
-            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-        let applied_at = now_rfc3339()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
-            [applied_at],
-        )
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-    }
-
-    if current < 4 {
-        conn.execute_batch(MIGRATION_004)
-            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-        let applied_at = now_rfc3339()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
-            [applied_at],
-        )
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-    }
-
     Ok(())
 }
