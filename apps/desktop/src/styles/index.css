@@ -328,9 +328,14 @@ select:focus-visible {
   background: color-mix(in srgb, var(--cg-accent) 28%, transparent);
 }
 
-/* While the opening plays, the logo in the header is drawn by the animation itself. */
-:root[data-intro-running] [data-intro="mark"] {
-  opacity: 0;
+/* The ASCII A behind the empty chat comes in slowly, as if it had been there all along. */
+@keyframes ascii-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

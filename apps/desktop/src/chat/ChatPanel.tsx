@@ -28,6 +28,8 @@ import type { ChatSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
 import { toBlocks } from "./blocks";
 import { parseBtwReport } from "./btwReport";
+import { AsciiMark } from "./AsciiMark";
+import { useBackground } from "./background";
 import { Hero } from "./Hero";
 import { ProviderMark } from "./ProviderMark";
 import { SessionSettings } from "./SessionSettings";
@@ -341,12 +343,14 @@ export function ChatPanel({
   const rendered = renderItems(state.items, state.restoredCount > 0 ? state.restoredCount : -1);
   const subagentRendered = activeSubagent ? renderItems(activeSubagent.items, -1) : [];
 
+  const background = useBackground();
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
     <section className="cg-chat flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
+        {background.enabled ? <AsciiMark mark={emptyChat} /> : null}
+        <div ref={scrollRef} className="relative h-full overflow-y-auto" onScroll={onScroll}>
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
               emptyChat ? "min-h-full py-6" : "pt-10 pb-20"

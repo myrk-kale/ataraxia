@@ -6,6 +6,24 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
+### Added
+
+- The empty chat shows the A of ATARAXIA as slow, animated ASCII art behind the title. When the chat
+  begins the A rises away and the drifting field of characters stays behind the conversation. It is
+  faint behind the words, follows the cursor with a soft light, stops while the window is hidden and
+  is a still picture with reduced motion.
+- Settings, Appearance, "Animated background" turns all of it off.
+
+### Changed
+
+- On macOS the header is the window's title bar: the system bar is gone, the window buttons sit over
+  the app's own header, and its empty parts move the window (a double click zooms it). Windows and
+  Linux keep their native bar.
+- The header no longer carries the A logo, and the opening fades into the interface instead of
+  landing the first A there.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added
@@ -89,7 +107,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/myrk-kale/ataraxia/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/myrk-kale/ataraxia/releases/tag/v0.1.0

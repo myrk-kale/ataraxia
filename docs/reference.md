@@ -66,9 +66,13 @@ src-tauri/      # Rust core + Tauri (one crate)
 
 When the agent asks for approval while you are in Code, Decisions or Flow, the header says so and takes you back to the chat.
 
+## The animated background
+
+While a chat has no messages, and while no chat is open, the A of ATARAXIA is drawn behind "What shall we build?" as animated ASCII art, on a canvas (`apps/desktop/src/chat/AsciiMark.tsx`; the geometry, brightness and characters are pure functions in `asciiArt.ts`). The stroke breathes slowly, a light climbs the legs and crosses the bar, a faint field of dots drifts around it, and the characters near the cursor light up. It is faint behind the words so they keep their contrast, stops while the window is hidden, is a single still picture with reduced motion, and can be turned off in Settings, Appearance, "Animated background" (one choice for the whole app, kept on this computer). When the chat gets its first message the A rises and fades within about a second and a half; the drifting field stays, behind the conversation. There it is held to the same faint ceiling as behind the title (so message text keeps its contrast), and shows more strongly only in the margins beside the message column.
+
 ## Opening
 
-Opening the app shows animated ASCII art (the "Summit Cloud Sea" piece from ascii-magic, vendored in `apps/desktop/src/vendor/ascii-magic`, drawn as squares) covering the whole window, and draws ATARAXIA over it, letter by letter, in thin strokes (the A has a crossbar, as in the reference wordmark). After a short hold the other letters fade and the first A travels to the corner of the header, where it stays as the logo, while the art and the backdrop fade and the interface that was already rendered underneath is uncovered (about 2.5 s). It plays every time the app opens (any key or click skips it) and never with reduced motion enabled. The letters are paths, not a font: `apps/desktop/src/intro/glyphs.ts` (shapes), `timeline.ts` (timing), `Intro.tsx` (animation), `AsciiBackground.tsx` (the art) and `BrandMark.tsx` (the header logo). The art library is loaded on demand and never from the network.
+Opening the app shows animated ASCII art (the "Summit Cloud Sea" piece from ascii-magic, vendored in `apps/desktop/src/vendor/ascii-magic`, drawn as squares) covering the whole window, and draws ATARAXIA over it, letter by letter, in thin strokes (the A has a crossbar, as in the reference wordmark). After a short hold the letters fade, and the art and the backdrop with them, and the interface that was already rendered underneath is uncovered (about 2.5 s). It plays every time the app opens (any key or click skips it) and never with reduced motion enabled. The letters are paths, not a font: `apps/desktop/src/intro/glyphs.ts` (shapes), `timeline.ts` (timing), `Intro.tsx` (animation) and `AsciiBackground.tsx` (the art). The art library is loaded on demand and never from the network.
 
 ## Design
 

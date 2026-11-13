@@ -8,7 +8,7 @@ A code-review workspace for developers who delegate work to coding agents, in a 
 
 - ENERGY 1: the interface is a tool people sit in for hours. It does not say hello; the code and the agent's words are the loudest things on screen.
 - RHYTHM 1: the screens are working surfaces (a queue, an editor, a thread), so they repeat one structure on purpose. Variety would cost scanning speed.
-- MOTION 1: hover, focus and press states, plus indicators for work in progress (a spinner or typing dots). The opening plays every time the app opens, and any key skips it. No entrance animation on panels, menus or messages.
+- MOTION 1: hover, focus and press states, plus indicators for work in progress (a spinner or typing dots). The opening plays every time the app opens, and any key skips it. No entrance animation on panels, menus or messages. One slow exception: the animated ASCII background of the chat (see Identity). It stops while the window is hidden, is a still picture with reduced motion, and can be turned off in Settings (Appearance, Animated background).
 
 ## Palette
 
@@ -31,7 +31,8 @@ Geist for text and Geist Mono for code, paths and keys. Reason (**to confirm**):
 
 ## Identity
 
-- The mark is the first A of ATARAXIA, drawn with the same strokes as the opening. The favicon and app icon use it on the ink colour.
+- The mark is the A of ATARAXIA, drawn with the same strokes as the opening. The favicon and app icon use it on the ink colour. The header carries no logo: on macOS it is the window's title bar, with room left for the window buttons and empty parts that move the window.
+- The empty chat shows the A as animated ASCII art behind the "What shall we build?" block, in the same voice as the opening (ASCII, monochrome ink). Reason: it is the one moment the screen has nothing to read, so it can carry the identity. When the chat begins the A rises and fades within about a second and a half, and the faint field that drifted around it stays behind the conversation, so the screen keeps its calm movement. The motion is slow (the name means calm): the stroke breathes, a light runs up the legs and across the bar, the field drifts and keeps clear of the A, and the cursor lights the characters near it. Behind words the art is kept faint (at most 6% ink: the title block of the empty state, and the whole message column once the chat has begun), which was measured against 4.5:1 for the primary, secondary and muted text in both themes (`asciiArt.test.ts`); only the margins beside the column show it more strongly. The only words on screen while the A is still fading are the person's own message, on its opaque bubble, and the chat's title line.
 - Agents are told apart by name plus an initial on a tint of their own. This is a stand-in until the providers' official marks are cleared for use (**to confirm**).
 - The app is English-only for now: the interface text, `lang="en"`, and the prompts it sends.
 

@@ -53,7 +53,6 @@ import {
   type RepositoryId,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
-import { BrandMark } from "../intro/BrandMark";
 import { ArtifactsDrawer } from "./ArtifactsDrawer";
 import { EdgeNav } from "./EdgeNav";
 import { play, watchForTouch } from "./sound/sound";
@@ -63,6 +62,7 @@ import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
 import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
 import { resolveShortcut } from "./shortcuts";
+import { TRAFFIC_LIGHTS_INSET, useTitlebarInset } from "./titlebar";
 import { referenceKey, resolveFileRef, selectedWorkspace } from "./workspaceView";
 import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
@@ -161,6 +161,8 @@ export function AppShell() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { kind: theme, toggleKind: toggleTheme } = useAppearance();
+  // The header is the window's title bar on macOS: it makes room for the window buttons.
+  const titlebarInset = useTitlebarInset();
 
   const loadWorkspace = useCallback(() => {
     setBoot({ kind: "loading" });
@@ -559,9 +561,13 @@ export function AppShell() {
 
   return (
     <div className="relative flex h-full flex-col bg-cg-panel text-cg-ink">
-      <header className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line px-8.5">
-        <div className="flex min-w-0 items-center gap-2.5 text-ui font-semibold whitespace-nowrap">
-          <BrandMark />
+      {/* The empty parts of the header move the window, as a title bar does. Controls stay clickable. */}
+      <header
+        className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line pr-8.5 pl-8.5"
+        data-tauri-drag-region
+        style={titlebarInset ? { paddingLeft: TRAFFIC_LIGHTS_INSET } : undefined}
+      >
+        <div className="flex min-w-0 items-center gap-2.5 text-ui font-semibold whitespace-nowrap" data-tauri-drag-region>
           {workspace.workspaces.length === 0 ? (
             <button
               className="rounded-cg-sm py-1.5 text-cg-ink hover:text-cg-accent"
@@ -650,7 +656,7 @@ export function AppShell() {
           <span>{spaceLabel}</span>
         </div>
 
-        <div className="flex flex-none items-center gap-2">
+        <div className="flex flex-none items-center gap-2" data-tauri-drag-region>
           {activity.needsApproval && space !== "chat" ? (
             <Button variant="quiet" onClick={() => setSpace("chat")}>
               <ShieldAlert aria-hidden="true" className="text-cg-amber-text" size={14} />

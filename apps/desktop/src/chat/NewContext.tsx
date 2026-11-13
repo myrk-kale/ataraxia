@@ -1,5 +1,7 @@
 import type { ProviderDescriptor } from "../lib/agent";
 import { Button } from "../ui/Button";
+import { AsciiMark } from "./AsciiMark";
+import { useBackground } from "./background";
 import { Hero } from "./Hero";
 
 export function NewContext({
@@ -23,11 +25,13 @@ export function NewContext({
   onNewChat: () => void;
   onOpenRepository: () => void;
 }) {
+  const background = useBackground();
   const detecting = hasRepository && providers === null;
   const noAgent = hasRepository && providers !== null && providerLabel === null;
 
   return (
-    <section className="flex h-full flex-col overflow-y-auto">
+    <section className="relative flex h-full flex-col overflow-y-auto">
+      {background.enabled ? <AsciiMark mark /> : null}
       <Hero contextLabel={contextLabel}>
         <div className="mt-8 flex justify-center">
           {hasRepository ? (
