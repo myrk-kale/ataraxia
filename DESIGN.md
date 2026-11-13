@@ -1,6 +1,6 @@
 # Ataraxia design direction
 
-This file records the direction the interface already follows, so the next change starts from it instead of from a default. The identity (name, the A mark, the calm tone) comes from the product and `Ataraxia_SPEC_v1.1.md`; where a reason below was written by the agent that documented it, it is marked **to confirm**.
+This file records the direction the interface already follows, so the next change starts from it instead of from a default. The identity (name, the A mark, the calm tone) comes from the product; where a reason below was written by the agent that documented it, it is marked **to confirm**.
 
 ## Read
 
