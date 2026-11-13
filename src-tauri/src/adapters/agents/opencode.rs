@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
     truncate_output,
 };
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
@@ -94,7 +94,7 @@ impl AgentBackend for OpenCodeBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: Vec::new(),
+                env: api_env(ctx.session_id, ctx.api.as_ref()),
                 env_remove: Vec::new(),
             },
             true,
@@ -1024,6 +1024,7 @@ mod tests {
                 model: model.map(str::to_string),
                 effort: effort.map(str::to_string),
                 agent: agent.map(str::to_string),
+                api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1327,6 +1328,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                api: None,
                 emit: Arc::new(|_| {}),
             })
             .err()
