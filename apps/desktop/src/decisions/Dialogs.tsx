@@ -143,6 +143,7 @@ export function GenerateDialog({
           <Row label="Provider">
             <QuietSelect
               aria-label="Provider"
+              sound
               className={FIELD}
               options={providers.map((item) => ({
                 value: item.kind,
@@ -160,6 +161,7 @@ export function GenerateDialog({
           <Row label="Model">
             <QuietSelect
               aria-label="Model"
+              sound
               className={FIELD}
               options={models}
               searchable={models.length > 8}

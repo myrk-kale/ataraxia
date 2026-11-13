@@ -40,5 +40,5 @@ Geist for text and Geist Mono for code, paths and keys. Reason (**to confirm**):
 1. A screen that holds data has an empty, a loading and a failed state, each saying what is happening and what to do.
 2. A state is words (and a shape) first. Colour only reinforces it.
 3. A control is one native element with a name, a visible focus ring and a keyboard path. Tooltips go through `Tip`, which keeps the button as the only control.
-4. Anything the product can do is reachable without knowing a shortcut. Shortcuts are the fast path, not the only path (BTW is the one deliberate exception, summoned by Space or Ctrl/⌘ K and explained wherever it applies).
+4. Anything the product can do is reachable without knowing a shortcut. Shortcuts are the fast path, not the only path (BTW is the one deliberate exception, summoned by Ctrl/⌘ K and explained wherever it applies).
 5. No invented numbers, people or activity. An empty state beats a fake one.

@@ -1,8 +1,7 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Eye, File as FileIcon, Folder } from "lucide-react";
-import { useMemo, type ReactElement } from "react";
-import type { ChangedFile, ComponentScore, Level, ReviewMark, ReviewPriority, Unit } from "../lib/insights";
-import { Tip } from "../ui/Overlay";
-import { buildTree, CHANGE_LETTER, UNIT_KIND_LABEL, visibleRows } from "./model";
+import { useMemo } from "react";
+import type { ChangedFile, Level, ReviewMark, ReviewPriority, Unit } from "../lib/insights";
+import { buildTree, CHANGE_LETTER, visibleRows } from "./model";
 
 const LEVEL_LABEL: Record<Level, string> = { high: "High", medium: "Medium", low: "Low" };
 
@@ -97,103 +96,142 @@ function Letter({ change, name }: { change: ChangedFile["change"]; name: string 
   );
 }
 
-const UNIT_CHANGE: Record<string, { letter: string; change: ChangedFile["change"] }> = {
-  added: { letter: "A", change: "added" },
-  modified: { letter: "M", change: "modified" },
-  removed: { letter: "D", change: "deleted" },
+/** The words for a unit's kind and change: the list says them plainly instead of with letters. */
+const KIND_WORD: Record<string, string> = {
+  function: "function",
+  method: "method",
+  class: "class",
+  struct: "struct",
+  enum: "enum",
+  trait: "trait",
+  interface: "interface",
+  impl: "impl",
+  module: "module",
+  type: "type",
+  const: "constant",
+  scope: "top level",
+  file: "file",
 };
 
-/** Shows the reason in a tooltip that opens on keyboard focus as well as on hover. */
-function Why({ text, children }: { text: string; children: ReactElement<{ "aria-describedby"?: string }> }) {
-  return text ? <Tip label={text}>{children}</Tip> : children;
+const CHANGE_WORD: Record<string, string> = { added: "new", modified: "changed", removed: "removed" };
+
+type QueueRow = {
+  key: string;
+  name: string;
+  detail: string;
+  level: Level;
+  score: number;
+  mark: ReviewMark["state"] | undefined;
+  signatureChanged: boolean;
+  unit: Unit | null;
+  path: string;
+};
+
+function withoutExtension(name: string): string {
+  return name.replace(/\.[A-Za-z0-9]+$/, "");
 }
 
 /**
- * Components, most critical first. A component is a class, an impl or a file (or a feature the
- * model grouped across files); its rows are the functions, methods and types that changed.
+ * Every component to review as one flat list, most critical first: the functions, classes and types
+ * that changed, not the files they live in. A component the parser could not break down (a lock
+ * file, a README) is a row of its own.
+ */
+function queueRows(priority: ReviewPriority, marks: ReadonlyMap<string, ReviewMark["state"]>): QueueRow[] {
+  const units = new Map((priority.units ?? []).map((unit) => [unit.id, unit]));
+  const seen = new Set<string>();
+  const rows: QueueRow[] = [];
+  for (const component of priority.components) {
+    const members = (component.units ?? []).map((id) => units.get(id)).filter((unit): unit is Unit => Boolean(unit));
+    if (members.length === 0) {
+      for (const path of component.files) {
+        if (!seen.has(path)) {
+          seen.add(path);
+          const file = priority.files.find((item) => item.path === path);
+          rows.push({
+            key: `file:${path}`,
+            name: fileName(path),
+            detail: "file",
+            level: file?.level ?? component.level,
+            score: file?.score ?? component.score,
+            mark: marks.get(path),
+            signatureChanged: false,
+            unit: null,
+            path,
+          });
+        }
+      }
+      continue;
+    }
+    for (const unit of members) {
+      if (seen.has(unit.id)) {
+        continue;
+      }
+      seen.add(unit.id);
+      const topLevel = unit.kind === "scope";
+      rows.push({
+        key: unit.id,
+        name: unit.kind === "file" ? fileName(unit.name) : topLevel ? `${withoutExtension(component.name)} top level` : unit.name,
+        detail: [KIND_WORD[unit.kind] ?? unit.kind, CHANGE_WORD[unit.change] ?? unit.change].join(" · "),
+        level: unit.level,
+        score: unit.score,
+        mark: marks.get(unit.path),
+        signatureChanged: unit.signature_changed,
+        unit,
+        path: unit.path,
+      });
+    }
+  }
+  // Stable: components with equal scores keep the order the review gave them.
+  return rows.map((row, index) => ({ row, index })).sort((x, y) => y.row.score - x.row.score || x.index - y.index).map((item) => item.row);
+}
+
+/**
+ * Components, most critical first, as plain blocks: the name, what it is, and how much it needs
+ * a look. Why it ranks where it does is said when it is opened, not here.
  */
 export function ComponentQueue({
   priority,
   marks,
   activeUnit,
+  openPath,
   onOpenUnit,
   onOpenFile,
 }: {
   priority: ReviewPriority;
   marks: ReadonlyMap<string, ReviewMark["state"]>;
   activeUnit: string | null;
+  /** The file open in the editor, for a row that is a file rather than a unit. */
+  openPath?: string | null;
   onOpenUnit: (unit: Unit) => void;
   onOpenFile: (path: string) => void;
 }) {
-  const units = useMemo(() => new Map((priority.units ?? []).map((unit) => [unit.id, unit])), [priority]);
-  const scores = useMemo(() => new Map(priority.files.map((file) => [file.path, file])), [priority]);
+  const rows = useMemo(() => queueRows(priority, marks), [priority, marks]);
   return (
-    <ul aria-label="Components to review" className="flex flex-col gap-3 px-2 pb-4">
-      {priority.components.map((component: ComponentScore) => {
-        const reasonsId = `why-${component.id.replace(/\W/g, "-")}`;
-        const members = (component.units ?? []).map((id) => units.get(id)).filter((unit): unit is Unit => Boolean(unit));
+    <ul aria-label="Components to review" className="flex flex-col gap-0.5 px-2 pb-4">
+      {rows.map((row) => {
+        const active = row.unit ? activeUnit === row.unit.id : openPath === row.path && activeUnit === null;
         return (
-          <li key={component.id}>
-            <div className="flex items-center gap-2 px-2 pt-1 pb-0.5">
-              <span className="min-w-0 flex-1 truncate text-small font-semibold text-cg-ink" title={component.path ?? component.name}>
-                {component.name}
-                {component.path ? <span className="ml-1.5 font-mono font-normal text-cg-muted">{component.path.split("/").pop()}</span> : null}
+          <li key={row.key}>
+            <button
+              aria-selected={active}
+              className="flex w-full flex-col gap-0.5 rounded-cg-md px-3 py-2 text-left hover:bg-cg-tint aria-selected:bg-cg-tint aria-selected:shadow-[inset_0_0_0_1px_var(--cg-line-strong)]"
+              type="button"
+              onClick={() => (row.unit ? onOpenUnit(row.unit) : onOpenFile(row.path))}
+            >
+              <span className="flex items-baseline gap-2">
+                <span className="min-w-0 flex-1 truncate text-ui font-medium text-cg-ink">{row.name}</span>
+                <span className={`flex-none text-small font-medium ${LEVEL_TONE[row.level]}`}>{LEVEL_LABEL[row.level]}</span>
               </span>
-              <span className={`flex-none text-small font-medium ${LEVEL_TONE[component.level]}`}>{LEVEL_LABEL[component.level]}</span>
-              <span className="flex-none text-small text-cg-muted tabular-nums" title="Priority score, 0 to 100">
-                {component.score}
+              <span className="flex items-center gap-1.5 text-small text-cg-muted-strong">
+                <span className="min-w-0 truncate">
+                  {row.detail}
+                  {row.signatureChanged ? " · signature changed" : ""}
+                </span>
+                <span className="ml-auto flex-none">
+                  <MarkGlyph state={row.mark} />
+                </span>
               </span>
-            </div>
-            <p className="px-2 pb-1 text-small leading-4 text-cg-muted" id={reasonsId}>
-              {component.reasons.join(" · ")}
-            </p>
-            <ul aria-describedby={reasonsId}>
-              {members.length > 0
-                ? members.map((unit) => {
-                    const change = UNIT_CHANGE[unit.change] ?? UNIT_CHANGE.modified!;
-                    const why = unit.reasons.join(" · ");
-                    const active = activeUnit === unit.id;
-                    return (
-                      <li key={unit.id}>
-                        <Why text={active ? "" : why}>
-                          <button
-                            aria-selected={active}
-                            className={ROW}
-                            type="button"
-                            onClick={() => onOpenUnit(unit)}
-                          >
-                            <MarkGlyph state={marks.get(unit.path)} />
-                            <Letter change={change.change} name={unit.change} />
-                            <span className="min-w-0 flex-1 truncate">
-                              <span className="text-cg-muted">{UNIT_KIND_LABEL[unit.kind] ?? unit.kind} </span>
-                              {unit.kind === "file" ? unit.name.split("/").pop() : unit.name.split(".").slice(-1)[0]}
-                              {component.path === null ? <span className="ml-1.5 text-cg-muted">{unit.path.split("/").pop()}</span> : null}
-                            </span>
-                            {unit.signature_changed ? (
-                              <span className="flex-none rounded-cg-sm border border-cg-line-strong px-1 font-medium text-cg-ink">
-                                signature changed
-                              </span>
-                            ) : null}
-                            <span className="flex-none text-cg-muted tabular-nums">{unit.score}</span>
-                          </button>
-                        </Why>
-                        {active && why ? (
-                          <p className="mr-2 mb-1 ml-8 text-small leading-4 text-cg-muted-strong">{why}</p>
-                        ) : null}
-                      </li>
-                    );
-                  })
-                : component.files.map((path) => (
-                    <li key={path}>
-                      <Why text={scores.get(path)?.reasons.join(" · ") ?? ""}>
-                        <button className={ROW} type="button" onClick={() => onOpenFile(path)}>
-                          <MarkGlyph state={marks.get(path)} />
-                          <span className="min-w-0 flex-1 truncate">{fileName(path)}</span>
-                        </button>
-                      </Why>
-                    </li>
-                  ))}
-            </ul>
+            </button>
           </li>
         );
       })}

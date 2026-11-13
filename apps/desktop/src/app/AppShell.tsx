@@ -51,15 +51,16 @@ import {
 import { BrandMark } from "../intro/BrandMark";
 import { ArtifactsDrawer } from "./ArtifactsDrawer";
 import { EdgeNav } from "./EdgeNav";
+import { play, watchForTouch } from "./sound/sound";
 import { SessionsPanel } from "./SessionsPanel";
 import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
-import { newBridge } from "./spaceCommands";
+import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
 import { resolveShortcut } from "./shortcuts";
 import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
-import { useThemeMode } from "./theme";
+import { useAppearance } from "./appearance/store";
 import { useFailedArtifacts, useSessionActivity } from "./useSessionActivity";
 
 const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
@@ -106,6 +107,16 @@ function errorMessage(err: unknown): string {
 
 export function AppShell() {
   const [space, setSpace] = useState<SpaceId>("chat");
+
+  // Changing space ticks, whether by the dots, the keyboard or the wheel.
+  useEffect(() => watchForTouch(), []);
+  const shownSpace = useRef(space);
+  useEffect(() => {
+    if (shownSpace.current !== space) {
+      shownSpace.current = space;
+      play("tick");
+    }
+  }, [space]);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [btwOpen, setBtwOpen] = useState(false);
@@ -117,16 +128,23 @@ export function AppShell() {
   // Spaces stay mounted once visited, so the open file, the selected decision and the diagram
   // are still there when you come back.
   const [visited, setVisited] = useState<ReadonlySet<SpaceId>>(new Set<SpaceId>(["chat"]));
-  const bridge = useRef(newBridge());
-  // A space that is not on screen writes here instead, so it cannot overwrite the shortcuts of the visible one.
-  const inactiveBridge = useRef(newBridge());
+  // Each space writes into its own bridge: the visible one answers the shortcuts, and BTW reads what
+  // every space has open, whichever one it was summoned from.
+  const codeBridge = useRef(newBridge());
+  const decisionsBridge = useRef(newBridge());
+  const flowBridge = useRef(newBridge());
+  const bridges: SpaceBridges = {
+    code: codeBridge.current,
+    decisions: decisionsBridge.current,
+    flow: flowBridge.current,
+  };
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
   const [boot, setBoot] = useState<LoadState>({ kind: "loading" });
   const [providers, setProviders] = useState<ProviderDescriptor[] | null>(null);
   const [preferredProvider, setPreferredProvider] = useState<ProviderKind | null>(readStoredProvider);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { theme, toggleTheme } = useThemeMode();
+  const { kind: theme, toggleKind: toggleTheme } = useAppearance();
 
   const loadWorkspace = useCallback(() => {
     setBoot({ kind: "loading" });
@@ -177,6 +195,7 @@ export function AppShell() {
         return;
       }
       event.preventDefault();
+      const current = space === "code" ? codeBridge.current : space === "decisions" ? decisionsBridge.current : space === "flow" ? flowBridge.current : null;
       switch (action.type) {
         case "space":
           setSpace((current) => nextSpace(current, action.delta));
@@ -194,13 +213,16 @@ export function AppShell() {
           setLegendOpen(true);
           break;
         case "version":
-          bridge.current.commands.version?.();
+          current?.commands.version?.();
           break;
         case "item":
-          bridge.current.commands.item?.(action.delta);
+          current?.commands.item?.(action.delta);
           break;
         case "comment":
-          bridge.current.commands.comment?.();
+          current?.commands.comment?.();
+          break;
+        case "wrap":
+          current?.commands.wrap?.();
           break;
       }
     }
@@ -540,6 +562,7 @@ export function AppShell() {
 
           <QuietSelect
             aria-label="Provider"
+            sound
             className="max-w-[130px] text-small text-cg-muted-strong"
             disabled={busy || choices.length === 0}
             options={choices.map((item) => ({
@@ -628,15 +651,15 @@ export function AppShell() {
         </div>
       </header>
 
-      <div className="relative min-h-0 flex-1 pr-10.5">
+      {/* The dots float over the diagram; every other space leaves them a gutter. */}
+      <div className={`relative min-h-0 flex-1 ${space === "flow" ? "" : "pr-10.5"}`}>
         {space === "chat" ? <ErrorBoundary label="Chat">{chatSpace()}</ErrorBoundary> : null}
 
         {visited.has("code") ? (
           <div className={space === "code" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Code">
               <CodeSpace
-                bridge={space === "code" ? bridge : inactiveBridge}
-                dark={theme === "dark"}
+                bridge={codeBridge}
                 openRequest={codeRequest}
                 reference={reference || null}
                 session={selectedSession}
@@ -651,7 +674,7 @@ export function AppShell() {
           <div className={space === "decisions" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Decisions">
               <DecisionsSpace
-                bridge={space === "decisions" ? bridge : inactiveBridge}
+                bridge={decisionsBridge}
                 session={selectedSession}
                 onError={setError}
                 onOpenFile={openInCode}
@@ -663,8 +686,7 @@ export function AppShell() {
           <div className={space === "flow" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Flow">
               <FlowSpace
-                bridge={space === "flow" ? bridge : inactiveBridge}
-                dark={theme === "dark"}
+                bridge={flowBridge}
                 session={selectedSession}
                 onError={setError}
                 onOpenFile={openInCode}
@@ -695,7 +717,6 @@ export function AppShell() {
         <TerminalPanel
           key={selectedWorktree.id}
           cwd={selectedWorktree.path}
-          theme={theme}
           worktreeId={selectedWorktree.id}
           onClose={() => setTerminalOpen(false)}
         />
@@ -704,7 +725,8 @@ export function AppShell() {
       <EdgeNav space={space} onSelect={setSpace} />
       <BtwPalette
         isOpen={btwOpen}
-        item={bridge.current.context}
+        item={activeItem(bridges, space)}
+        others={otherItems(bridges, space)}
         providers={providers ?? []}
         resume={btwResume}
         session={selectedSession}

@@ -5,6 +5,8 @@ pub mod claude;
 pub mod codex;
 pub mod definitions;
 pub mod fake;
+pub mod guide;
+pub mod handoff;
 pub mod host;
 pub mod opencode;
 pub mod process;

@@ -4,6 +4,7 @@
 //! permission). Provider specifics live behind [`AgentBackend`].
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -11,6 +12,7 @@ use uuid::Uuid;
 
 use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, SubagentRoute};
 use super::registry::ProviderRegistry;
+use super::{guide, handoff};
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::time::now_rfc3339;
@@ -32,6 +34,17 @@ struct Live {
     restored_count: usize,
     /// Investigation-only session: every permission request is refused.
     read_only: bool,
+    /// A chat of the developer's own (not a hidden helper): the one that is told about Ataraxia.
+    chat: bool,
+    /// Whether this agent process has been told about Ataraxia yet.
+    introduced: bool,
+}
+
+/// A conversation that is shown as a subagent of another chat.
+#[derive(Clone)]
+struct Link {
+    parent: SessionId,
+    title: String,
 }
 
 struct Inner {
@@ -39,6 +52,14 @@ struct Inner {
     insights: Option<Arc<dyn InsightStore>>,
     sink: Arc<dyn EventSink>,
     sessions: Mutex<HashMap<SessionId, Live>>,
+    /// Child session to the chat it is a subagent of (BTW conversations).
+    links: Mutex<HashMap<SessionId, Link>>,
+    /// Where the record of a chat is written when its harness is switched.
+    handoff_dir: Mutex<Option<PathBuf>>,
+    /// Chats whose next prompt must tell the new agent about the record (the file's path).
+    handoffs: Mutex<HashMap<SessionId, PathBuf>>,
+    /// The page of the guide that a chat's agent is pointed at, when there is one.
+    guide: Mutex<Option<PathBuf>>,
 }
 
 pub struct AgentHost {
@@ -54,9 +75,25 @@ impl AgentHost {
                 insights: None,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
+                links: Mutex::new(HashMap::new()),
+                handoff_dir: Mutex::new(None),
+                handoffs: Mutex::new(HashMap::new()),
+                guide: Mutex::new(None),
             }),
             backends: HashMap::new(),
         }
+    }
+
+    /// The page of the guide to point each chat's agent at (see `guide::install`).
+    pub fn with_guide(self, index: PathBuf) -> Self {
+        *self.inner.guide.lock() = Some(index);
+        self
+    }
+
+    /// Where to write the conversation when the user switches a chat to another harness.
+    pub fn with_handoff_dir(self, dir: PathBuf) -> Self {
+        *self.inner.handoff_dir.lock() = Some(dir);
+        self
     }
 
     /// Lets the host keep subagent conversations across restarts.
@@ -122,7 +159,79 @@ impl Inner {
         }
     }
 
+    /// What a linked conversation's event looks like from its parent chat: one update of the subagent.
+    fn mirrored(
+        &self,
+        session_id: SessionId,
+        event: &BackendEvent,
+    ) -> Option<(Link, SubagentUpdate)> {
+        let link = self.links.lock().get(&session_id)?.clone();
+        let update = match event {
+            BackendEvent::Delta { text, .. } => SubagentUpdate::Delta { text: text.clone() },
+            BackendEvent::Tool {
+                call_id,
+                name,
+                input,
+                ..
+            } => SubagentUpdate::Tool {
+                call_id: *call_id,
+                name: name.clone(),
+                input: input.clone(),
+            },
+            BackendEvent::ToolResult {
+                call_id,
+                output,
+                ok,
+                ..
+            } => SubagentUpdate::ToolResult {
+                call_id: *call_id,
+                output: output.clone(),
+                ok: *ok,
+            },
+            BackendEvent::TurnDone { ok, .. } => SubagentUpdate::Done { ok: *ok },
+            BackendEvent::Error { .. } => SubagentUpdate::Done { ok: false },
+            _ => return None,
+        };
+        Some((link, update))
+    }
+
+    /// The conversation that is the subagent `id` of `parent`, if it is one: a BTW conversation,
+    /// live in this run or found in the store after a restart.
+    fn linked_child(&self, parent: &SessionId, id: &str) -> Option<SessionId> {
+        let child = SessionId(Uuid::parse_str(id).ok()?);
+        if self
+            .links
+            .lock()
+            .get(&child)
+            .is_some_and(|link| link.parent == *parent)
+        {
+            return Some(child);
+        }
+        let session = self.store.get_session(child).ok()??;
+        (session.parent_session_id == Some(*parent)
+            && matches!(
+                session.kind,
+                crate::domain::SessionKind::Btw | crate::domain::SessionKind::Delegate
+            ))
+        .then_some(child)
+    }
+
     fn handle(&self, session_id: SessionId, event: BackendEvent) {
+        let mirrored = self.mirrored(session_id, &event);
+        self.handle_event(session_id, event);
+        if let Some((link, update)) = mirrored {
+            self.handle_event(
+                link.parent,
+                BackendEvent::Subagent {
+                    id: session_id.0.to_string(),
+                    title: link.title,
+                    update,
+                },
+            );
+        }
+    }
+
+    fn handle_event(&self, session_id: SessionId, event: BackendEvent) {
         let mut sessions = self.sessions.lock();
         let Some(live) = sessions.get_mut(&session_id) else {
             return;
@@ -562,6 +671,42 @@ impl AgentHost {
         self.start_session(session)
     }
 
+    /// Saves the whole conversation as text for the harness that takes over. Failing to write it
+    /// never blocks the switch; the new agent just is not pointed at a record.
+    fn write_handoff(&self, session_id: &SessionId, from: ProviderKind) {
+        let Some(dir) = self.inner.handoff_dir.lock().clone() else {
+            return;
+        };
+        let (items, subagents) = {
+            let sessions = self.inner.sessions.lock();
+            match sessions.get(session_id) {
+                Some(live) => (live.transcript.clone(), live.subagents.clone()),
+                None => (
+                    self.inner
+                        .store
+                        .list_chat_items(*session_id)
+                        .unwrap_or_default(),
+                    self.inner
+                        .insights
+                        .as_ref()
+                        .and_then(|insights| insights.list_subagents(*session_id).ok())
+                        .unwrap_or_default(),
+                ),
+            }
+        };
+        if items.is_empty() && subagents.is_empty() {
+            return;
+        }
+        let path = handoff::handoff_path(&dir, session_id);
+        let text = handoff::render(from.as_str(), &items, &subagents);
+        match handoff::write(&path, &text) {
+            Ok(()) => {
+                self.inner.handoffs.lock().insert(*session_id, path);
+            }
+            Err(error) => eprintln!("ataraxia: could not write the handoff record: {error}"),
+        }
+    }
+
     /// Restarts a provider process that exited since the last turn.
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
         let dead = self
@@ -691,6 +836,8 @@ impl AgentRuntime for AgentHost {
                 active_turn: None,
                 pending: None,
                 read_only: session.kind.read_only(),
+                chat: session.kind == crate::domain::SessionKind::Chat,
+                introduced: false,
             },
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
@@ -775,6 +922,7 @@ impl AgentRuntime for AgentHost {
             .availability()
             .map_err(|reason| Error::new(ErrorCode::Unsupported, reason))?;
         self.ensure_idle(session_id, "switching the harness")?;
+        self.write_handoff(session_id, session.provider);
         self.inner
             .store
             .update_session_provider(*session_id, provider, &now_rfc3339()?)?;
@@ -783,7 +931,8 @@ impl AgentRuntime for AgentHost {
             .store
             .get_session(*session_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
-        // The transcript stays on screen; the new harness starts without the old context.
+        // The transcript stays on screen; the new harness starts without the old context, and its
+        // first prompt points it at the record written above.
         self.restart(session_id, &updated)?;
         Ok(updated)
     }
@@ -797,6 +946,32 @@ impl AgentRuntime for AgentHost {
         let text = text.trim();
         if text.is_empty() {
             return Err(Error::new(ErrorCode::Invalid, "message is empty"));
+        }
+        if let Some(child) = self.inner.linked_child(session_id, subagent_id) {
+            // A BTW conversation is its own session: the message goes to it, not through the main agent.
+            if let Some(session) = self.inner.store.get_session(child)? {
+                self.start_session(&session)?;
+            }
+            self.inner
+                .links
+                .lock()
+                .entry(child)
+                .or_insert_with(|| Link {
+                    parent: *session_id,
+                    title: String::new(),
+                });
+            self.inner.handle_event(
+                *session_id,
+                BackendEvent::Subagent {
+                    id: subagent_id.to_string(),
+                    title: String::new(),
+                    update: SubagentUpdate::User {
+                        text: text.to_string(),
+                    },
+                },
+            );
+            self.prompt(&child, text)?;
+            return Ok(());
         }
         self.revive_if_dead(session_id)?;
         let turn_id = TurnId::new();
@@ -869,6 +1044,48 @@ impl AgentRuntime for AgentHost {
         }
     }
 
+    fn link_subagent(
+        &self,
+        child: &SessionId,
+        parent: &SessionId,
+        title: &str,
+        question: &str,
+    ) -> Result<()> {
+        // The parent has to be live for its subagent list to take the new entry.
+        let parent_live = self.inner.sessions.lock().contains_key(parent);
+        if !parent_live {
+            if let Some(session) = self.inner.store.get_session(*parent)? {
+                self.start_session(&session)?;
+            }
+        }
+        self.inner.links.lock().insert(
+            *child,
+            Link {
+                parent: *parent,
+                title: title.to_string(),
+            },
+        );
+        let id = child.0.to_string();
+        // It runs beside the chat, not inside one of its turns: it outlives the turn that is running.
+        for update in [
+            SubagentUpdate::Detached,
+            SubagentUpdate::User {
+                text: question.to_string(),
+            },
+            SubagentUpdate::Started,
+        ] {
+            self.inner.handle_event(
+                *parent,
+                BackendEvent::Subagent {
+                    id: id.clone(),
+                    title: title.to_string(),
+                    update,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn stop_session(&self, session_id: &SessionId) {
         let removed = self.inner.sessions.lock().remove(session_id);
         if let Some(live) = removed {
@@ -895,13 +1112,19 @@ impl AgentRuntime for AgentHost {
         }
         let turn_id = TurnId::new();
         self.revive_if_dead(session_id)?;
-        let backend = {
+        let guide_index = self.inner.guide.lock().clone();
+        let (backend, introduce) = {
             let mut sessions = self.inner.sessions.lock();
             let live = sessions
                 .get_mut(session_id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
             if live.active_turn.is_some() {
                 return Err(Error::new(ErrorCode::Invalid, "a turn is already running"));
+            }
+            // The first message of each agent process says what Ataraxia is; later ones do not.
+            let introduce = live.chat && !live.introduced && guide_index.is_some();
+            if introduce {
+                live.introduced = true;
             }
             live.active_turn = Some(turn_id);
             live.status = SessionStatus::Working;
@@ -915,10 +1138,28 @@ impl AgentRuntime for AgentHost {
             });
             self.inner
                 .publish_status(*session_id, SessionStatus::Working);
-            Arc::clone(&live.backend)
+            (Arc::clone(&live.backend), introduce)
         };
 
-        if let Err(error) = backend.prompt(turn_id, text) {
+        // The first message after a switch also tells the new agent where the old conversation is.
+        let handoff = self.inner.handoffs.lock().remove(session_id);
+        let mut sent = String::new();
+        if let (true, Some(index)) = (introduce, &guide_index) {
+            sent.push_str(&guide::preamble(index));
+        }
+        if let Some(path) = &handoff {
+            sent.push_str(&handoff::preamble(path));
+        }
+        sent.push_str(text);
+        if let Err(error) = backend.prompt(turn_id, &sent) {
+            if let Some(path) = handoff {
+                self.inner.handoffs.lock().insert(*session_id, path);
+            }
+            if introduce {
+                if let Some(live) = self.inner.sessions.lock().get_mut(session_id) {
+                    live.introduced = false;
+                }
+            }
             self.inner.handle(
                 *session_id,
                 BackendEvent::Error {
@@ -926,6 +1167,17 @@ impl AgentRuntime for AgentHost {
                 },
             );
             return Err(error);
+        }
+        let link = self.inner.links.lock().get(session_id).cloned();
+        if let Some(link) = link {
+            self.inner.handle_event(
+                link.parent,
+                BackendEvent::Subagent {
+                    id: session_id.0.to_string(),
+                    title: link.title,
+                    update: SubagentUpdate::Started,
+                },
+            );
         }
         Ok(turn_id)
     }
@@ -1244,6 +1496,197 @@ mod tests {
     }
 
     #[test]
+    fn switching_harness_writes_the_conversation_and_tells_the_new_agent_once() {
+        struct Recorder(Arc<Mutex<Vec<String>>>);
+        impl AgentBackend for Recorder {
+            fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+                let prompts = Arc::clone(&self.0);
+                FakeBackend::new(Duration::ZERO).start(ctx).map(|inner| {
+                    struct Wrapped(Arc<dyn BackendSession>, Arc<Mutex<Vec<String>>>);
+                    impl BackendSession for Wrapped {
+                        fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                            self.1.lock().push(text.to_string());
+                            self.0.prompt(turn_id, text)
+                        }
+                        fn cancel(&self) -> Result<()> {
+                            self.0.cancel()
+                        }
+                        fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                            self.0.resolve_permission(decision)
+                        }
+                        fn shutdown(&self) {
+                            self.0.shutdown()
+                        }
+                    }
+                    Arc::new(Wrapped(inner, prompts)) as Arc<dyn BackendSession>
+                })
+            }
+        }
+        let mut h = harness();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        h.host.backends.insert(
+            ProviderKind::Codex,
+            Arc::new(Recorder(Arc::clone(&prompts))),
+        );
+        let dir = std::env::temp_dir().join(format!("ataraxia-handoff-{}", Uuid::new_v4()));
+        *h.host.inner.handoff_dir.lock() = Some(dir.clone());
+
+        h.host
+            .prompt(&h.session.id, "first question")
+            .expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        h.host
+            .switch_provider(&h.session.id, ProviderKind::Codex)
+            .expect("switch");
+
+        let record =
+            std::fs::read_to_string(handoff::handoff_path(&dir, &h.session.id)).expect("record");
+        assert!(record.contains("[user]\nfirst question"), "{record}");
+        assert!(record.contains("[agent]"), "{record}");
+        assert!(record.contains("[tool] read_file"), "{record}");
+
+        h.host
+            .prompt(&h.session.id, "second question")
+            .expect("prompt");
+        h.sink.wait_for("second turn", |events| {
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::Permission { .. }))
+                .count()
+                >= 1
+        });
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink.wait_for("both turns", |events| {
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::TurnDone { .. }))
+                .count()
+                >= 2
+        });
+        h.host
+            .prompt(&h.session.id, "third question")
+            .expect("prompt");
+        let sent = prompts.lock().clone();
+        assert!(sent[0].contains("continues a conversation"), "{}", sent[0]);
+        assert!(
+            sent[0].contains(
+                &handoff::handoff_path(&dir, &h.session.id)
+                    .display()
+                    .to_string()
+            )
+        );
+        assert!(sent[0].ends_with("second question"));
+        assert_eq!(
+            sent[1], "third question",
+            "only the first message after a switch carries it"
+        );
+        let shown = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(shown.items.iter().all(|item| match item {
+            ChatItem::Message(message) => !message.text.contains("continues a conversation"),
+            _ => true,
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A backend that remembers what it was asked, wrapped around the fake one.
+    struct Recorder(Arc<Mutex<Vec<String>>>);
+    impl AgentBackend for Recorder {
+        fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+            let prompts = Arc::clone(&self.0);
+            FakeBackend::new(Duration::ZERO).start(ctx).map(|inner| {
+                struct Wrapped(Arc<dyn BackendSession>, Arc<Mutex<Vec<String>>>);
+                impl BackendSession for Wrapped {
+                    fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                        self.1.lock().push(text.to_string());
+                        self.0.prompt(turn_id, text)
+                    }
+                    fn cancel(&self) -> Result<()> {
+                        self.0.cancel()
+                    }
+                    fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                        self.0.resolve_permission(decision)
+                    }
+                    fn shutdown(&self) {
+                        self.0.shutdown()
+                    }
+                }
+                Arc::new(Wrapped(inner, prompts)) as Arc<dyn BackendSession>
+            })
+        }
+    }
+
+    #[test]
+    fn the_first_message_of_a_chat_says_what_ataraxia_is_and_points_at_the_guide_once() {
+        let mut h = harness();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        h.host
+            .backends
+            .insert(ProviderKind::Fake, Arc::new(Recorder(Arc::clone(&prompts))));
+        let dir = std::env::temp_dir().join(format!("ataraxia-guide-{}", Uuid::new_v4()));
+        let index = guide::install(&dir).expect("guide");
+        *h.host.inner.guide.lock() = Some(index.clone());
+        // The harness started its session before the recorder was in place; start it again.
+        h.host.shutdown_all();
+        h.host.start_session(&h.session).expect("restart");
+
+        h.host
+            .prompt(&h.session.id, "review my change")
+            .expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        h.host
+            .prompt(&h.session.id, "and the tests?")
+            .expect("prompt");
+
+        let sent = prompts.lock().clone();
+        assert!(sent[0].contains("Never generate"), "{}", sent[0]);
+        assert!(sent[0].contains(&index.display().to_string()));
+        assert!(sent[0].ends_with("review my change"));
+        assert_eq!(
+            sent[1], "and the tests?",
+            "only the first message of an agent process says it"
+        );
+        // What the developer sees is what they typed.
+        let shown = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(shown.items.iter().all(|item| match item {
+            ChatItem::Message(message) => !message.text.contains("Never generate"),
+            _ => true,
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_helper_session_is_not_told_about_the_guide() {
+        let mut h = harness();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        h.host
+            .backends
+            .insert(ProviderKind::Fake, Arc::new(Recorder(Arc::clone(&prompts))));
+        let dir = std::env::temp_dir().join(format!("ataraxia-guide-{}", Uuid::new_v4()));
+        *h.host.inner.guide.lock() = Some(guide::install(&dir).expect("guide"));
+        let mut helper = h.session.clone();
+        helper.id = SessionId::new();
+        helper.kind = crate::domain::SessionKind::Btw;
+        h.store.create_session(&helper).expect("helper");
+        h.host.start_session(&helper).expect("start");
+        h.host
+            .prompt(&helper.id, "what does this do")
+            .expect("prompt");
+        assert_eq!(
+            prompts.lock().clone(),
+            vec!["what does this do".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn switching_harness_is_refused_while_busy_or_unavailable() {
         let h = harness();
         assert!(
@@ -1282,6 +1725,111 @@ mod tests {
         );
         let options = h.host.session_options(&h.session.id).expect("options");
         assert!(options.agents.iter().any(|agent| agent.id == "reviewer"));
+    }
+
+    /// A hidden session of the harness's chat, the way BTW makes one.
+    fn btw_child(h: &Harness) -> ChatSession {
+        let mut child = h.session.clone();
+        child.id = SessionId::new();
+        child.title = "BTW: why is it slow".into();
+        child.kind = crate::domain::SessionKind::Btw;
+        child.parent_session_id = Some(h.session.id);
+        h.store.create_session(&child).expect("child");
+        child
+    }
+
+    #[test]
+    fn a_btw_conversation_is_listed_among_the_chats_subagents_and_follows_its_events() {
+        let h = harness();
+        h.host.start_session(&h.session).expect("parent");
+        let child = btw_child(&h);
+        h.host.start_session(&child).expect("child start");
+        h.host
+            .link_subagent(&child.id, &h.session.id, &child.title, "why is it slow?")
+            .expect("link");
+
+        let id = child.id.0.to_string();
+        let listed = h.host.snapshot(&h.session.id).expect("snapshot");
+        let record = listed
+            .subagents
+            .iter()
+            .find(|item| item.id == id)
+            .expect("listed");
+        assert_eq!(record.title, "BTW: why is it slow");
+        assert!(record.detached, "it outlives the chat's own turn");
+        assert!(
+            matches!(&record.items[0], ChatItem::Message(m) if m.role == ChatRole::User && m.text == "why is it slow?")
+        );
+
+        // The child answers; the chat's subagent conversation shows it, and ends done.
+        h.host.prompt(&child.id, "why is it slow?").expect("ask");
+        h.sink.wait_for("the child's answer in the chat's subagent", |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Subagent { session_id, update: SubagentUpdate::Done { ok: true }, .. } if *session_id == h.session.id))
+        });
+        let after = h.host.snapshot(&h.session.id).expect("snapshot");
+        let record = after
+            .subagents
+            .iter()
+            .find(|item| item.id == id)
+            .expect("still listed");
+        assert_eq!(record.status, SubagentStatus::Done);
+        assert!(
+            record.items.iter().any(|item| matches!(item, ChatItem::Message(m) if m.role == ChatRole::Assistant && !m.text.is_empty())),
+            "the answer is in the subagent's conversation"
+        );
+    }
+
+    #[test]
+    fn a_message_to_a_btw_subagent_goes_to_its_own_conversation() {
+        let h = harness();
+        h.host.start_session(&h.session).expect("parent");
+        let child = btw_child(&h);
+        h.host.start_session(&child).expect("child start");
+        h.host
+            .link_subagent(&child.id, &h.session.id, &child.title, "first")
+            .expect("link");
+        h.host.prompt(&child.id, "first").expect("first");
+        h.sink.wait_for("first answer", |events| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Subagent {
+                        update: SubagentUpdate::Done { .. },
+                        ..
+                    }
+                )
+            })
+        });
+
+        h.host
+            .message_subagent(
+                &h.session.id,
+                &child.id.0.to_string(),
+                "and the second part?",
+            )
+            .expect("message");
+
+        // The chat's own agent was not asked to relay anything: its status is untouched.
+        assert_eq!(
+            h.host.snapshot(&h.session.id).expect("snapshot").status,
+            SessionStatus::Ready
+        );
+        let child_items = h.host.snapshot(&child.id).expect("child snapshot").items;
+        assert!(child_items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Message(m) if m.role == ChatRole::User && m.text == "and the second part?")));
+        let listed = h.host.snapshot(&h.session.id).expect("snapshot");
+        let record = listed
+            .subagents
+            .iter()
+            .find(|item| item.id == child.id.0.to_string())
+            .expect("listed");
+        assert!(record
+            .items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Message(m) if m.role == ChatRole::User && m.text == "and the second part?")));
     }
 
     #[test]

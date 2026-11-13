@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::adapters::agents::{
-    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, McpLaunch, OpenCodeBackend,
+    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, McpLaunch, OpenCodeBackend, guide,
 };
 use crate::adapters::fs::StdFs;
 use crate::adapters::git::GitCli;
@@ -49,9 +49,18 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
             db: db_path.clone(),
         });
     }
+    // What each chat's agent is told about Ataraxia, and the guide it can read once asked. A guide
+    // that cannot be written only means the agents are not pointed at one.
+    let guide = guide::install(&data_dir.join("guide"))
+        .map_err(|error| eprintln!("ataraxia: could not write the agent guide: {error}"))
+        .ok();
+    let mut host = AgentHost::new(Arc::clone(&store), tee.clone());
+    if let Some(index) = guide {
+        host = host.with_guide(index);
+    }
     let agents = Arc::new(
-        AgentHost::new(Arc::clone(&store), tee.clone())
-            .with_insights(sqlite.clone())
+        host.with_insights(sqlite.clone())
+            .with_handoff_dir(data_dir.join("handoffs"))
             .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
             .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
             .with_backend(ProviderKind::Claude, Arc::new(claude))

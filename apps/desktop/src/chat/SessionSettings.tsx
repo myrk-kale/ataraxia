@@ -108,6 +108,7 @@ export function SessionSettings({
       {settings.agents && agents.length > 0 ? (
         <QuietSelect
           aria-label="Agent"
+          sound
           className="max-w-[140px]"
           disabled={disabled}
           icon={<Bot size={12} />}
@@ -120,6 +121,7 @@ export function SessionSettings({
       ) : null}
       <QuietSelect
         aria-label="Model"
+        sound
         className="max-w-[170px]"
         disabled={disabled}
         footer={
@@ -147,6 +149,7 @@ export function SessionSettings({
       {efforts.length > 0 || effort ? (
         <QuietSelect
           aria-label="Reasoning effort"
+          sound
           className="max-w-[130px]"
           disabled={disabled}
           icon={<Brain size={12} />}

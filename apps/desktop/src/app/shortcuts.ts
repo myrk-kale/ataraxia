@@ -8,6 +8,7 @@ export type ShortcutAction =
   | { type: "version" }
   | { type: "item"; delta: -1 | 1 }
   | { type: "comment" }
+  | { type: "wrap" }
   | { type: "legend" };
 
 export type ShortcutContext = {
@@ -26,15 +27,13 @@ export type KeyLike = {
   repeat: boolean;
   isComposing: boolean;
   target: EventTarget | null;
+  /** Physical key, for chords whose letter changes with the layout (Alt+Z on a Mac). */
+  code?: string;
 };
 
 const TEXT_SELECTOR =
   "input, textarea, select, [contenteditable=''], [contenteditable='true'], " +
   "[role='textbox'], [role='combobox'], [role='searchbox'], .monaco-editor, .xterm";
-
-const ACTIVATING_SELECTOR =
-  "button, a[href], summary, [role='button'], [role='tab'], [role='option'], [role='switch']," +
-  "[role='checkbox'], [role='menuitem'], [role='radio']";
 
 function matches(target: EventTarget | null, selector: string): boolean {
   return typeof Element !== "undefined" && target instanceof Element && target.closest(selector) !== null;
@@ -74,11 +73,20 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (mod && !event.altKey && key === "k" && !inEditor) {
     return { type: "btw" };
   }
+  // Line wrapping flips from anywhere in Code; inside the editor Monaco wires the same chord.
+  if (event.altKey && !mod && !event.shiftKey && event.code === "KeyZ" && context.space === "code" && !typing) {
+    return { type: "wrap" };
+  }
+  // Old and new version of the open file; a bare V would be typed into the code, so it is a chord.
+  if (event.altKey && !mod && !event.shiftKey && event.code === "KeyV" && context.space === "code" && !typing) {
+    return { type: "version" };
+  }
   if (typing || mod || event.altKey) {
     return null;
   }
-  if (event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-    return { type: "space", delta: event.key === "ArrowLeft" ? -1 : 1 };
+  // The spaces are a column of dots: up goes to the one above, down to the one below.
+  if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    return { type: "space", delta: event.key === "ArrowUp" ? -1 : 1 };
   }
   if (event.shiftKey && key === "a") {
     return { type: "artifacts" };
@@ -88,10 +96,6 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   }
   if (event.shiftKey) {
     return null;
-  }
-  // Space activates a focused button or tab; only a free Space opens BTW.
-  if (event.key === " ") {
-    return event.repeat || matches(event.target, ACTIVATING_SELECTOR) ? null : { type: "btw" };
   }
   const reviewing = context.space === "code" || context.space === "decisions";
   if (!reviewing || event.repeat) {
@@ -106,22 +110,18 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (key === "c") {
     return { type: "comment" };
   }
-  if (key === "v" && context.space === "code") {
-    return { type: "version" };
-  }
   return null;
 }
 
 /** The shortcuts shown in the legend, in reading order. */
 export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: string }[] = [
-  { keys: ["Shift", "←/→"], label: "Previous / next space", scope: "Everywhere" },
-  { keys: ["Space"], label: "BTW: ask about what you are looking at", scope: "Everywhere" },
-  { keys: ["Ctrl/⌘", "K"], label: "BTW, also while typing", scope: "Everywhere" },
+  { keys: ["Shift", "↑/↓"], label: "Previous / next space", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "J"], label: "Toggle the terminal", scope: "Everywhere" },
   { keys: ["Esc"], label: "Close the overlay or stop the running turn", scope: "Everywhere" },
-  { keys: ["V"], label: "Switch between the current version (editable) and the previous one (read-only)", scope: "Code" },
-  { keys: ["Ctrl/⌘", "Alt", "V"], label: "The same, with the cursor in the editor", scope: "Code" },
+  { keys: ["Alt", "V"], label: "Switch between the current version (editable) and the previous one (read-only)", scope: "Code" },
+  { keys: ["Alt", "Z"], label: "Wrap long lines or let them run on", scope: "Code" },
   { keys: ["Ctrl/⌘", "S"], label: "Save the open file (an * after its name means unsaved changes)", scope: "Code" },
   { keys: ["J", "K"], label: "Next / previous item in the queue", scope: "Code, Decisions" },
   { keys: ["C"], label: "Comment on the selection", scope: "Code, Decisions" },

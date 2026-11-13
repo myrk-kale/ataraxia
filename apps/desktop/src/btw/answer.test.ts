@@ -71,5 +71,10 @@ describe("the model a BTW runs on", () => {
     expect(startingChoice(options, { provider: "claude" }, "gone::x")).toBe("claude::");
     expect(startingChoice(options, { provider: "claude" }, "opencode::")).toBe("claude::");
     expect(startingChoice([], null, null)).toBe("");
+    // Without a pick of its own, it follows the chat's model, and keeps the user's pick once made.
+    const live = [...options, { value: "claude::opus", label: "Claude · Opus" }];
+    expect(startingChoice(live, { provider: "claude", model: "opus" }, null)).toBe("claude::opus");
+    expect(startingChoice(live, { provider: "claude", model: "gone" }, null)).toBe("claude::");
+    expect(startingChoice(live, { provider: "claude", model: "opus" }, "codex::gpt")).toBe("codex::gpt");
   });
 });

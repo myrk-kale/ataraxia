@@ -2,6 +2,7 @@ import { TextArea } from "@heroui/react";
 import { Handle, Position, ReactFlow, ReactFlowProvider, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { useAppearance } from "../app/appearance/store";
 import type { SpaceBridge } from "../app/spaceCommands";
 import {
   artifactRetry,
@@ -34,7 +35,7 @@ const KIND_ACCENT: Record<string, string> = {
 const CodeNode = memo(function CodeNode({ data, selected, sourcePosition, targetPosition }: NodeProps<Node<NodeUi["data"]>>) {
   return (
     <div
-      className={`w-[210px] rounded-cg-md border bg-cg-panel px-3 py-2.5 text-left shadow-cg-lift transition-colors ${
+      className={`w-[15rem] rounded-cg-md border bg-cg-panel px-3 py-2.5 text-left shadow-cg-lift transition-colors ${
         selected ? "border-cg-ink" : "border-cg-control"
       }`}
     >
@@ -70,19 +71,33 @@ function stamp(artifact: Artifact): string {
   return `v${artifact.version} · ${name}${suffix}`;
 }
 
+/** The open diagram in words: what it says and the steps in it, so BTW can answer about it. */
+function flowBrief(content: FlowContent): string {
+  const nodes = content.nodes ?? [];
+  const byId = new Map(nodes.map((node) => [node.id, node.label]));
+  const lines = [content.summary ?? ""];
+  for (const node of nodes.slice(0, 40)) {
+    const where = node.refs[0] ? ` (${node.refs[0].path}${node.refs[0].start_line ? `:${node.refs[0].start_line}` : ""})` : "";
+    lines.push(`- ${node.kind}: ${node.label}${where}`);
+  }
+  for (const edge of (content.edges ?? []).slice(0, 60)) {
+    lines.push(`${byId.get(edge.source) ?? edge.source} -> ${byId.get(edge.target) ?? edge.target}${edge.label ? ` (${edge.label})` : ""}`);
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
 export function FlowSpace({
   session,
-  dark,
   bridge,
   onOpenFile,
   onError,
 }: {
   session: ChatSession | null;
-  dark: boolean;
   bridge: MutableRefObject<SpaceBridge>;
   onOpenFile: (path: string, line: number | null) => void;
   onError: (message: string) => void;
 }) {
+  const { kind } = useAppearance();
   const [presets, setPresets] = useState<FlowPreset[]>([]);
   const [presetId, setPresetId] = useState<string>("");
   const [extra, setExtra] = useState("");
@@ -195,7 +210,11 @@ export function FlowSpace({
           text: `${node.kind}: ${node.label}\n${node.description}`,
         }
       : flow
-        ? { kind: "flow", label: `Flow diagram: ${String(flow.provenance.presetName ?? "")}` }
+        ? {
+            kind: "flow",
+            label: `Flow diagram: ${String(flow.provenance.presetName ?? "")}`,
+            text: flowBrief(content),
+          }
         : null;
     return () => {
       bridge.current.context = null;
@@ -229,7 +248,8 @@ export function FlowSpace({
       {flow && flow.status !== "failed" && dataNodes.length > 0 ? (
         <ReactFlowProvider>
           <ReactFlow
-            colorMode={dark ? "dark" : "light"}
+            colorMode={kind}
+            attributionPosition="bottom-center"
             edges={edges}
             fitView
             fitViewOptions={{ padding: { top: "140px", right: "60px", bottom: "70px", left: "60px" }, maxZoom: 1 }}
@@ -349,7 +369,7 @@ export function FlowSpace({
       {node ? (
         <aside
           aria-label="Selected node"
-          className="absolute right-[52px] bottom-5 z-10 flex w-[320px] max-w-[calc(100%-96px)] flex-col gap-2 rounded-cg-lg border border-cg-line bg-cg-panel p-4 shadow-cg-float"
+          className="absolute right-[52px] bottom-5 z-10 flex w-[24rem] max-w-[calc(100%-96px)] min-w-0 flex-col gap-2 overflow-hidden rounded-cg-lg border border-cg-line bg-cg-panel p-4 shadow-cg-float"
         >
           <p className="text-small font-semibold text-cg-muted">{node.kind}</p>
           <h2 className="text-heading font-semibold text-cg-ink">{node.label}</h2>
@@ -359,7 +379,7 @@ export function FlowSpace({
               {node.refs.map((ref) => (
                 <li key={`${ref.path}:${ref.start_line}`}>
                   <button
-                    className="font-mono text-small text-cg-accent hover:underline"
+                    className="max-w-full text-left font-mono text-small leading-5 break-all text-cg-accent hover:underline"
                     type="button"
                     onClick={() => onOpenFile(ref.path, ref.start_line)}
                   >
@@ -372,7 +392,6 @@ export function FlowSpace({
           ) : (
             <p className="text-small text-cg-muted">No verified code reference for this node.</p>
           )}
-          <p className="text-small text-cg-muted-strong">Press Space to ask a BTW question about this node.</p>
         </aside>
       ) : null}
 

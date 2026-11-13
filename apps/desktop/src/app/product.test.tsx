@@ -113,10 +113,13 @@ describe("words for states", () => {
     expect(renderToStaticMarkup(<StateMessage text="Broke" tone="failed" />)).toContain('role="alert"');
   });
 
-  it("a provider mark is decorative and the name is written next to it", () => {
-    const html = renderToStaticMarkup(<ProviderMark provider="claude" />);
-    expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain(">C<");
+  it("a provider mark is the agent's own logo, decorative, and each agent has a different one", () => {
+    const marks = (["claude", "codex", "opencode"] as const).map((provider) => renderToStaticMarkup(<ProviderMark provider={provider} />));
+    for (const html of marks) {
+      expect(html).toContain('aria-hidden="true"');
+      expect(html).toContain("<svg");
+    }
+    expect(new Set(marks).size).toBe(3);
   });
 });
 

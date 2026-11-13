@@ -26,13 +26,14 @@ function el(html: string): HTMLElement {
 }
 
 describe("shortcuts", () => {
-  it("navigates spaces with Shift+arrows", () => {
-    expect(resolveShortcut(press("ArrowRight", { shiftKey: true }), idle)).toEqual({ type: "space", delta: 1 });
-    expect(resolveShortcut(press("ArrowLeft", { shiftKey: true }), idle)).toEqual({ type: "space", delta: -1 });
+  it("navigates spaces with Shift+Up and Shift+Down", () => {
+    expect(resolveShortcut(press("ArrowDown", { shiftKey: true }), idle)).toEqual({ type: "space", delta: 1 });
+    expect(resolveShortcut(press("ArrowUp", { shiftKey: true }), idle)).toEqual({ type: "space", delta: -1 });
+    expect(resolveShortcut(press("ArrowRight", { shiftKey: true }), idle)).toBeNull();
   });
 
-  it("opens BTW with a free Space or Ctrl/Cmd+K", () => {
-    expect(resolveShortcut(press(" "), idle)).toEqual({ type: "btw" });
+  it("opens BTW with Ctrl/Cmd+K only, never with Space", () => {
+    expect(resolveShortcut(press(" "), idle)).toBeNull();
     expect(resolveShortcut(press("k", { ctrlKey: true }), idle)).toEqual({ type: "btw" });
     expect(resolveShortcut(press("k", { metaKey: true }), idle)).toEqual({ type: "btw" });
   });
@@ -48,11 +49,11 @@ describe("shortcuts", () => {
     ]) {
       const target = el(markup);
       const inner = (target.firstElementChild as HTMLElement | null) ?? target;
-      for (const key of [" ", "j", "k", "c", "v", "?"]) {
+      for (const key of ["j", "k", "c", "?"]) {
         expect(resolveShortcut(press(key), { space: "code", overlay: false }) && true).toBeTruthy();
         expect(resolveShortcut(press(key, {}, inner), { space: "code", overlay: false }), `${markup} ${key}`).toBeNull();
       }
-      expect(resolveShortcut(press("ArrowRight", { shiftKey: true }, inner), idle)).toBeNull();
+      expect(resolveShortcut(press("ArrowDown", { shiftKey: true }, inner), idle)).toBeNull();
       expect(resolveShortcut(press("A", { shiftKey: true }, inner), idle)).toBeNull();
     }
   });
@@ -63,10 +64,38 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("k", { ctrlKey: true }, editor.firstElementChild), idle)).toBeNull();
   });
 
-  it("does not steal Space from a focused button, tab or option", () => {
+  it("leaves Space to the focused button, tab or option, and to the page", () => {
     for (const markup of ["<button></button>", "<div role='tab'></div>", "<div role='option'></div>", "<a href='#'></a>"]) {
       expect(resolveShortcut(press(" ", {}, el(markup)), idle), markup).toBeNull();
     }
+  });
+
+  it("switches between the old and new version with Alt+V in Code only, never with a bare V, and not from a field", () => {
+    const code: ShortcutContext = { space: "code", overlay: false };
+    // On a Mac Alt+V types a symbol, so the physical key is what counts.
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }), code)).toEqual({ type: "version" });
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }), { space: "chat", overlay: false })).toBeNull();
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }, el("<input />")), code)).toBeNull();
+    expect(resolveShortcut(press("v", { code: "KeyV" }), code)).toBeNull();
+    expect(resolveShortcut(press("v", { altKey: true, ctrlKey: true, code: "KeyV" }), code)).toBeNull();
+  });
+
+  it("switches between the old and new version with Alt+V in Code only, never with a bare V, and not from a field", () => {
+    const code: ShortcutContext = { space: "code", overlay: false };
+    // On a Mac Alt+V types a symbol, so the physical key is what counts.
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }), code)).toEqual({ type: "version" });
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }), { space: "chat", overlay: false })).toBeNull();
+    expect(resolveShortcut(press("√", { altKey: true, code: "KeyV" }, el("<input />")), code)).toBeNull();
+    expect(resolveShortcut(press("v", { code: "KeyV" }), code)).toBeNull();
+    expect(resolveShortcut(press("v", { altKey: true, ctrlKey: true, code: "KeyV" }), code)).toBeNull();
+  });
+
+  it("flips line wrapping with Alt+Z in Code only, and not from a field", () => {
+    const code = { space: "code", overlay: false } as const;
+    expect(resolveShortcut(press("Ω", { altKey: true, code: "KeyZ" }), code)).toEqual({ type: "wrap" });
+    expect(resolveShortcut(press("Ω", { altKey: true, code: "KeyZ" }), { space: "chat", overlay: false })).toBeNull();
+    expect(resolveShortcut(press("Ω", { altKey: true, code: "KeyZ" }, el("<input />")), code)).toBeNull();
+    expect(resolveShortcut(press("z", { code: "KeyZ" }), code)).toBeNull();
   });
 
   it("ignores everything during IME composition", () => {
@@ -81,9 +110,7 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("j"), code)).toEqual({ type: "item", delta: 1 });
     expect(resolveShortcut(press("k"), decisions)).toEqual({ type: "item", delta: -1 });
     expect(resolveShortcut(press("c"), decisions)).toEqual({ type: "comment" });
-    expect(resolveShortcut(press("v"), code)).toEqual({ type: "version" });
-    expect(resolveShortcut(press("v"), decisions)).toBeNull();
-    for (const key of ["j", "k", "c", "v"]) {
+    for (const key of ["j", "k", "c"]) {
       expect(resolveShortcut(press(key), idle)).toBeNull();
       expect(resolveShortcut(press(key), { space: "flow", overlay: false })).toBeNull();
     }
@@ -102,7 +129,7 @@ describe("shortcuts", () => {
 
   it("leaves the keyboard to an open overlay", () => {
     const open: ShortcutContext = { space: "code", overlay: true };
-    for (const event of [press(" "), press("j"), press("ArrowRight", { shiftKey: true }), press("k", { ctrlKey: true })]) {
+    for (const event of [press(" "), press("j"), press("ArrowDown", { shiftKey: true }), press("k", { ctrlKey: true })]) {
       expect(resolveShortcut(event, open)).toBeNull();
     }
   });

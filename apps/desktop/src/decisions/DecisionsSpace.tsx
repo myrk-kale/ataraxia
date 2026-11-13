@@ -25,13 +25,31 @@ import { DecisionIssue } from "./DecisionIssue";
 import { ThreadDialog } from "./ThreadDialog";
 import { DecisionList } from "./DecisionList";
 import { GenerateDialog, LinkCommitDialog, NewDecisionDialog } from "./Dialogs";
-import { filterDecisions, generationState, KIND_LABEL, orderDecisions, type Tab } from "./model";
+import { filterDecisions, generationState, KIND_LABEL, orderDecisions, refLabel, type Tab } from "./model";
 
 /**
  * Decisions as threads, like the issues of a repository: a list, and one page per decision with
  * its description, its discussion and the commits that influence it. A thread stays where it is
  * while the code changes. Nothing here is generated until the reviewer asks.
  */
+/** Everything about a decision that BTW needs to answer about it or to comment on it. */
+function decisionBrief(decision: Decision): string {
+  const lines = [`${KIND_LABEL[decision.kind]} decision #${decision.seq} (${decision.state}): ${decision.title}`, decision.summary];
+  if (decision.context) {
+    lines.push(`Context: ${decision.context}`);
+  }
+  if (decision.rationale) {
+    lines.push(`Why this option: ${decision.rationale}`);
+  }
+  for (const alternative of decision.alternatives) {
+    lines.push(`Alternative: ${alternative.title}${alternative.note ? `: ${alternative.note}` : ""}`);
+  }
+  for (const ref of decision.refs) {
+    lines.push(`Code: ${refLabel(ref)}`);
+  }
+  return lines.join("\n");
+}
+
 export function DecisionsSpace({
   session,
   bridge,
@@ -165,7 +183,7 @@ export function DecisionsSpace({
       ? {
           kind: "decision",
           label: `Decision: ${current.title}`,
-          text: `${KIND_LABEL[current.kind]} decision #${current.seq}: ${current.title}\n${current.summary}`,
+          text: decisionBrief(current),
         }
       : null;
     return () => {
@@ -296,7 +314,7 @@ export function DecisionsSpace({
           >
             <p className="max-w-[460px] text-small leading-5 text-cg-muted-strong">
               Generate them from the changes with the model you choose, ask the chat to record them, or open one
-              yourself. Nothing is generated until you ask.
+              yourself.
             </p>
             <div className="flex gap-2">
               <Button variant="secondary" onClick={() => setGenerating(true)}>

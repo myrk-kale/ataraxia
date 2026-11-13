@@ -47,7 +47,7 @@ export function DecisionIssue({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <article className="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-8 pt-8 pb-6">
+        <article className="cg-chat mx-auto flex w-full max-w-[640px] flex-col gap-6 px-8 pt-8 pb-6">
           <nav aria-label="Decisions" className="flex items-center text-small text-cg-muted-strong">
             <Button variant="quiet" onClick={onBack}>
               <ArrowLeft aria-hidden="true" size={14} />

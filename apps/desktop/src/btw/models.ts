@@ -46,11 +46,19 @@ export function modelChoices(
   return out;
 }
 
-/** What is selected to begin with: the last choice if it is still on offer, else the chat's own. */
-export function startingChoice(options: readonly SelectOption[], chat: Pick<ChatSession, "provider"> | null, remembered: string | null): string {
+/**
+ * What is selected to begin with: the user's own pick if it is still on offer, else the model the
+ * chat is using right now, else that provider's default.
+ */
+export function startingChoice(
+  options: readonly SelectOption[],
+  chat: Pick<ChatSession, "provider"> & { model?: string | null } | null,
+  picked: string | null,
+): string {
   const usable = (value: string | null) => (value && options.some((option) => option.value === value && !option.disabled) ? value : null);
   return (
-    usable(remembered) ??
+    usable(picked) ??
+    usable(chat ? encodePick({ provider: chat.provider, model: chat.model ?? null }) : null) ??
     usable(chat ? encodePick({ provider: chat.provider, model: null }) : null) ??
     options.find((option) => !option.disabled)?.value ??
     ""
