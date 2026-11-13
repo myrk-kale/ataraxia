@@ -179,7 +179,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ataraxia"
+name = "ataraxia-ide"
 version = "0.1.0"
 dependencies = [
  "anyhow",

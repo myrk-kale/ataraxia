@@ -1,0 +1,52 @@
+class Ataraxia < Formula
+  desc "Desktop environment for agent-assisted software development"
+  homepage "https://github.com/myrk-kale/ataraxia"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-universal-apple-darwin.tar.gz"
+    sha256 "@SHA_MACOS@"
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA_LINUX_X86_64@"
+    end
+    on_arm do
+      url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA_LINUX_AARCH64@"
+    end
+  end
+
+  def install
+    bin.install "ataraxia"
+    doc.install "README.md", "CHANGELOG.md", "LICENSE"
+  end
+
+  def caveats
+    s = <<~EOS
+      `ataraxia` opens the app. Agents start its MCP server with `ataraxia mcp --db <file>`;
+      Settings > MCP server shows the exact command to register.
+    EOS
+    if OS.linux?
+      s += <<~EOS
+
+        The window needs GTK 3 and WebKitGTK 4.1 from your distribution:
+          Debian, Ubuntu: sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0
+          Fedora:         sudo dnf install webkit2gtk4.1 gtk3
+      EOS
+    end
+    s
+  end
+
+  test do
+    reply = pipe_output(
+      "#{bin}/ataraxia mcp --db #{testpath}/test.sqlite3",
+      %({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n),
+      0,
+    )
+    assert_match "ataraxia", reply
+  end
+end

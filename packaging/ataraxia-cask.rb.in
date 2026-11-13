@@ -1,0 +1,25 @@
+cask "ataraxia" do
+  version "@VERSION@"
+  sha256 "@SHA_DMG@"
+
+  url "https://github.com/myrk-kale/ataraxia/releases/download/v#{version}/ataraxia-v#{version}-universal-apple-darwin.dmg"
+  name "Ataraxia"
+  desc "Desktop environment for agent-assisted software development"
+  homepage "https://github.com/myrk-kale/ataraxia"
+
+  depends_on macos: ">= :big_sur"
+
+  app "Ataraxia.app"
+
+  zap trash: [
+    "~/Library/Application Support/app.ataraxia.desktop",
+    "~/Library/Caches/app.ataraxia.desktop",
+    "~/Library/WebKit/app.ataraxia.desktop",
+  ]
+
+  caveats <<~EOS
+    The app is not signed with an Apple Developer ID yet, so macOS asks before the first launch.
+    Open it with right-click > Open, or run:
+      xattr -dr com.apple.quarantine /Applications/Ataraxia.app
+  EOS
+end

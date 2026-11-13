@@ -1,10 +1,53 @@
 [package]
-name = "ataraxia"
+name = "ataraxia-ide"
 version = "0.1.0"
-description = "Ataraxia desktop core"
+description = "Desktop environment for agent-assisted software development: chat with coding agents, review what they wrote, keep decisions and flows"
 authors = ["Kale"]
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/myrk-kale/ataraxia"
+homepage = "https://github.com/myrk-kale/ataraxia#readme"
+readme = "../README.md"
+keywords = ["tauri", "code-review", "ai-agents", "desktop", "developer-tools"]
+categories = ["development-tools"]
+# What a published crate carries: the sources and the built interface (src-tauri/web, made by
+# `pnpm build`), but not the tests, the generated schemas or the build output.
+include = [
+  "/src/**",
+  "/migrations/**",
+  "/guide/**",
+  "/icons/**",
+  "/capabilities/**",
+  "/web/**",
+  "/build.rs",
+  "/tauri.conf.json",
+  "/LICENSE",
+]
+
+# The package is `ataraxia-ide` on crates.io (`ataraxia` belongs to another project), but the binary
+# is `ataraxia`: `ataraxia mcp` is how agents start the MCP server, and it is what the installers
+# put on the path.
+[[bin]]
+name = "ataraxia"
+path = "src/main.rs"
+
+[features]
+# Tauri serves the built interface from the binary instead of a dev server. `tauri build` turns it
+# on; with `cargo install` it has to be asked for.
+custom-protocol = ["tauri/custom-protocol"]
+
+# Prebuilt binaries for `cargo binstall`, from the GitHub release of the same version.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/ataraxia-v{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/ataraxia-v{ version }-universal-apple-darwin.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/ataraxia-v{ version }-universal-apple-darwin.tar.gz"
 
 [lib]
 name = "ataraxia_lib"

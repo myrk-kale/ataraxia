@@ -19,6 +19,7 @@ apps/desktop/vite.config.d.ts
 
 # Tauri
 src-tauri/target/
+src-tauri/web/
 src-tauri/gen/
 src-tauri/WixTools/
 

@@ -1,0 +1,261 @@
+name: Release
+
+# A tag like v0.2.0 builds every artifact on its own platform, publishes the GitHub release, the
+# Homebrew tap and the crate. Nothing is built or published by hand.
+#
+# Run by hand (Actions > Release > Run workflow) it builds everything the same way and keeps the
+# files on the run, but publishes nothing: that is how a release is rehearsed.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+# Read-only by default; the jobs that publish declare what they need.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cargo.toml, tauri.conf.json and the tag must agree
+        id: v
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | jq -r '.packages[0].version')"
+          conf="$(jq -r .version src-tauri/tauri.conf.json)"
+          if [ "${version}" != "${conf}" ]; then
+            echo "src-tauri/Cargo.toml says ${version}, src-tauri/tauri.conf.json says ${conf}"
+            exit 1
+          fi
+          publish=false
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+              echo "tag ${GITHUB_REF_NAME} != v${version}"
+              exit 1
+            fi
+            grep -q "^## \[${version}\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for ${version}"; exit 1; }
+            publish=true
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=v${version}"
+            echo "publish=${publish}"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [ci, version]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # macOS: one universal app, as a disk image, and the bare binary for Homebrew.
+          - name: macOS (universal)
+            os: macos-15
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: dmg
+            kinds: tarball dmg
+          # Linux is built on Ubuntu 22.04, the oldest release that has WebKitGTK 4.1, so the
+          # binaries run on it and on everything newer: Ubuntu 22.04 and 24.04, Debian 12,
+          # Fedora, Arch. Each architecture on a native runner.
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust-targets: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            kinds: tarball deb rpm appimage
+          - name: Linux aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            rust-targets: aarch64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            kinds: tarball deb rpm appimage
+          # Windows: an installer (NSIS, per user or per machine) and an MSI for managed installs.
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust-targets: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+            kinds: nsis msi
+    permissions:
+      contents: read
+      # Signed build provenance, verifiable with `gh attestation verify`.
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install the Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl wget file patchelf pkg-config \
+            libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install the JS workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the app and its packages
+        working-directory: src-tauri
+        shell: bash
+        env:
+          # AppImage tools run without FUSE, which a runner does not have.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: ../apps/desktop/node_modules/.bin/tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
+
+      - name: Smoke test the binary
+        # Not on Windows: the binary there is a window-only program, with no console to answer on.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/smoke-mcp.sh "src-tauri/target/${{ matrix.target }}/release/ataraxia"
+
+      - name: Collect the files of this platform
+        shell: bash
+        run: |
+          echo "Files:"
+          scripts/collect-release-files.sh "${TAG}" "${{ matrix.target }}" dist ${{ matrix.kinds }}
+
+      - name: Attest build provenance
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.dmg
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/*-setup.exe
+            dist/*.msi
+
+      - name: Keep the files for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the GitHub release
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes from the CHANGELOG
+        run: |
+          awk -v v="${VERSION}" '
+            $0 ~ "^## \\[" v "\\]" {f=1; next}
+            f && /^## \[/ {exit}
+            f {print}
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+
+      - name: Verify the checksums and the set of files
+        working-directory: dist
+        run: |
+          ls -l
+          expected=(
+            "ataraxia-${TAG}-universal-apple-darwin.tar.gz"
+            "ataraxia-${TAG}-universal-apple-darwin.dmg"
+            "ataraxia-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+            "ataraxia-${TAG}-x86_64-unknown-linux-gnu.deb"
+            "ataraxia-${TAG}-x86_64-unknown-linux-gnu.rpm"
+            "ataraxia-${TAG}-x86_64-unknown-linux-gnu.AppImage"
+            "ataraxia-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+            "ataraxia-${TAG}-aarch64-unknown-linux-gnu.deb"
+            "ataraxia-${TAG}-aarch64-unknown-linux-gnu.rpm"
+            "ataraxia-${TAG}-aarch64-unknown-linux-gnu.AppImage"
+            "ataraxia-${TAG}-x86_64-pc-windows-msvc-setup.exe"
+            "ataraxia-${TAG}-x86_64-pc-windows-msvc.msi"
+          )
+          for file in "${expected[@]}"; do
+            sha256sum -c "${file}.sha256"
+          done
+          # Nothing else may be attached: twelve files, each with its checksum.
+          files=(./*)
+          test "${#files[@]}" = 24 || { echo "expected 24 files, found ${#files[@]}"; exit 1; }
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "${VERSION}" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "${TAG}" dist/* \
+            --title "Ataraxia ${TAG}" \
+            --notes-file notes.md \
+            "${flags[@]}"
+
+  homebrew:
+    name: Homebrew tap
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, release]
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+  crates:
+    name: Dispatch the crates.io publish
+    # Turned on with the repository variable PUBLISH_CRATE=true.
+    if: needs.version.outputs.publish == 'true' && vars.PUBLISH_CRATE == 'true'
+    needs: [version, release]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Run crates.yml for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run crates.yml -R "$GITHUB_REPOSITORY" -f tag="${{ needs.version.outputs.tag }}"

@@ -7,7 +7,7 @@
     "beforeDevCommand": "pnpm --filter @ataraxia/desktop dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm --filter @ataraxia/desktop build",
-    "frontendDist": "../apps/desktop/dist"
+    "frontendDist": "./web"
   },
   "app": {
     "windows": [
@@ -30,12 +30,31 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Desktop environment for agent-assisted software development",
+    "longDescription": "Ataraxia puts coding agents (Claude Code, Codex, OpenCode) in a keyboard-first workspace: chat, a code review ranked by what needs a look, decisions kept as threads, flow diagrams and a terminal.",
+    "copyright": "Copyright (c) 2026 Kale",
+    "license": "MIT",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
-  }
+    ],
+    "linux": {
+      "deb": {
+        "section": "devel"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "both"
+      }
+    }
+  },
+  "mainBinaryName": "ataraxia"
 }
