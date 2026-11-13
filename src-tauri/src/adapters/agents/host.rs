@@ -733,6 +733,28 @@ impl AgentHost {
     }
 
     /// Restarts a provider process that exited since the last turn.
+    /// The repositories of a chat's workspace as the chat sees them: its own first, then the
+    /// others, each with the folder of the worktree the chat was made with.
+    fn workspace_members(&self, session_id: &SessionId) -> Vec<(String, PathBuf)> {
+        let store = &self.inner.store;
+        let Ok(Some(session)) = store.get_session(*session_id) else {
+            return Vec::new();
+        };
+        let mut worktrees = vec![session.worktree_id];
+        worktrees.extend(store.session_worktrees(session.id).unwrap_or_default());
+        worktrees
+            .into_iter()
+            .filter_map(|id| store.get_worktree(id).ok().flatten())
+            .filter_map(|worktree| {
+                let repository = store
+                    .get_repository(worktree.repository_id)
+                    .ok()
+                    .flatten()?;
+                Some((repository.name, worktree.path))
+            })
+            .collect()
+    }
+
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
         let dead = self
             .inner
@@ -847,9 +869,20 @@ impl AgentRuntime for AgentHost {
             .as_ref()
             .map(|gateway| gateway.issue(session_id, !session.kind.read_only()));
         let api_token = api.as_ref().map(|access| access.token.clone());
+        // Every other repository of the chat's workspace, as the worktree the chat was made with.
+        let extra_dirs: Vec<PathBuf> = self
+            .inner
+            .store
+            .session_worktrees(session_id)?
+            .into_iter()
+            .filter_map(|id| self.inner.store.get_worktree(id).ok().flatten())
+            .map(|item| item.path)
+            .filter(|path| path.is_dir())
+            .collect();
         let started = match backend.start(BackendContext {
             session_id,
             cwd: worktree.path,
+            extra_dirs,
             read_only: session.kind.read_only(),
             model: session.model.clone(),
             effort: session.effort.clone(),
@@ -1187,6 +1220,7 @@ impl AgentRuntime for AgentHost {
         let mut sent = String::new();
         if let (true, Some(index)) = (introduce, &guide_index) {
             sent.push_str(&guide::preamble(index));
+            sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
         }
         if let Some(path) = &handoff {
             sent.push_str(&handoff::preamble(path));
@@ -1376,6 +1410,7 @@ mod tests {
             .expect("worktree");
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id,
             worktree_id,
             provider: ProviderKind::Fake,
@@ -1549,6 +1584,7 @@ mod tests {
             .expect("worktree");
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id,
             worktree_id,
             provider: ProviderKind::Fake,

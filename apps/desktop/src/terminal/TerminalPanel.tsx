@@ -21,6 +21,8 @@ import { currentFocus, restoreFocus } from "./focus";
 type TerminalPanelProps = {
   worktreeId: string;
   cwd: string;
+  /** Which repository this terminal is in, when the workspace has more than one. */
+  label?: string;
   onClose: () => void;
 };
 
@@ -45,6 +47,7 @@ const XTERM_THEMES = {
 export function TerminalPanel({
   worktreeId,
   cwd,
+  label,
   onClose,
 }: TerminalPanelProps) {
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
@@ -262,7 +265,10 @@ export function TerminalPanel({
       >
         <span className="absolute top-0.5 left-1/2 h-0.5 w-11 -translate-x-1/2 rounded-cg-sm bg-cg-control group-hover:bg-cg-muted-strong" />
       </div>
-      <header className="flex h-6 flex-none items-center justify-end px-4">
+      <header className="flex h-6 flex-none items-center justify-between gap-3 px-4">
+        <span className="min-w-0 truncate font-mono text-small" style={{ color: palette.foreground }} title={cwd}>
+          {label ?? ""}
+        </span>
         <button
           aria-label="Close terminal"
           className="grid h-6 w-6 place-items-center rounded-cg-sm text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink"

@@ -1,7 +1,7 @@
 import { GitCompareArrows } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { codeRefs, type GitRefs } from "../lib/insights";
-import type { SessionId } from "../lib/workspace";
+import type { RepositoryId, SessionId } from "../lib/workspace";
 import { QuietSelect, type SelectOption } from "../ui/QuietSelect";
 
 const NONE = "";
@@ -41,11 +41,14 @@ export function referenceOptions(refs: GitRefs | null, current: string, chosen: 
  */
 export function ReferenceSelect({
   sessionId,
+  repositoryId = null,
   currentBranch,
   value,
   onChange,
 }: {
   sessionId: SessionId | null;
+  /** The repository in focus: its branches and commits are the ones listed. */
+  repositoryId?: RepositoryId | null;
   currentBranch: string;
   value: string;
   onChange: (value: string) => void;
@@ -56,10 +59,10 @@ export function ReferenceSelect({
       setRefs(null);
       return;
     }
-    codeRefs(sessionId)
+    codeRefs(sessionId, repositoryId)
       .then(setRefs)
-      .catch(() => undefined);
-  }, [sessionId]);
+      .catch(() => setRefs(null));
+  }, [sessionId, repositoryId]);
 
   // The list is read again whenever the branch changes, and each time the selector opens.
   useEffect(() => {

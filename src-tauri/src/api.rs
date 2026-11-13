@@ -625,14 +625,11 @@ impl ApiService {
             .db
             .get_session(session)?
             .ok_or_else(|| not_found("session not found"))?;
-        let worktree = self
-            .db
-            .get_worktree(chat.worktree_id)?
-            .ok_or_else(|| not_found("worktree not found"))?;
-        let known: std::collections::HashSet<String> = crate::adapters::git::GitCli
-            .list_files(&worktree.path)?
-            .into_iter()
-            .collect();
+        let known = crate::app::workspace::known_files(
+            self.db.as_ref(),
+            &crate::adapters::git::GitCli,
+            &chat,
+        )?;
         let graph = crate::app::analysis::parse_flow(&args.to_string(), &known)?;
         if graph.nodes.is_empty() {
             return Err(ApiError::invalid("a diagram needs at least one node"));
@@ -688,11 +685,27 @@ impl ApiService {
             .db
             .get_session(decision.session_id)?
             .ok_or_else(|| not_found("session not found"))?;
-        let worktree = self
-            .db
-            .get_worktree(session.worktree_id)?
-            .ok_or_else(|| not_found("worktree not found"))?;
-        let info = crate::adapters::git::GitCli.commit_info(&worktree.path, &commit)?;
+        // The commit may be in any repository of the chat's workspace; its own is tried first.
+        let roots = crate::app::workspace::session_roots(self.db.as_ref(), &session)?;
+        if roots.is_empty() {
+            return Err(not_found("worktree not found"));
+        }
+        let mut found = None;
+        let mut failure = None;
+        for (_, root) in &roots {
+            match crate::adapters::git::GitCli.commit_info(root, &commit) {
+                Ok(info) => {
+                    found = Some(info);
+                    break;
+                }
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        let info = match (found, failure) {
+            (Some(info), _) => info,
+            (None, Some(error)) => return Err(error.into()),
+            (None, None) => return Err(not_found("worktree not found")),
+        };
         let linked = crate::domain::DecisionCommit {
             decision_id: id,
             rev: info.rev,
@@ -1327,6 +1340,7 @@ mod tests {
         db.upsert_worktree(&wt).unwrap();
         let mk = |title: &str| ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id: repo.id,
             worktree_id: wt.id,
             provider: ProviderKind::Fake,

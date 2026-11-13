@@ -1,4 +1,5 @@
 export type RepositoryId = string;
+export type WorkspaceId = string;
 export type WorktreeId = string;
 export type SessionId = string;
 
@@ -22,6 +23,16 @@ export type Repository = {
   updated_at: string;
 };
 
+/** A named set of repositories opened together; the agent of a chat sees every member. */
+export type Workspace = {
+  id: WorkspaceId;
+  name: string;
+  /** Members, in the order the user arranged them. */
+  repository_ids: RepositoryId[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type Worktree = {
   id: WorktreeId;
   repository_id: RepositoryId;
@@ -34,6 +45,8 @@ export type Worktree = {
 
 export type ChatSession = {
   id: SessionId;
+  workspace_id?: WorkspaceId | null;
+  /** The chat's own repository: where its agent starts. */
   repository_id: RepositoryId;
   worktree_id: WorktreeId;
   provider: ProviderKind;
@@ -52,6 +65,9 @@ export type ChatSession = {
 
 export type WorkspaceSnapshot = {
   repositories: Repository[];
+  workspaces: Workspace[];
+  selected_workspace_id: WorkspaceId | null;
+  /** The repository in focus: the one Code, the terminal and the branch selector show. */
   selected_repository_id: RepositoryId | null;
   worktrees: Worktree[];
   selected_worktree_id: WorktreeId | null;
@@ -75,6 +91,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export function emptyWorkspace(): WorkspaceSnapshot {
   return {
     repositories: [],
+    workspaces: [],
+    selected_workspace_id: null,
     selected_repository_id: null,
     worktrees: [],
     selected_worktree_id: null,
@@ -89,6 +107,27 @@ export function workspaceBootstrap() {
 
 export function workspaceOpenRepository(path: string) {
   return invoke<WorkspaceSnapshot>("workspace_open_repository", { path });
+}
+
+/** Records the repository at a folder without selecting it; the workspace dialog adds folders this way. */
+export function workspaceRegisterRepository(path: string) {
+  return invoke<Repository>("workspace_register_repository", { path });
+}
+
+export function workspaceSelectWorkspace(workspaceId: WorkspaceId) {
+  return invoke<WorkspaceSnapshot>("workspace_select_workspace", { workspaceId });
+}
+
+export function workspaceCreateWorkspace(name: string, repositoryIds: RepositoryId[]) {
+  return invoke<WorkspaceSnapshot>("workspace_create_workspace", { name, repositoryIds });
+}
+
+export function workspaceUpdateWorkspace(workspaceId: WorkspaceId, name: string, repositoryIds: RepositoryId[]) {
+  return invoke<WorkspaceSnapshot>("workspace_update_workspace", { workspaceId, name, repositoryIds });
+}
+
+export function workspaceDeleteWorkspace(workspaceId: WorkspaceId) {
+  return invoke<WorkspaceSnapshot>("workspace_delete_workspace", { workspaceId });
 }
 
 export function workspaceSelectRepository(repositoryId: RepositoryId) {

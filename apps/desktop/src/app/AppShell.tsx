@@ -25,7 +25,8 @@ import { ChatPanel } from "../chat/ChatPanel";
 import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsSpace } from "../decisions/DecisionsSpace";
 import { FlowSpace } from "../flow/FlowSpace";
-import type { BtwTask } from "../lib/insights";
+import { codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
+import { useInsightEvents } from "../lib/useInsightEvents";
 import { NewContext } from "../chat/NewContext";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { Button } from "../ui/Button";
@@ -33,6 +34,8 @@ import { Chip } from "../ui/Chip";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { QuietSelect } from "../ui/QuietSelect";
 import { ReferenceSelect } from "./ReferenceSelect";
+import { RepositorySelect } from "./RepositorySelect";
+import { WorkspaceDialog } from "./WorkspaceDialog";
 import { Tip } from "../ui/Overlay";
 import { StateMessage, type LoadState } from "../ui/State";
 import {
@@ -42,10 +45,12 @@ import {
   workspaceOpenRepository,
   workspaceOpenSession,
   workspaceSelectRepository,
+  workspaceSelectWorkspace,
   workspaceListBranches,
   workspaceSelectBranch,
   type BranchView,
   type ProviderKind,
+  type RepositoryId,
   type WorkspaceSnapshot,
 } from "../lib/workspace";
 import { BrandMark } from "../intro/BrandMark";
@@ -58,6 +63,7 @@ import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
 import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
 import { resolveShortcut } from "./shortcuts";
+import { referenceKey, resolveFileRef, selectedWorkspace } from "./workspaceView";
 import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
 import { useAppearance } from "./appearance/store";
@@ -90,12 +96,20 @@ function sameBranches(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
   return key(a) === key(b);
 }
 
-function readReference(chatId: string | null): string {
-  if (!chatId) {
+/**
+ * The comparison remembered for one repository of a chat. A chat made before workspaces kept one
+ * for the whole chat, which belongs to the chat's own repository.
+ */
+function readReference(chatId: string | null, repositoryId: string | null, ownRepositoryId: string | null): string {
+  if (!chatId || !repositoryId) {
     return "";
   }
   try {
-    return window.localStorage.getItem(`ataraxia.compareWith.${chatId}`) ?? "";
+    const stored = window.localStorage.getItem(referenceKey(chatId, repositoryId));
+    if (stored !== null) {
+      return stored;
+    }
+    return repositoryId === ownRepositoryId ? (window.localStorage.getItem(`ataraxia.compareWith.${chatId}`) ?? "") : "";
   } catch {
     return "";
   }
@@ -124,6 +138,8 @@ export function AppShell() {
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The workspace dialog: a new workspace, or the one on screen.
+  const [workspaceDialog, setWorkspaceDialog] = useState<"new" | "edit" | null>(null);
   const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; n: number } | null>(null);
   // Spaces stay mounted once visited, so the open file, the selected decision and the diagram
   // are still there when you come back.
@@ -240,8 +256,22 @@ export function AppShell() {
     setBtwOpen(true);
   }
 
-  function openInCode(path: string, line: number | null) {
-    setCodeRequest((current) => ({ path, line, n: (current?.n ?? 0) + 1 }));
+  // A path a chat named is the chat's own repository's, or `<repository>/<path>` for another member.
+  // Opening one in another repository puts that repository in focus first.
+  async function openInCode(path: string, line: number | null) {
+    const target = resolveFileRef(path, selectedSession?.repository_id ?? null, members);
+    if (target.repositoryId && target.repositoryId !== workspace.selected_repository_id) {
+      setBusy(true);
+      try {
+        setWorkspace(await workspaceSelectRepository(target.repositoryId));
+      } catch (err) {
+        setError(errorMessage(err));
+        return;
+      } finally {
+        setBusy(false);
+      }
+    }
+    setCodeRequest((current) => ({ path: target.path, line, n: (current?.n ?? 0) + 1 }));
     setSpace("code");
   }
 
@@ -282,6 +312,37 @@ export function AppShell() {
       ) ?? null,
     [workspace],
   );
+
+  const inWorkspace = useMemo(() => selectedWorkspace(workspace), [workspace]);
+  const members = useMemo(() => inWorkspace?.members ?? [], [inWorkspace]);
+  // With one repository the app looks exactly as it always did; the repository selector, the
+  // counts and the labels that name a repository only appear from two.
+  const multi = members.length > 1;
+  const repositoryNames = useMemo(
+    () => (multi ? Object.fromEntries(members.map((item) => [item.id, item.name])) : undefined),
+    [multi, members],
+  );
+
+  // What the agent changed in each repository of the workspace, for the repository selector.
+  const [changes, setChanges] = useState<RepoChanges[]>([]);
+  const refreshChanges = useCallback(() => {
+    const id = selectedSession?.id ?? null;
+    if (!multi || !id) {
+      setChanges([]);
+      return;
+    }
+    codeRepoChanges(id)
+      .then(setChanges)
+      .catch(() => setChanges([]));
+  }, [multi, selectedSession?.id]);
+  useEffect(() => {
+    refreshChanges();
+  }, [refreshChanges, space]);
+  useInsightEvents((event) => {
+    if (event.type === "checkpoint" && event.sessionId === selectedSession?.id) {
+      refreshChanges();
+    }
+  });
 
   // Every local branch, read from git when the selector opens and when the worktree changes.
   const [branches, setBranches] = useState<BranchView[]>([]);
@@ -325,14 +386,16 @@ export function AppShell() {
   // The reference this chat's branch is compared against. It is remembered per chat.
   const [storedReference, setStoredReference] = useState("");
   const chatId = selectedSession?.id ?? null;
+  const focusRepositoryId = selectedRepository?.id ?? null;
+  const ownRepositoryId = selectedSession?.repository_id ?? null;
   useEffect(() => {
-    setStoredReference(readReference(chatId));
-  }, [chatId]);
+    setStoredReference(readReference(chatId, focusRepositoryId, ownRepositoryId));
+  }, [chatId, focusRepositoryId, ownRepositoryId]);
   function setReference(next: string) {
     setStoredReference(next);
-    if (chatId) {
+    if (chatId && focusRepositoryId) {
       try {
-        window.localStorage.setItem(`ataraxia.compareWith.${chatId}`, next);
+        window.localStorage.setItem(referenceKey(chatId, focusRepositoryId), next);
       } catch {
         // Not remembering the choice is harmless.
       }
@@ -390,6 +453,14 @@ export function AppShell() {
       setBusy(false);
     }
   }
+
+  const selectRepository = useCallback(
+    (id: RepositoryId) => {
+      void runWorkspace(() => workspaceSelectRepository(id));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   async function onOpenRepository() {
     const selected = await open({
@@ -491,7 +562,7 @@ export function AppShell() {
       <header className="flex h-[61px] flex-none items-center justify-between gap-4 border-b border-cg-line px-8.5">
         <div className="flex min-w-0 items-center gap-2.5 text-ui font-semibold whitespace-nowrap">
           <BrandMark />
-          {workspace.repositories.length === 0 ? (
+          {workspace.workspaces.length === 0 ? (
             <button
               className="rounded-cg-sm py-1.5 text-cg-ink hover:text-cg-accent"
               disabled={busy || boot.kind !== "ready"}
@@ -503,17 +574,45 @@ export function AppShell() {
               Open repository
             </button>
           ) : (
-            <QuietSelect
-              aria-label="Repository"
-              actions={[{ label: "Open folder…", onSelect: () => void onOpenRepository() }]}
-              className="max-w-[210px] text-ui font-semibold text-cg-ink"
-              disabled={busy}
-              options={workspace.repositories.map((repo) => ({ value: repo.id, label: repo.name }))}
-              value={workspace.selected_repository_id ?? ""}
-              onChange={(value) => {
-                void runWorkspace(() => workspaceSelectRepository(value));
-              }}
-            />
+            <>
+              <QuietSelect
+                aria-label="Workspace"
+                actions={[
+                  { label: "Open folder…", onSelect: () => void onOpenRepository() },
+                  { label: "New workspace…", onSelect: () => setWorkspaceDialog("new") },
+                  { label: "Edit this workspace…", onSelect: () => setWorkspaceDialog("edit") },
+                ]}
+                className="max-w-[210px] text-ui font-semibold text-cg-ink"
+                disabled={busy}
+                options={workspace.workspaces.map((item) => ({
+                  value: item.id,
+                  label: item.repository_ids.length > 1 ? `${item.name} · ${item.repository_ids.length} repositories` : item.name,
+                  display: item.name,
+                }))}
+                sound
+                title="The workspace: its chats, and the repositories their agents can see"
+                value={workspace.selected_workspace_id ?? ""}
+                onChange={(value) => {
+                  void runWorkspace(() => workspaceSelectWorkspace(value));
+                }}
+              />
+              {multi ? (
+                <>
+                  <span aria-hidden="true" className="text-cg-control">
+                    /
+                  </span>
+                  <RepositorySelect
+                    changes={changes}
+                    className="max-w-[210px] text-ui font-semibold text-cg-ink"
+                    compact
+                    disabled={busy}
+                    repositories={members}
+                    value={workspace.selected_repository_id}
+                    onChange={selectRepository}
+                  />
+                </>
+              ) : null}
+            </>
           )}
 
           <span aria-hidden="true" className="text-cg-control">
@@ -539,6 +638,7 @@ export function AppShell() {
 
           <ReferenceSelect
             currentBranch={currentBranch}
+            repositoryId={focusRepositoryId}
             sessionId={selectedSession?.id ?? null}
             value={reference}
             onChange={setReference}
@@ -591,9 +691,9 @@ export function AppShell() {
               <Plus size={16} />
             </Button>
           </Tip>
-          <Tip label="Sessions in this repository">
+          <Tip label={multi ? "Sessions in this workspace" : "Sessions in this repository"}>
             <Button
-              aria-label="Sessions in this repository"
+              aria-label={multi ? "Sessions in this workspace" : "Sessions in this repository"}
               aria-pressed={sessionsOpen}
               data-sessions-toggle
               disabled={!selectedRepository}
@@ -662,8 +762,12 @@ export function AppShell() {
                 bridge={codeBridge}
                 openRequest={codeRequest}
                 reference={reference || null}
+                changes={changes}
+                repositories={members}
                 session={selectedSession}
                 worktree={selectedWorktree}
+                onReviewChanged={refreshChanges}
+                onSelectRepository={selectRepository}
                 onBtw={() => openBtw(null)}
                 onError={setError}
               />
@@ -698,6 +802,7 @@ export function AppShell() {
         {sessionsOpen ? (
           <SessionsPanel
             selectedId={workspace.selected_session_id}
+            repositoryNames={repositoryNames}
             sessions={workspace.sessions}
             worktrees={workspace.worktrees}
             onClose={closeSessions}
@@ -717,6 +822,7 @@ export function AppShell() {
         <TerminalPanel
           key={selectedWorktree.id}
           cwd={selectedWorktree.path}
+          label={multi ? selectedRepository?.name : undefined}
           worktreeId={selectedWorktree.id}
           onClose={() => setTerminalOpen(false)}
         />
@@ -750,6 +856,13 @@ export function AppShell() {
         isOpen={settingsOpen}
         provider={selectedSession?.provider ?? null}
         onClose={() => setSettingsOpen(false)}
+      />
+      <WorkspaceDialog
+        isOpen={workspaceDialog !== null}
+        repositories={workspace.repositories}
+        workspace={workspaceDialog === "edit" ? (inWorkspace?.workspace ?? null) : null}
+        onClose={() => setWorkspaceDialog(null)}
+        onSaved={setWorkspace}
       />
       <Toast message={error} onDismiss={() => setError(null)} />
     </div>

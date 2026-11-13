@@ -92,6 +92,14 @@ When the code moves on, the diagram says it is out of date.
   <img alt="A flow diagram from POST /documents to object storage, with a node selected and its description open" src="docs/images/flow-light.png" width="900">
 </picture>
 
+## Let the agent see all your repositories
+
+A feature that crosses an API and its client lives in two repositories. A workspace groups them: the agent
+of a chat in it can read and change every one, so it can follow a request from the web app into the service.
+You still look at one repository at a time, with its own branch, comparison, files and terminal, and a count
+tells you when the agent left unreviewed changes in one you are not looking at. A repository on its own is a
+workspace of one, so nothing changes until you make a second one.
+
 ## Use the agent you like, and change your mind
 
 Claude Code, Codex and OpenCode run behind the same chat, with streaming, tool cards, permission

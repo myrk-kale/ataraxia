@@ -93,6 +93,19 @@ impl Engine {
         self.db.list_decisions(session_id)
     }
 
+    /// The folder of the repository a decision's checkpoint belongs to.
+    fn decision_root(&self, decision: &Decision) -> Result<std::path::PathBuf> {
+        let checkpoint = self
+            .db
+            .get_checkpoint(decision.checkpoint_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "checkpoint not found"))?;
+        Ok(self
+            .db
+            .get_worktree(checkpoint.worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?
+            .path)
+    }
+
     fn decision(&self, id: DecisionId) -> Result<Decision> {
         self.db
             .get_decision(id)?
@@ -201,8 +214,31 @@ impl Engine {
     ) -> Result<DecisionCommit> {
         let decision = self.decision(id)?;
         let session = self.session(decision.session_id)?;
-        let root = self.worktree_path(&session)?;
-        let info = self.git.commit_info(&root, rev.trim())?;
+        // The commit may be in any repository of the workspace; the decision's own is tried first.
+        let own = self.decision_root(&decision)?;
+        let mut roots = vec![own.clone()];
+        roots.extend(
+            super::workspace::session_roots(self.db.as_ref(), &session)?
+                .into_iter()
+                .map(|(_, path)| path)
+                .filter(|path| *path != own),
+        );
+        let mut found = None;
+        let mut failure = None;
+        for root in &roots {
+            match self.git.commit_info(root, rev.trim()) {
+                Ok(info) => {
+                    found = Some(info);
+                    break;
+                }
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        let info = match (found, failure) {
+            (Some(info), _) => info,
+            (None, Some(error)) => return Err(error),
+            (None, None) => return Err(Error::new(ErrorCode::NotFound, "worktree not found")),
+        };
         let created_at = self
             .db
             .list_decision_commits(id)?
@@ -237,8 +273,7 @@ impl Engine {
     /// Recent commits, those that touched files the decision points at first.
     pub fn decision_commit_candidates(&self, id: DecisionId) -> Result<Vec<CommitCandidate>> {
         let decision = self.decision(id)?;
-        let session = self.session(decision.session_id)?;
-        let root = self.worktree_path(&session)?;
+        let root = self.decision_root(&decision)?;
         let linked: Vec<String> = self
             .db
             .list_decision_commits(id)?

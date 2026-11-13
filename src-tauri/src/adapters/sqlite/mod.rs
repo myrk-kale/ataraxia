@@ -9,10 +9,10 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::agent::ProviderKind;
-use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
+use crate::domain::ids::{RepositoryId, SessionId, WorkspaceId, WorktreeId};
 use crate::domain::{
     ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus,
-    Worktree,
+    Workspace, Worktree,
 };
 use crate::ports::Store;
 
@@ -214,14 +214,174 @@ impl Store for SqliteStore {
         })
     }
 
+    fn upsert_workspace(&self, workspace: &Workspace) -> Result<()> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let id = workspace.id.0.to_string();
+            conn.execute_batch("BEGIN").map_err(io)?;
+            let outcome = (|| -> rusqlite::Result<()> {
+                conn.execute(
+                    "INSERT INTO workspaces (id, name, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(id) DO UPDATE SET
+                       name = excluded.name,
+                       updated_at = excluded.updated_at",
+                    params![
+                        id,
+                        workspace.name,
+                        workspace.created_at,
+                        workspace.updated_at
+                    ],
+                )?;
+                conn.execute(
+                    "DELETE FROM workspace_repositories WHERE workspace_id = ?1",
+                    params![id],
+                )?;
+                for (position, repository_id) in workspace.repository_ids.iter().enumerate() {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO workspace_repositories
+                           (workspace_id, repository_id, position)
+                         VALUES (?1, ?2, ?3)",
+                        params![id, repository_id.0.to_string(), position as i64],
+                    )?;
+                }
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => conn.execute_batch("COMMIT").map_err(io),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(io(error))
+                }
+            }
+        })
+    }
+
+    fn list_workspaces(&self) -> Result<Vec<Workspace>> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, created_at, updated_at FROM workspaces
+                     ORDER BY updated_at DESC, name",
+                )
+                .map_err(io)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(io)?;
+            let heads = collect_rows(rows)?;
+            let mut members = conn
+                .prepare(
+                    "SELECT repository_id FROM workspace_repositories
+                     WHERE workspace_id = ?1 ORDER BY position",
+                )
+                .map_err(io)?;
+            let mut out = Vec::with_capacity(heads.len());
+            for (id, name, created_at, updated_at) in heads {
+                let ids = members
+                    .query_map(params![id], |row| {
+                        parse_repository_id(&row.get::<_, String>(0)?)
+                    })
+                    .map_err(io)?;
+                out.push(Workspace {
+                    id: parse_workspace_id(&id).map_err(io)?,
+                    name,
+                    repository_ids: collect_rows(ids)?,
+                    created_at,
+                    updated_at,
+                });
+            }
+            Ok(out)
+        })
+    }
+
+    fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>> {
+        Ok(self
+            .list_workspaces()?
+            .into_iter()
+            .find(|item| item.id == id))
+    }
+
+    fn delete_workspace(&self, id: WorkspaceId) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM workspaces WHERE id = ?1",
+                params![id.0.to_string()],
+            )
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn list_workspace_sessions(&self, workspace_id: WorkspaceId) -> Result<Vec<ChatSession>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, repository_id, worktree_id, provider, title, status,
+                            created_at, updated_at, last_opened_at, model, effort, agent,
+                            kind, parent_session_id, workspace_id
+                     FROM chat_sessions
+                     WHERE workspace_id = ?1 AND kind = 'chat'
+                     ORDER BY COALESCE(last_opened_at, updated_at) DESC",
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            let rows = stmt
+                .query_map(params![workspace_id.0.to_string()], map_session)
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            collect_rows(rows)
+        })
+    }
+
+    fn set_session_worktrees(&self, id: SessionId, worktrees: &[WorktreeId]) -> Result<()> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            conn.execute(
+                "DELETE FROM session_worktrees WHERE session_id = ?1",
+                params![id.0.to_string()],
+            )
+            .map_err(io)?;
+            for worktree in worktrees {
+                conn.execute(
+                    "INSERT OR IGNORE INTO session_worktrees (session_id, worktree_id)
+                     VALUES (?1, ?2)",
+                    params![id.0.to_string(), worktree.0.to_string()],
+                )
+                .map_err(io)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn session_worktrees(&self, id: SessionId) -> Result<Vec<WorktreeId>> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let mut stmt = conn
+                .prepare("SELECT worktree_id FROM session_worktrees WHERE session_id = ?1 ORDER BY rowid")
+                .map_err(io)?;
+            let rows = stmt
+                .query_map(params![id.0.to_string()], |row| {
+                    parse_worktree_id(&row.get::<_, String>(0)?)
+                })
+                .map_err(io)?;
+            collect_rows(rows)
+        })
+    }
+
     fn create_session(&self, session: &ChatSession) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
                     created_at, updated_at, last_opened_at, model, effort, agent,
-                    kind, parent_session_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    kind, parent_session_id, workspace_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -236,7 +396,8 @@ impl Store for SqliteStore {
                     session.effort,
                     session.agent,
                     session.kind.as_str(),
-                    session.parent_session_id.map(|id| id.0.to_string())
+                    session.parent_session_id.map(|id| id.0.to_string()),
+                    session.workspace_id.map(|id| id.0.to_string())
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -250,7 +411,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
                             created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id
+                            kind, parent_session_id, workspace_id
                      FROM chat_sessions
                      WHERE repository_id = ?1 AND kind = 'chat'
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -268,7 +429,7 @@ impl Store for SqliteStore {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
                         created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id
+                            kind, parent_session_id, workspace_id
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -499,12 +660,22 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
             Some(value) => Some(parse_session_id(&value)?),
             None => None,
         },
+        workspace_id: match row.get::<_, Option<String>>(14)? {
+            Some(value) => Some(parse_workspace_id(&value)?),
+            None => None,
+        },
     })
 }
 
 fn parse_repository_id(value: &str) -> rusqlite::Result<RepositoryId> {
     uuid::Uuid::parse_str(value)
         .map(RepositoryId)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
+fn parse_workspace_id(value: &str) -> rusqlite::Result<WorkspaceId> {
+    uuid::Uuid::parse_str(value)
+        .map(WorkspaceId)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
 
@@ -565,6 +736,7 @@ mod tests {
 
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id: again.id,
             worktree_id: worktree.id,
             provider: ProviderKind::Fake,
@@ -611,6 +783,7 @@ mod tests {
         store.upsert_worktree(&worktree).expect("worktree");
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id: repo.id,
             worktree_id: worktree.id,
             provider: ProviderKind::Claude,
@@ -687,6 +860,7 @@ mod tests {
         store.upsert_worktree(&worktree).expect("worktree");
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: None,
             repository_id: repo.id,
             worktree_id: worktree.id,
             provider: ProviderKind::Fake,

@@ -1,13 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::ids::{RepositoryId, WorktreeId};
+use super::ids::{RepositoryId, WorkspaceId, WorktreeId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {
     pub id: RepositoryId,
     pub root: PathBuf,
     pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A named set of repositories opened together. The agents of its chats see every member; the
+/// UI still looks at one member at a time. A lone repository is a workspace of one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: WorkspaceId,
+    pub name: String,
+    /// Members in the order the user arranged them.
+    pub repository_ids: Vec<RepositoryId>,
     pub created_at: String,
     pub updated_at: String,
 }

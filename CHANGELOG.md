@@ -6,6 +6,26 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- Workspaces: a named set of repositories. The agent of every chat in a workspace can read and change
+  all of them, while the app still looks at one repository at a time. The workspace selector replaces
+  the repository selector in the header, a repository selector appears from two members on (in the
+  header and at the top of Code), and "New workspace…" and "Edit this workspace…" manage them. A
+  repository on its own is a workspace of one and looks as before.
+- A turn that changes several repositories leaves a checkpoint in each, reviewed on its own, and the
+  repository selector says what the agent changed in every one and how much is unreviewed.
+- Files named to the API as `<repository>/<path>` open in the right repository, and the guide explains
+  the convention.
+
+### Changed
+
+- Chats belong to the workspace, not to a repository, so changing repository inside a workspace keeps
+  the chat open. Existing repositories and chats move into a workspace of one each.
+- The comparison picked in "Compare with…" is remembered per chat and repository.
+
 ## [0.1.1] - 2026-11-13
 
 ### Added
@@ -69,6 +89,7 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/myrk-kale/ataraxia/releases/tag/v0.1.0

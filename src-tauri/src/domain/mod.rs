@@ -22,5 +22,5 @@ pub use insight::{
     FlowPreset, FlowPresetId, GitRefs, Hunk, InsightEvent, RefInfo, ReturnPolicy, ReviewComment,
     ReviewMark, ReviewState, RiskMarker, Symbol, UnitPriority,
 };
-pub use repo::{BranchInfo, RepoInfo, Repository, Worktree, WorktreeInfo};
+pub use repo::{BranchInfo, RepoInfo, Repository, Workspace, Worktree, WorktreeInfo};
 pub use session::{ChatSession, SessionKind, SessionStatus};

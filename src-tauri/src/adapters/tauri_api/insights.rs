@@ -74,21 +74,32 @@ pub fn code_review(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
     checkpoint_id: Option<CheckpointId>,
+    repository_id: Option<RepositoryId>,
 ) -> Res<ReviewView> {
     state
         .engine
-        .review(session_id, checkpoint_id)
+        .review_in(session_id, checkpoint_id, repository_id)
         .map_err(map_error)
+}
+
+/// For each repository of the chat's workspace, what the agent changed there and what is unseen.
+#[tauri::command(async)]
+pub fn code_repo_changes(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> Res<Vec<crate::app::artifacts::RepoChanges>> {
+    state.engine.repo_changes(session_id).map_err(map_error)
 }
 
 #[tauri::command(async)]
 pub fn code_refresh_checkpoint(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
+    repository_id: Option<RepositoryId>,
 ) -> Res<Option<Checkpoint>> {
     state
         .engine
-        .refresh_checkpoint(session_id)
+        .refresh_checkpoint_in(session_id, repository_id)
         .map_err(map_error)
 }
 
@@ -389,8 +400,12 @@ pub fn flow_list(state: tauri::State<'_, AppState>, session_id: SessionId) -> Re
 pub fn code_refs(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
+    repository_id: Option<RepositoryId>,
 ) -> Res<crate::domain::GitRefs> {
-    state.engine.code_refs(session_id).map_err(map_error)
+    state
+        .engine
+        .code_refs_in(session_id, repository_id)
+        .map_err(map_error)
 }
 
 /// Diffs two revisions. `head: None` means the working tree as it is now.
@@ -401,10 +416,17 @@ pub fn code_compare(
     base: String,
     head: Option<String>,
     merge_base: bool,
+    repository_id: Option<RepositoryId>,
 ) -> Res<Checkpoint> {
     state
         .engine
-        .compare(session_id, &base, head.as_deref(), merge_base)
+        .compare_in(
+            session_id,
+            &base,
+            head.as_deref(),
+            merge_base,
+            repository_id,
+        )
         .map_err(map_error)
 }
 

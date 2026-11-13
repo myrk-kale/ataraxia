@@ -9,7 +9,8 @@ change, not for decoration.
 - `name`: what the diagram shows, in a few words. `summary`: one or two sentences.
 - `nodes` (at least one): each has an `id`, a `label`, and optionally a `kind` and a `description`.
   - `kind` is one of `entry`, `component`, `function`, `data`, `external`, `step`.
-  - `refs` lists the code behind the node, each with a `path` and a `line`.
+  - `refs` lists the code behind the node, each with a `path` and a `line`. In a workspace of several
+    repositories a path outside the first one is `<repository>/<path>`.
 - `edges`: `source` and `target` are node ids; `label` says what passes or why (a verb).
 
 The response carries the id of the new diagram. `api.md` has a complete script.

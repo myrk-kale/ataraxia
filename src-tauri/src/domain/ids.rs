@@ -11,6 +11,10 @@ pub struct WorktreeId(pub Uuid);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+pub struct WorkspaceId(pub Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SessionId(pub Uuid);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -32,6 +36,12 @@ impl RepositoryId {
 }
 
 impl WorktreeId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl WorkspaceId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -62,6 +72,12 @@ impl PtySessionId {
 }
 
 impl Default for RepositoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for WorkspaceId {
     fn default() -> Self {
         Self::new()
     }

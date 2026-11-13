@@ -40,6 +40,33 @@ pub fn preamble(index: &Path) -> String {
     )
 }
 
+/// What the agent is told when its chat belongs to a workspace of several repositories: where
+/// each one is, and that API paths name the repository. Empty for a workspace of one.
+pub fn workspace_note(members: &[(String, PathBuf)]) -> String {
+    if members.len() < 2 {
+        return String::new();
+    }
+    let mut out = format!(
+        "[Workspace] This chat covers {} repositories. You may read and change any of them, using absolute paths outside your working directory:\n",
+        members.len()
+    );
+    for (index, (name, path)) in members.iter().enumerate() {
+        out.push_str(&format!(
+            "- {name}: {}{}\n",
+            path.display(),
+            if index == 0 {
+                " (your working directory)"
+            } else {
+                ""
+            }
+        ));
+    }
+    out.push_str(
+        "When you name a file to Ataraxia (decisions, flow diagrams, comments), write it as <repository>/<path> for any repository except the first.\n\n",
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,6 +93,21 @@ mod tests {
             assert!(readme.contains(name), "{name} is not listed in the index");
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_workspace_of_several_repositories_is_listed_and_one_alone_is_not_mentioned() {
+        let one = vec![("app".to_string(), PathBuf::from("/w/app"))];
+        assert_eq!(workspace_note(&one), "");
+        let two = vec![
+            ("app".to_string(), PathBuf::from("/w/app")),
+            ("api".to_string(), PathBuf::from("/w/api")),
+        ];
+        let text = workspace_note(&two);
+        assert!(text.contains("2 repositories"));
+        assert!(text.contains("- app: /w/app (your working directory)"));
+        assert!(text.contains("- api: /w/api\n"));
+        assert!(text.contains("<repository>/<path>"));
     }
 
     #[test]
