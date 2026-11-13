@@ -51,10 +51,10 @@ impl SqliteStore {
         })
     }
 
-    /// Number of MCP calls recorded so far (tests and diagnostics).
+    /// Number of API calls recorded so far (tests and diagnostics).
     pub fn audit_count(&self) -> i64 {
         self.with_conn(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM mcp_audit", [], |row| row.get(0))
+            conn.query_row("SELECT COUNT(*) FROM api_audit", [], |row| row.get(0))
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
         })
         .unwrap_or(0)

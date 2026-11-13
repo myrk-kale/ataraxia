@@ -1,7 +1,5 @@
 //! Commands for Code, Decisions, BTW, Flow, artifacts and settings.
 
-use serde::Serialize;
-
 use super::{AppState, map_error};
 use crate::app::artifacts::{ReviewView, Side};
 use crate::app::btw::BtwContext;
@@ -383,37 +381,6 @@ pub fn flow_generate(
 #[tauri::command(async)]
 pub fn flow_list(state: tauri::State<'_, AppState>, session_id: SessionId) -> Res<Vec<Artifact>> {
     state.engine.flows(session_id).map_err(map_error)
-}
-
-// ------------------------------------------------------------------ settings
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpInfo {
-    pub command: String,
-    pub args: Vec<String>,
-    pub config_json: String,
-}
-
-/// How to register Ataraxia's MCP server with an agent that does not get it automatically.
-#[tauri::command]
-pub fn settings_mcp_info(state: tauri::State<'_, AppState>) -> Res<McpInfo> {
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let command = exe.to_string_lossy().into_owned();
-    let args = vec![
-        "mcp".to_string(),
-        "--db".to_string(),
-        state.db_path.to_string_lossy().into_owned(),
-    ];
-    let config_json = serde_json::json!({
-        "mcpServers": { "ataraxia": { "command": command, "args": args } }
-    })
-    .to_string();
-    Ok(McpInfo {
-        command,
-        args,
-        config_json,
-    })
 }
 
 // ------------------------------------------------------------------ diff target

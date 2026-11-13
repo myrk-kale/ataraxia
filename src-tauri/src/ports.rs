@@ -11,6 +11,31 @@ use crate::domain::{
     Result, SessionStatus, Worktree, WorktreeInfo,
 };
 
+/// What an agent process needs to reach Ataraxia's local API: the address and its own token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiAccess {
+    pub url: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for ApiAccess {
+    // The token never reaches a log.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiAccess")
+            .field("url", &self.url)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Hands out the tokens agent processes use against the local API, one per process.
+pub trait ApiGateway: Send + Sync {
+    /// A fresh token bound to one chat session, read-write or read-only.
+    fn issue(&self, session_id: SessionId, write: bool) -> ApiAccess;
+    /// Makes a token stop working. Unknown tokens are ignored.
+    fn revoke(&self, token: &str);
+}
+
 /// Uniform agent surface for Claude / Codex / OpenCode / fakes.
 pub trait AgentRuntime: Send + Sync {
     fn providers(&self) -> Vec<ProviderDescriptor>;
@@ -408,7 +433,7 @@ pub trait InsightStore: Send + Sync {
     ) -> Result<()>;
     fn list_subagents(&self, session_id: SessionId) -> Result<Vec<crate::domain::SubagentRecord>>;
 
-    fn audit_mcp(
+    fn audit_api(
         &self,
         at: &str,
         tool: &str,
