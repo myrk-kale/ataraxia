@@ -28,9 +28,9 @@ First release.
   typeface and size for the interface, chat, code and terminal.
 - A few light sounds (changing space, choosing a model, an approval chime), off in Settings > Sound.
 - A real PTY terminal, and the opening animation.
-- Releases built by the pipeline: macOS (universal, `.dmg`), Linux (`x86_64` and `aarch64`: `.deb`,
-  `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a Homebrew tap for
-  macOS and Linux, and the `ataraxia-ide` crate.
+- Releases built by the pipeline: macOS (a universal binary, installed with Homebrew), Linux (`x86_64`
+  and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
+  Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
 [Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/myrk-kale/ataraxia/releases/tag/v0.1.0

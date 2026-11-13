@@ -26,15 +26,11 @@ Every release is on the [releases page](https://github.com/myrk-kale/ataraxia/re
 `.sha256` beside it and a build attestation: `gh attestation verify <file> --repo myrk-kale/ataraxia`.
 They are built by the release pipeline, never by hand.
 
-**macOS** (Apple silicon and Intel, macOS 11 or newer)
+**macOS** (Apple silicon and Intel; there is no installer, it comes through Homebrew)
 
 ```bash
-brew install --cask myrk-kale/tap/ataraxia   # the app
-brew install myrk-kale/tap/ataraxia          # the `ataraxia` binary, which also gives agents `ataraxia mcp`
+brew install myrk-kale/tap/ataraxia   # the `ataraxia` binary: it opens the app, and `ataraxia mcp` is the MCP server
 ```
-
-Or open the `.dmg`. The app is not signed with an Apple Developer ID yet, so macOS asks on the first
-launch: right-click > Open, or `xattr -dr com.apple.quarantine /Applications/Ataraxia.app`.
 
 **Linux** (`x86_64` and `aarch64`; built on Ubuntu 22.04, so it runs on Ubuntu 22.04 and newer, Debian 12,
 Fedora 36 and newer, Arch and the like)
@@ -51,7 +47,7 @@ the distribution (`sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0`, or `sudo dn
 gtk3`); the `.deb` and `.rpm` ask for them by themselves.
 
 **Windows** (x64): run `ataraxia-v0.1.0-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
-or use the `.msi` for managed installs. The installer is not signed yet, so SmartScreen shows "More info
+or use the `.msi` for managed installs. The installer is not signed, so SmartScreen shows "More info
 > Run anyway". WebView2 is installed along with it when the machine lacks it.
 
 **With Cargo** (the crate is `ataraxia-ide`; the binary it installs is `ataraxia`)

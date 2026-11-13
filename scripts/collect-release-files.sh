@@ -4,7 +4,7 @@
 #
 #   scripts/collect-release-files.sh TAG TARGET OUTDIR KIND...
 #
-# KIND is any of: tarball dmg deb rpm appimage nsis msi. Each asked for must exist exactly once.
+# KIND is any of: tarball deb rpm appimage nsis msi. Each asked for must exist exactly once.
 set -euo pipefail
 
 tag="${1:?tag, like v0.1.0}"
@@ -54,7 +54,6 @@ for kind in "${kinds[@]}"; do
       sum "$archive"
       echo "  $(basename "$archive")"
       ;;
-    dmg) keep "$(only "${bundle}/dmg/*.dmg")" "ataraxia-${tag}-${target}.dmg" ;;
     deb) keep "$(only "${bundle}/deb/*.deb")" "ataraxia-${tag}-${target}.deb" ;;
     rpm) keep "$(only "${bundle}/rpm/*.rpm")" "ataraxia-${tag}-${target}.rpm" ;;
     appimage) keep "$(only "${bundle}/appimage/*.AppImage")" "ataraxia-${tag}-${target}.AppImage" ;;

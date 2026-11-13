@@ -9,7 +9,7 @@ git tag vX.Y.Z  ──►  Release workflow
                       ├─ version           Cargo.toml, tauri.conf.json, the tag and the CHANGELOG agree
                       ├─ build  (x4)       macOS universal · Linux x86_64 · Linux aarch64 · Windows x64
                       │                    each smoke-tests the binary and attests its files
-                      ├─ release           checks the twelve files and their checksums, creates the GitHub release
+                      ├─ release           checks the eleven files and their checksums, creates the GitHub release
                       ├─ homebrew          installs the formula on macOS and Linux, then pushes it to the tap
                       └─ crates            dispatches crates.yml, which publishes the crate
 ```
@@ -18,13 +18,12 @@ git tag vX.Y.Z  ──►  Release workflow
 
 | Platform | Files |
 | --- | --- |
-| macOS (universal: Apple silicon and Intel) | `ataraxia-vX.Y.Z-universal-apple-darwin.dmg`, `….tar.gz` (the bare binary, for Homebrew and `cargo binstall`) |
+| macOS (universal: Apple silicon and Intel) | `ataraxia-vX.Y.Z-universal-apple-darwin.tar.gz`, the bare binary, for Homebrew and `cargo binstall`. There is no installer: macOS is installed with brew |
 | Linux x86_64 and aarch64 (built on Ubuntu 22.04) | `….deb`, `….rpm`, `….AppImage`, `….tar.gz`, for each architecture |
 | Windows x64 | `….-setup.exe` (NSIS installer, per user or per machine), `….msi` |
 
-Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, macOS and Linux) and
-cask (`brew install --cask myrk-kale/tap/ataraxia`, the macOS app) are generated from those checksums
-by `packaging/render.sh`. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
+Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, macOS and Linux) is
+generated from those checksums by `packaging/render.sh`. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
 another project); its binary is still `ataraxia`.
 
 ## Cutting a release
@@ -59,7 +58,7 @@ These live in the repository settings (Settings > Secrets and variables > Action
 | `CARGO_REGISTRY_TOKEN` | secret | A crates.io token limited to the `ataraxia-ide` crate (temporary: see below) |
 | `PUBLISH_CRATE` | variable | `true` to publish the crate in a release; anything else skips it |
 
-The tap is shared with other projects; it holds `Formula/ataraxia.rb` and `Casks/ataraxia.rb`.
+The tap is shared with other projects; this one adds `Formula/ataraxia.rb`.
 
 ## Moving crates.io to Trusted Publishing
 
@@ -81,8 +80,7 @@ The token is a long-lived secret, so it is a stopgap. To get rid of it:
 
 ## Not done yet
 
-- **Signing.** The macOS app is not signed or notarised (Apple Developer ID) and the Windows installer is
-  not Authenticode-signed, so each OS warns on first launch (the README says what to click). Signing
-  adds secrets (an Apple certificate and notarisation credentials; a Windows code-signing certificate)
-  and a step in the `build` job; `tauri build` reads them from environment variables.
+- **Signing.** The Windows installer is not Authenticode-signed, so SmartScreen warns on first run (the
+  README says what to click). Signing would add a code-signing certificate as a secret and a step in the
+  `build` job; `tauri build` reads it from environment variables. macOS has no installer, so nothing to sign.
 - **Windows on Arm** and a Linux `musl` build.

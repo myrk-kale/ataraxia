@@ -62,13 +62,13 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # macOS: one universal app, as a disk image, and the bare binary for Homebrew.
+          # macOS: one universal binary, for Homebrew. There is no installer: it is installed with brew.
           - name: macOS (universal)
             os: macos-15
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundles: dmg
-            kinds: tarball dmg
+            bundle-args: --no-bundle
+            kinds: tarball
           # Linux is built on Ubuntu 22.04, the oldest release that has WebKitGTK 4.1, so the
           # binaries run on it and on everything newer: Ubuntu 22.04 and 24.04, Debian 12,
           # Fedora, Arch. Each architecture on a native runner.
@@ -76,20 +76,20 @@ jobs:
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             rust-targets: x86_64-unknown-linux-gnu
-            bundles: deb,rpm,appimage
+            bundle-args: --bundles deb,rpm,appimage
             kinds: tarball deb rpm appimage
           - name: Linux aarch64
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             rust-targets: aarch64-unknown-linux-gnu
-            bundles: deb,rpm,appimage
+            bundle-args: --bundles deb,rpm,appimage
             kinds: tarball deb rpm appimage
-          # Windows: an installer (NSIS, per user or per machine) and an MSI for managed installs.
+          # Windows: an installer (NSIS, per user or per machine; not signed) and an MSI for managed installs.
           - name: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             rust-targets: x86_64-pc-windows-msvc
-            bundles: nsis,msi
+            bundle-args: --bundles nsis,msi
             kinds: nsis msi
     permissions:
       contents: read
@@ -137,7 +137,7 @@ jobs:
         env:
           # AppImage tools run without FUSE, which a runner does not have.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: ../apps/desktop/node_modules/.bin/tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
+        run: ../apps/desktop/node_modules/.bin/tauri build --ci --target "${{ matrix.target }}" ${{ matrix.bundle-args }}
 
       - name: Smoke test the binary
         # Not on Windows: the binary there is a window-only program, with no console to answer on.
@@ -157,7 +157,6 @@ jobs:
         with:
           subject-path: |
             dist/*.tar.gz
-            dist/*.dmg
             dist/*.deb
             dist/*.rpm
             dist/*.AppImage
@@ -206,7 +205,6 @@ jobs:
           ls -l
           expected=(
             "ataraxia-${TAG}-universal-apple-darwin.tar.gz"
-            "ataraxia-${TAG}-universal-apple-darwin.dmg"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.deb"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.rpm"
@@ -221,9 +219,9 @@ jobs:
           for file in "${expected[@]}"; do
             sha256sum -c "${file}.sha256"
           done
-          # Nothing else may be attached: twelve files, each with its checksum.
+          # Nothing else may be attached: eleven files, each with its checksum.
           files=(./*)
-          test "${#files[@]}" = 24 || { echo "expected 24 files, found ${#files[@]}"; exit 1; }
+          test "${#files[@]}" = 22 || { echo "expected 22 files, found ${#files[@]}"; exit 1; }
 
       - name: Publish the GitHub release
         env:

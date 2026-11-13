@@ -1,8 +1,7 @@
 name: Homebrew
 
-# Publishes Formula/ataraxia.rb (macOS and Linux, from the prebuilt binaries) and
-# Casks/ataraxia.rb (the macOS app) to myrk-kale/homebrew-tap for a released version, after
-# installing the formula on both systems. Called by the release workflow (a release made with
+# Publishes Formula/ataraxia.rb (macOS and Linux, from the prebuilt binaries) to
+# myrk-kale/homebrew-tap for a released version, after installing it on both systems. Called by the release workflow (a release made with
 # GITHUB_TOKEN does not trigger `release` events), and can be run by hand for any existing tag.
 on:
   workflow_call:
@@ -27,7 +26,7 @@ env:
 
 jobs:
   render:
-    name: Render the formula and the cask
+    name: Render the formula
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -44,13 +43,12 @@ jobs:
             gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "${file}.sha256" -D checksums --clobber
             cut -d' ' -f1 "checksums/${file}.sha256"
           }
-          mkdir -p tap/Formula tap/Casks
+          mkdir -p tap/Formula
           packaging/render.sh formula "$version" \
             "$(sha universal-apple-darwin.tar.gz)" \
             "$(sha x86_64-unknown-linux-gnu.tar.gz)" \
             "$(sha aarch64-unknown-linux-gnu.tar.gz)" > tap/Formula/ataraxia.rb
-          packaging/render.sh cask "$version" "$(sha universal-apple-darwin.dmg)" > tap/Casks/ataraxia.rb
-          cat tap/Formula/ataraxia.rb tap/Casks/ataraxia.rb
+          cat tap/Formula/ataraxia.rb
       - uses: actions/upload-artifact@v4
         with:
           name: tap-files
@@ -73,15 +71,6 @@ jobs:
           brew audit --strict --online local/verify/ataraxia
           brew install local/verify/ataraxia
           brew test local/verify/ataraxia
-      - name: Read the cask
-        # Installing it would put an unsigned app on the runner; reading it checks the syntax and the fields.
-        run: |
-          ruby -c tap/Casks/ataraxia.rb
-          cp tap/Casks/ataraxia.rb "$(brew --repository local/verify)/Casks/" 2>/dev/null || {
-            mkdir -p "$(brew --repository local/verify)/Casks"
-            cp tap/Casks/ataraxia.rb "$(brew --repository local/verify)/Casks/"
-          }
-          brew info --cask local/verify/ataraxia
 
   verify-linux:
     name: Install on Linux
@@ -118,15 +107,14 @@ jobs:
           repository: myrk-kale/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
-      - name: Commit the formula and the cask
+      - name: Commit the formula
         run: |
-          mkdir -p tap/Formula tap/Casks
+          mkdir -p tap/Formula
           cp rendered/Formula/ataraxia.rb tap/Formula/ataraxia.rb
-          cp rendered/Casks/ataraxia.rb tap/Casks/ataraxia.rb
           cd tap
           git config user.name "ataraxia release bot"
           git config user.email "ataraxia-release@users.noreply.github.com"
-          git add Formula/ataraxia.rb Casks/ataraxia.rb
+          git add Formula/ataraxia.rb
           if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
           git commit -m "ataraxia ${TAG#v}"
           git push
