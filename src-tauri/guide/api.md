@@ -79,7 +79,7 @@ Answers 201 with the decision:
 {"id":"6f1c1c0e-8d1e-4a43-9e0b-2f5a3f0c9a11","title":"Tokens are stored hashed","state":"pending","opened_by":"agent"}
 ```
 
-If nothing has changed in this chat yet there is no checkpoint, and the answer is 400.
+If nothing has changed in this chat yet there is no checkpoint or no review queue, and the answer is 404 with a message that says so.
 
 ### POST /v1/decisions/{decision_id}/messages
 
@@ -93,7 +93,7 @@ Body: `{"text": string}` (required). Answers 201 with the message.
 | `note` | string | what the commit did to the decision |
 
 Answers 201 with the link: the commit's `rev`, `short`, `subject` and your `note`. A commit that
-does not exist answers 400.
+does not exist answers 404.
 
 ### POST /v1/comments
 
@@ -155,8 +155,8 @@ Answers 201:
 
 ### Reads
 
-`GET` endpoints answer 200 with JSON. An id that does not exist, or that belongs to another chat,
-answers 404. A list of decisions looks like `[{"id":"...","title":"...","state":"pending"}]`.
+`GET` endpoints answer 200 with JSON. An id that does not exist answers 404, and one that belongs
+to another chat answers 403. A list of decisions looks like `[{"id":"...","title":"...","state":"pending"}]`.
 
 ## Errors
 
@@ -170,11 +170,11 @@ Anything that is not a success has this body, and an HTTP status that matches th
 | --- | --- | --- |
 | `invalid` | 400 | a field is missing, malformed or out of range; the message says which |
 | `unauthorized` | 401 | the token is missing or wrong |
-| `forbidden` | 403 | the token is read-only and the call writes |
+| `forbidden` | 403 | the token is read-only and the call writes, or the id belongs to another chat |
 | `not_found` | 404 | the id or the path does not exist |
 | `method_not_allowed` | 405 | the path exists but not with that method |
 | `too_large` | 413 | the body is over 1 MiB |
-| `internal` | 500 | the server failed; do not retry in a loop |
+| `internal` | 500 or 503 | the server failed, or it is busy (503: wait a moment and try once more); do not retry in a loop |
 
 On an error, read the message, fix the request once, and try again. If it still fails, tell the
 developer what the server said instead of working around it. Do not repeat a write that answered
