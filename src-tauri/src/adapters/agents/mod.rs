@@ -14,7 +14,7 @@ pub mod registry;
 pub mod rpc;
 pub mod subagent_tail;
 
-pub use claude::{ClaudeBackend, McpLaunch};
+pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
 pub use fake::FakeBackend;
 pub use host::AgentHost;

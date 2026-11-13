@@ -7,9 +7,9 @@
 //! - [`adapters`]: git/fs/sqlite/pty/agents/tauri edge
 
 pub mod adapters;
+pub mod api;
 pub mod app;
 pub mod domain;
-pub mod mcp;
 pub mod ports;
 
 use adapters::tauri_api;
@@ -86,7 +86,6 @@ pub fn run() {
             tauri_api::flow_delete_preset,
             tauri_api::flow_generate,
             tauri_api::flow_list,
-            tauri_api::settings_mcp_info,
             tauri_api::code_refs,
             tauri_api::code_compare,
         ])

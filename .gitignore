@@ -25,6 +25,7 @@ src-tauri/WixTools/
 
 # Local tooling
 .serena/
+.claude/worktrees/
 
 # OS / editor
 .DS_Store

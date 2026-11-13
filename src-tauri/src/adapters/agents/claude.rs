@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
     truncate_output,
 };
 use super::definitions::claude_agents;
@@ -37,37 +37,21 @@ enum Launcher {
     Fixed { program: PathBuf, args: Vec<String> },
 }
 
-/// How to start Ataraxia's own MCP server for a session (see [`crate::mcp`]).
-#[derive(Debug, Clone)]
-pub struct McpLaunch {
-    pub exe: PathBuf,
-    pub db: PathBuf,
-}
-
 pub struct ClaudeBackend {
     launcher: Launcher,
-    mcp: Option<McpLaunch>,
 }
 
 impl ClaudeBackend {
     pub fn new() -> Self {
         Self {
             launcher: Launcher::Resolve,
-            mcp: None,
         }
-    }
-
-    /// Gives every session Ataraxia's MCP server, scoped to that session.
-    pub fn with_mcp(mut self, mcp: McpLaunch) -> Self {
-        self.mcp = Some(mcp);
-        self
     }
 
     /// Runs a stand-in program that speaks the same frames (tests).
     pub fn with_command(program: PathBuf, args: Vec<String>) -> Self {
         Self {
             launcher: Launcher::Fixed { program, args },
-            mcp: None,
         }
     }
 
@@ -99,27 +83,15 @@ impl ClaudeBackend {
     }
 }
 
-/// Inline `--mcp-config` registering Ataraxia's server, scoped to one chat. Investigation
-/// sessions get it read-only.
-pub fn mcp_config_json(
-    mcp: &McpLaunch,
+/// The environment of the CLI: what makes it forward subagent text, and the local API.
+fn claude_env(
     session_id: crate::domain::ids::SessionId,
-    write: bool,
-) -> String {
-    let mut args = vec![
-        "mcp".to_string(),
-        "--db".to_string(),
-        mcp.db.to_string_lossy().into_owned(),
-        "--session".to_string(),
-        session_id.0.to_string(),
-    ];
-    if write {
-        args.push("--allow-write".into());
-    }
-    serde_json::json!({
-        "mcpServers": { "ataraxia": { "command": mcp.exe.to_string_lossy(), "args": args } }
-    })
-    .to_string()
+    api: Option<&crate::ports::ApiAccess>,
+) -> Vec<(String, String)> {
+    // Without the first one the CLI leaves a foreground subagent's text out of the stream.
+    let mut env = vec![("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT".into(), "1".into())];
+    env.extend(api_env(session_id, api));
+    env
 }
 
 /// Permission mode passed to `claude --permission-mode`. Defaults to `auto`; set
@@ -191,11 +163,6 @@ impl AgentBackend for ClaudeBackend {
                 ctx.read_only,
             )
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
-        let mut args = args;
-        if let (Launcher::Resolve, Some(mcp)) = (&self.launcher, &self.mcp) {
-            args.push("--mcp-config".into());
-            args.push(mcp_config_json(mcp, ctx.session_id, !ctx.read_only));
-        }
         let shared = Arc::new(ClaudeShared {
             emit: ctx.emit,
             process: OnceLock::new(),
@@ -209,8 +176,7 @@ impl AgentBackend for ClaudeBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                // Without this the CLI leaves a foreground subagent's text out of the stream.
-                env: vec![("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT".into(), "1".into())],
+                env: claude_env(ctx.session_id, ctx.api.as_ref()),
                 // A parent Claude Code session marks its children; strip it so we can nest.
                 env_remove: vec!["CLAUDECODE".into(), "CLAUDE_CODE_ENTRYPOINT".into()],
             },
@@ -1121,6 +1087,25 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn the_cli_gets_the_api_variables_next_to_its_own() {
+        let session = crate::domain::ids::SessionId::new();
+        let access = crate::ports::ApiAccess {
+            url: "http://127.0.0.1:4000".into(),
+            token: "tok".into(),
+        };
+        let env = claude_env(session, Some(&access));
+        let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(get("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT"), Some("1"));
+        assert_eq!(get("ATARAXIA_API_URL"), Some("http://127.0.0.1:4000"));
+        assert_eq!(get("ATARAXIA_API_TOKEN"), Some("tok"));
+        assert_eq!(
+            get("ATARAXIA_SESSION_ID"),
+            Some(session.0.to_string().as_str())
+        );
+        assert_eq!(claude_env(session, None).len(), 1);
+    }
+
     struct Harness {
         session: Arc<dyn BackendSession>,
         events: Receiver<BackendEvent>,
@@ -1141,6 +1126,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

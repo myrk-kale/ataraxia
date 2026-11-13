@@ -4,19 +4,20 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::adapters::agents::{
-    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, McpLaunch, OpenCodeBackend, guide,
+    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, OpenCodeBackend, guide,
 };
 use crate::adapters::fs::StdFs;
 use crate::adapters::git::GitCli;
 use crate::adapters::pty::NativePtyHost;
 use crate::adapters::sqlite::SqliteStore;
 use crate::adapters::syntax::TreeSitterSyntax;
+use crate::api::ApiServer;
 use crate::app::engine::{Engine, TeeEventSink};
 use crate::domain::agent::ProviderKind;
 use crate::domain::{Error, ErrorCode, Result};
 
 use super::events::TauriEventSink;
-use crate::ports::{AgentRuntime, Database, Git, PtyHost, Store};
+use crate::ports::{AgentRuntime, ApiGateway, Database, Git, PtyHost, Store};
 
 pub struct AppState {
     pub git: Arc<dyn Git>,
@@ -25,6 +26,8 @@ pub struct AppState {
     pub agents: Arc<AgentHost>,
     pub engine: Arc<Engine>,
     pub db_path: PathBuf,
+    /// The local HTTP API agents call; `None` when it could not start.
+    pub api: Option<Arc<ApiServer>>,
 }
 
 pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
@@ -42,13 +45,10 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
 
     let tauri_sink = Arc::new(TauriEventSink::new(app.clone()));
     let tee = Arc::new(TeeEventSink::new(tauri_sink.clone()));
-    let mut claude = ClaudeBackend::new();
-    if let Ok(exe) = std::env::current_exe() {
-        claude = claude.with_mcp(McpLaunch {
-            exe,
-            db: db_path.clone(),
-        });
-    }
+    // Without the API the agents still work; they are just not told where to find it.
+    let api = ApiServer::start(Arc::clone(&database))
+        .map_err(|error| eprintln!("ataraxia: could not start the local API: {error}"))
+        .ok();
     // What each chat's agent is told about Ataraxia, and the guide it can read once asked. A guide
     // that cannot be written only means the agents are not pointed at one.
     let guide = guide::install(&data_dir.join("guide"))
@@ -58,12 +58,15 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     if let Some(index) = guide {
         host = host.with_guide(index);
     }
+    if let Some(api) = &api {
+        host = host.with_api(Arc::clone(api) as Arc<dyn ApiGateway>);
+    }
     let agents = Arc::new(
         host.with_insights(sqlite.clone())
             .with_handoff_dir(data_dir.join("handoffs"))
             .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
             .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
-            .with_backend(ProviderKind::Claude, Arc::new(claude))
+            .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()))
             .with_backend(ProviderKind::Codex, Arc::new(CodexBackend::new())),
     );
     let runtime: Arc<dyn AgentRuntime> = agents.clone();
@@ -86,6 +89,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         agents,
         engine,
         db_path,
+        api,
     })
 }
 
@@ -112,14 +116,31 @@ impl AppState {
 /// of worktrees (which costs a process).
 const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
 const REDISCOVER_EVERY: u32 = 6;
+/// How many looks go by between two reads of `git status` when nothing moved in `HEAD` or the
+/// index (a file made or deleted by a program that does not touch git, say): about 3 seconds.
+const STATUS_EVERY: u32 = 4;
 
-/// Keeps the app 1:1 with git: when a branch is switched outside the app, the app switches too.
+/// Whether the window is on screen. A hidden or minimized window has nobody to show changes to,
+/// and the files are read again as soon as it is back.
+fn window_shown(app: &AppHandle) -> bool {
+    match app.get_webview_window("main") {
+        Some(window) => {
+            window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false)
+        }
+        None => true,
+    }
+}
+
+/// Keeps the app 1:1 with git: when a branch is switched outside the app, the app switches too,
+/// and when the files of the worktree on screen change (git or not), the views over them reload.
 pub fn follow_git(app: &AppHandle) {
     use tauri::Emitter;
     let app = app.clone();
     std::thread::spawn(move || {
         let mut seen = std::collections::HashMap::new();
+        let mut files = std::collections::HashMap::new();
         let mut tick = 0u32;
+        let mut was_hidden = false;
         loop {
             std::thread::sleep(FOLLOW_EVERY);
             tick = tick.wrapping_add(1);
@@ -136,6 +157,23 @@ pub fn follow_git(app: &AppHandle) {
                 }
                 Ok(false) => {}
                 Err(error) => eprintln!("ataraxia: could not follow git: {error}"),
+            }
+            if !window_shown(&app) {
+                was_hidden = true;
+                continue;
+            }
+            // The first look after being hidden reads the status whatever the tick.
+            let check_status = was_hidden || tick % STATUS_EVERY == 0;
+            was_hidden = false;
+            match service.follow_files(&mut files, check_status) {
+                Ok(Some(worktree)) => {
+                    let payload = serde_json::json!({ "worktreeId": worktree });
+                    if let Err(error) = app.emit(super::events::FILES_EVENT, payload) {
+                        eprintln!("ataraxia: failed to emit the files event: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("ataraxia: could not follow the files: {error}"),
             }
         }
     });

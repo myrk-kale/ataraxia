@@ -12,22 +12,25 @@ performance trade-offs, behaviour that users will notice, how the code is organi
 
 Do not record: renames, formatting, obvious fixes, or anything that has no alternative. Usually
 two to six decisions come out of a piece of work; sometimes none, and then say so instead of
-inventing them. Call `ataraxia_list_decisions` first so you do not repeat one that exists.
+inventing them. Call `GET /v1/decisions` first so you do not repeat one that exists.
 
-## How to write one (`ataraxia_record_decision`)
+## How to write one (`POST /v1/decisions`)
 
 - `title`: the choice, in a short phrase ("Tokens are stored hashed, never in clear text").
 - `summary`: what was chosen, in one or two sentences.
 - `context`: what led to it. `rationale`: why this over the alternatives.
 - `type`: `api-contract`, `data-integrity`, `behavior`, `security`, `dependencies`,
   `performance`, `code-organization`, `ux` or `other`.
-- `files`: the code it is about, with `start_line` and `end_line` where you know them.
+- `files`: the code it is about, as objects with a `path` and, where you know them,
+  `start_line` and `end_line`.
 
-Call it once per decision. Do not bundle several choices in one thread.
+Call it once per decision. Do not bundle several choices in one thread. The response is the
+decision, and its `id` is what the calls below need. `api.md` has a complete script.
 
 ## After the decision exists
 
-- A commit that settles, changes or contradicts a decision: `ataraxia_link_commit` with the
-  decision id, the commit and a note on what it did to the decision.
-- A reply to something in a thread: `ataraxia_add_decision_message`.
-- To read one with its discussion: `ataraxia_get_decision`.
+- A commit that settles, changes or contradicts a decision:
+  `POST /v1/decisions/{decision_id}/commits` with the `commit` (an id, a short id, a branch or a
+  tag) and a `note` on what it did to the decision.
+- A reply to something in a thread: `POST /v1/decisions/{decision_id}/messages` with the `text`.
+- To read one with its discussion: `GET /v1/decisions/{decision_id}`.

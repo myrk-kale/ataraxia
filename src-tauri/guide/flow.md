@@ -4,13 +4,15 @@ A flow is a diagram, in the Flow tab, of how a piece of the code works: where a 
 action enters, what handles it, where data goes. It is for someone who has to understand the
 change, not for decoration.
 
-## How to draw one (`ataraxia_record_flow`)
+## How to draw one (`POST /v1/flows`)
 
 - `name`: what the diagram shows, in a few words. `summary`: one or two sentences.
-- `nodes`: each has an `id`, a `label`, and optionally a `kind` and a `description`.
+- `nodes` (at least one): each has an `id`, a `label`, and optionally a `kind` and a `description`.
   - `kind` is one of `entry`, `component`, `function`, `data`, `external`, `step`.
-  - `refs` lists the code behind the node: `path` and `line`.
+  - `refs` lists the code behind the node, each with a `path` and a `line`.
 - `edges`: `source` and `target` are node ids; `label` says what passes or why (a verb).
+
+The response carries the id of the new diagram. `api.md` has a complete script.
 
 ## What makes it hold up
 

@@ -1031,7 +1031,7 @@ impl InsightStore for SqliteStore {
         })
     }
 
-    fn audit_mcp(
+    fn audit_api(
         &self,
         at: &str,
         tool: &str,
@@ -1042,7 +1042,7 @@ impl InsightStore for SqliteStore {
     ) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO mcp_audit (at, tool, scope, write, ok, detail)
+                "INSERT INTO api_audit (at, tool, scope, write, ok, detail)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![at, tool, scope, write as i64, ok as i64, detail],
             )

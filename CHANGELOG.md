@@ -6,11 +6,42 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-13
+
 ### Added
 
 - macOS: a Homebrew cask (`brew install --cask myrk-kale/tap/ataraxia`) that puts `Ataraxia.app` in
   Applications. The release now carries the app as `….app.tar.gz`; the formula still installs the bare
   binary for the command line.
+
+### Changed
+
+- Agents now act on Ataraxia through a local HTTP API instead of an MCP server. While the app runs it
+  serves the API on `127.0.0.1`, each agent process of a chat gets `ATARAXIA_API_URL`,
+  `ATARAXIA_API_TOKEN` and `ATARAXIA_SESSION_ID`, and the guide each agent reads on demand (now with an
+  `api.md` page in place of `tools.md`) explains how to call it from bash with curl. The token belongs
+  to one chat, and is read-only in hidden investigation sessions.
+- The release smoke test and the Homebrew formula test run `ataraxia --version` instead of starting the
+  MCP server.
+- The terminal shortcut is now `` Ctrl/Cmd+` `` only; `Ctrl/Cmd+J` no longer opens it. The terminal takes
+  keyboard focus when it opens, and focus goes back to where it was when it closes.
+
+### Removed
+
+- The MCP server (`ataraxia mcp`) and the MCP server screen in Settings.
+
+### Fixed
+
+- The Files tree, the Changed list and the open file now follow the repository by themselves: a
+  `git rm`, `checkout`, `stash` or `pull` in a terminal, or a file made, renamed or deleted by another
+  program, shows up within a few seconds. A file that disappears while open is marked removed, keeps
+  its text, and never loses unsaved edits.
+- Code no longer shows a diff nobody asked for. With no comparison chosen it shows only what the agent
+  changed in its last turn (the old comparison and the automatic working tree against `HEAD` are
+  gone), and otherwise says why there is nothing to show and to pick a branch or a commit in
+  "Compare with…".
+- The label above the Changed list (`feat/x against develop`) is cut with an ellipsis instead of
+  spilling over the editor, keeps the refresh button in place and shows the full text on hover.
 
 ## [0.1.0] - 2026-11-13
 
@@ -38,5 +69,6 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/myrk-kale/ataraxia/releases/tag/v0.1.0

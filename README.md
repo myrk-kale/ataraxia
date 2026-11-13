@@ -104,8 +104,9 @@ so it can read what was said before.
   <img alt="The chat with Codex: a reply with a code block and two tool calls, and the composer below" src="docs/images/chat-light.png" width="900">
 </picture>
 
-Every agent is also told what Ataraxia is. It reads its guide to decisions, flows and review comments only
-after you agree to them.
+Every agent is also told what Ataraxia is. Only after you agree to decisions, flows or review comments does
+it read its guide, which explains a small HTTP API that Ataraxia serves on localhost while it runs. The
+agent calls it from bash with curl, and its token belongs to that one chat.
 
 ## Make it yours
 
@@ -124,7 +125,7 @@ the terminal. Settings has the rest, including a switch for the few sounds the a
   </tr>
 </table>
 
-Everything has a shortcut: `Shift+↑/↓` changes screen, `Ctrl/Cmd+J` opens a terminal in the current worktree,
+Everything has a shortcut: `Shift+↑/↓` changes screen, `` Ctrl/Cmd+` `` opens a terminal in the current worktree,
 `J` and `K` step through the queue, `C` comments, and `?` lists them all.
 
 ## What stays on your machine
@@ -145,7 +146,7 @@ They are built by the release pipeline, never by hand.
 
 ```bash
 brew install --cask myrk-kale/tap/ataraxia   # Ataraxia.app, in Applications and in Launchpad
-brew install myrk-kale/tap/ataraxia          # or only the `ataraxia` binary, with `ataraxia mcp` for agents
+brew install myrk-kale/tap/ataraxia          # or only the `ataraxia` binary
 ```
 
 The app is not signed with an Apple Developer ID. The cask removes the quarantine mark from it, which is
@@ -156,16 +157,16 @@ Fedora 36 and newer, Arch and the like)
 
 ```bash
 brew install myrk-kale/tap/ataraxia                      # Homebrew on Linux
-sudo apt install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.deb   # Debian, Ubuntu
-sudo dnf install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.rpm   # Fedora, openSUSE
-chmod +x ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage && ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage
+sudo apt install ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.deb   # Debian, Ubuntu
+sudo dnf install ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.rpm   # Fedora, openSUSE
+chmod +x ataraxia-v0.1.1-x86_64-unknown-linux-gnu.AppImage && ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.AppImage
 ```
 
 The `.tar.gz` holds the bare binary. Whatever the route, the window needs GTK 3 and WebKitGTK 4.1 from
 the distribution (`sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0`, or `sudo dnf install webkit2gtk4.1
 gtk3`); the `.deb` and `.rpm` ask for them by themselves.
 
-**Windows** (x64): run `ataraxia-v0.1.0-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
+**Windows** (x64): run `ataraxia-v0.1.1-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
 or use the `.msi` for managed installs. The installer is not signed, so SmartScreen shows "More info
 > Run anyway". WebView2 is installed along with it when the machine lacks it.
 
@@ -203,7 +204,7 @@ To build what the release builds (the installers land in `src-tauri/target/relea
 ```bash
 pnpm tauri build                    # the packages for this system
 pnpm tauri build --bundles deb,rpm  # or choose them: app, dmg, deb, rpm, appimage, nsis, msi
-src-tauri/target/release/ataraxia   # the release binary; `ataraxia mcp --db <file>` is the MCP server
+src-tauri/target/release/ataraxia   # the release binary; `ataraxia --version` prints its version
 ```
 
 Frontend only (the browser gets a built-in Tauri mock, dev builds only, so the UI renders with sample data):

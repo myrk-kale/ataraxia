@@ -51,6 +51,11 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return matches(target, TEXT_SELECTOR);
 }
 
+/** Ctrl or Cmd with a backtick, no Alt or Shift: the terminal toggle. */
+export function isTerminalToggle(event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "`";
+}
+
 /** Maps a key press to an action, or `null` when the key must be left alone. */
 export function resolveShortcut(event: KeyLike, context: ShortcutContext): ShortcutAction | null {
   // Never during IME composition: those keys pick candidates.
@@ -63,7 +68,7 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
   // The terminal toggles from anywhere, even from inside a field or the terminal itself.
-  if (mod && !event.altKey && !event.shiftKey && (key === "j" || key === "`")) {
+  if (isTerminalToggle(event)) {
     return { type: "terminal" };
   }
   if (context.overlay) {
@@ -118,7 +123,7 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Shift", "↑/↓"], label: "Previous / next space", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },
-  { keys: ["Ctrl/⌘", "J"], label: "Toggle the terminal", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "`"], label: "Toggle the terminal", scope: "Everywhere" },
   { keys: ["Esc"], label: "Close the overlay or stop the running turn", scope: "Everywhere" },
   { keys: ["Alt", "V"], label: "Switch between the current version (editable) and the previous one (read-only)", scope: "Code" },
   { keys: ["Alt", "Z"], label: "Wrap long lines or let them run on", scope: "Code" },

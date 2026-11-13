@@ -1105,23 +1105,68 @@ fn review_marks_comments_and_file_versions_work_against_a_checkpoint() {
 }
 
 #[test]
-fn a_chat_with_no_checkpoint_gets_one_on_first_review_when_files_changed() {
+fn a_chat_with_no_checkpoint_shows_no_diff_until_one_is_asked_for() {
     let w = world();
-    assert!(
-        w.engine
-            .review(w.session.id, None)
-            .unwrap()
-            .checkpoint
-            .is_none()
-    );
     std::fs::write(w.repo.join("README.md"), "# edited by hand\n").unwrap();
-    let view = w.engine.review(w.session.id, None).unwrap();
-    let checkpoint = view.checkpoint.expect("manual checkpoint");
+    // Edited files alone are not a diff nobody chose: opening the review records nothing.
+    for _ in 0..2 {
+        let view = w.engine.review(w.session.id, None).unwrap();
+        assert!(view.checkpoint.is_none() && view.priority.is_none());
+    }
+    assert!(w.db.list_checkpoints(w.session.id).unwrap().is_empty());
+
+    // Asking for one ("Check for changes") records the working tree against HEAD.
+    let checkpoint = w
+        .engine
+        .refresh_checkpoint(w.session.id)
+        .unwrap()
+        .expect("manual checkpoint");
     assert_eq!(checkpoint.source, crate::domain::CheckpointSource::Manual);
     assert_eq!(checkpoint.files.len(), 1);
+    let view = w.engine.review(w.session.id, None).unwrap();
+    assert_eq!(view.checkpoint.unwrap().id, checkpoint.id);
     // Nothing changed since: the same checkpoint is reused.
     let again = w.engine.refresh_checkpoint(w.session.id).unwrap().unwrap();
     assert_eq!(again.id, checkpoint.id);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_comparison_is_shown_only_while_it_is_chosen_and_never_stands_in_for_the_agents_turns() {
+    let w = world();
+    git(&w.repo, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(w.repo.join("feature.py"), "def feature():\n    return 1\n").unwrap();
+    git(&w.repo, &["add", "."]);
+    git(&w.repo, &["commit", "-q", "-m", "feature work"]);
+
+    // A comparison on its own: asking for "no comparison" shows nothing, not that diff.
+    let compared = w.engine.compare(w.session.id, "main", None, true).unwrap();
+    assert_eq!(compared.files.len(), 1);
+    let view = w.engine.review(w.session.id, None).unwrap();
+    assert!(
+        view.checkpoint.is_none(),
+        "a stale comparison must not come back as the default view"
+    );
+    // It is still there by id, for as long as it is chosen.
+    let view = w.engine.review(w.session.id, Some(compared.id)).unwrap();
+    assert_eq!(view.checkpoint.unwrap().id, compared.id);
+
+    // The agent's turn is what the default view shows, even though the comparison came later.
+    agent_turn_editing(&w, "README.md", "# demo\nturn edit\n");
+    let turn = wait_for("turn checkpoint", || {
+        w.db.latest_checkpoint(w.session.id)
+            .unwrap()
+            .filter(|c| c.source == crate::domain::CheckpointSource::Turn)
+    });
+    let compared_again = w.engine.compare(w.session.id, "main", None, true).unwrap();
+    assert_ne!(compared_again.id, turn.id);
+    let view = w.engine.review(w.session.id, None).unwrap();
+    assert_eq!(view.checkpoint.unwrap().id, turn.id);
+
+    // An explicit check builds on the turn, not on the comparison.
+    std::fs::write(w.repo.join("README.md"), "# demo\nturn edit\nmore\n").unwrap();
+    let manual = w.engine.refresh_checkpoint(w.session.id).unwrap().unwrap();
+    assert_eq!(manual.base_rev, turn.head_rev);
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 

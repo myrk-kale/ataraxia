@@ -7,10 +7,13 @@ import {
   unitQueue,
   buildTree,
   languageFor,
+  latestOfTurns,
   lineChanges,
   mapLine,
+  noDiffMessage,
   reviewQueue,
   stepIn,
+  unchanged,
   visibleRows,
 } from "./model";
 
@@ -124,7 +127,46 @@ describe("diff target and unit queue", () => {
     expect(shownLabel(cp({}), "a1b2c3d", null)).toBe("Working tree against a1b2c3d");
     expect(shownLabel(cp({ source: "turn" }), null, "feature/x")).toBe("Last agent turn");
     expect(shownLabel(cp({ source: "manual" }), null, "feature/x")).toBe("Edits since the last check");
-    expect(shownLabel(null, null, null)).toBe("Nothing to review");
+    expect(shownLabel(null, null, null)).toBe("No comparison chosen");
+    // A comparison that is no longer chosen is never presented as something else.
+    expect(shownLabel(cp({ source: "compare" }), null, "feature/x")).toBe("No comparison chosen");
+  });
+
+  it("says why nothing is compared and what to do, whichever way there is no diff", () => {
+    // No reference picked, on a branch.
+    const onBranch = noDiffMessage(null, null, "feature/x");
+    expect(onBranch).toContain("No comparison chosen");
+    expect(onBranch).toContain("Pick a branch or a commit in Compare with…");
+    expect(onBranch).toContain("feature/x");
+    expect(onBranch).toContain("agent");
+    // No branch at all (a detached HEAD): say so and point at the header.
+    const detached = noDiffMessage(null, null, null);
+    expect(detached).toContain("not on a branch");
+    expect(detached).toContain("Switch to a branch in the header");
+    // A reference that cannot be compared says git's reason, with the reference named.
+    expect(noDiffMessage("develop", "there are no differences between develop and working tree", "feature/x")).toBe(
+      "Nothing to show against develop: there are no differences between develop and working tree",
+    );
+    expect(noDiffMessage("develop", null, "feature/x")).toBe("No differences against develop.");
+    for (const text of [onBranch, detached]) {
+      expect(text).not.toContain(String.fromCharCode(0x2014));
+    }
+  });
+
+  it("follows the agent's latest turn, never a comparison, and keeps what is on screen when a reload found nothing new", () => {
+    const list = [
+      { id: "a", source: "turn" },
+      { id: "b", source: "manual" },
+      { id: "c", source: "compare" },
+    ] as const;
+    expect(latestOfTurns(list)?.id).toBe("b");
+    expect(latestOfTurns([{ id: "c", source: "compare" }])).toBeNull();
+    expect(latestOfTurns([])).toBeNull();
+    const before = { files: ["a", "b"], n: 1 };
+    expect(unchanged(before, { files: ["a", "b"], n: 1 })).toBe(true);
+    expect(unchanged(before, { files: ["a"], n: 1 })).toBe(false);
+    expect(unchanged(null, null)).toBe(true);
+    expect(unchanged(null, before)).toBe(false);
   });
 
   it("orders units by criticality, then by place in the code", () => {

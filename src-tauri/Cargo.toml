@@ -1,6 +1,6 @@
 [package]
 name = "ataraxia-ide"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop environment for agent-assisted software development: chat with coding agents, review what they wrote, keep decisions and flows"
 authors = ["Kale"]
 edition = "2024"
@@ -26,8 +26,8 @@ include = [
 ]
 
 # The package is `ataraxia-ide` on crates.io (`ataraxia` belongs to another project), but the binary
-# is `ataraxia`: `ataraxia mcp` is how agents start the MCP server, and it is what the installers
-# put on the path.
+# is `ataraxia`: it is what the installers put on the path, and `ataraxia --version` is what the
+# release smoke test runs.
 [[bin]]
 name = "ataraxia"
 path = "src/main.rs"

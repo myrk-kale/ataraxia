@@ -1,13 +1,14 @@
 // Browser-only stand-in for the Tauri IPC so the UI can be reviewed with `pnpm dev`.
 // Never loaded inside the real app (main.tsx checks for __TAURI_INTERNALS__).
-import { handleInsights } from "./insightsMock";
+import { handleInsights, removeFile } from "./insightsMock";
 
 export {};
 
 const now = new Date().toISOString();
 const repo = { id: "r1", root: "/Users/dev/archipelago-backend", name: "archipelago-backend", created_at: now, updated_at: now };
 const worktrees = [
-  { id: "w1", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: "feature/course-mask", head: "d76d97b4", created_at: now, updated_at: now },
+  // `?branch=` previews a long branch name; `?branch=none` a worktree with no branch.
+  { id: "w1", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: (() => { const given = new URLSearchParams(window.location.search).get("branch"); return given === "none" ? null : (given ?? "feature/course-mask"); })(), head: "d76d97b4", created_at: now, updated_at: now },
   { id: "w2", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: "main", head: "a1b2c3d4", created_at: now, updated_at: now },
 ];
 const session = { id: "s1", repository_id: "r1", worktree_id: "w1", provider: "codex", title: "Refactor document generation", status: "ready", model: null as string | null, effort: null as string | null, agent: null as string | null, created_at: now, updated_at: now, last_opened_at: now };
@@ -167,3 +168,10 @@ w.__TAURI_INTERNALS__ = {
   convertFileSrc: (p: string) => p,
 };
 w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
+// What a terminal does to the preview: `__ataraxiaMock.removeFile("README.md")` is a `git rm`.
+w.__ataraxiaMock = {
+  removeFile: (path: string) => {
+    removeFile(path);
+    emit("worktree://files-changed", { worktreeId: "w1" });
+  },
+};

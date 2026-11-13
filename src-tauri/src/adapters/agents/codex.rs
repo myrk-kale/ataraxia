@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
     truncate_output,
 };
 use super::definitions::codex_agents;
@@ -137,7 +137,7 @@ impl AgentBackend for CodexBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: Vec::new(),
+                env: api_env(ctx.session_id, ctx.api.as_ref()),
                 env_remove: Vec::new(),
             },
             false,
@@ -1514,6 +1514,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

@@ -103,9 +103,12 @@ const TIP_MARGIN = 8;
  */
 export function Tip({
   label,
+  className = "inline-flex",
   children,
 }: {
   label: string;
+  /** Layout of the wrapper, for a Tip that sits in a flex row and has to shrink or stay put. */
+  className?: string;
   children: ReactElement<{ "aria-describedby"?: string }>;
 }) {
   const id = useId();
@@ -151,7 +154,7 @@ export function Tip({
   return (
     <span
       ref={wrapper}
-      className="inline-flex"
+      className={className}
       onBlur={hide}
       onFocus={(event) => {
         let visible = false;

@@ -21,7 +21,7 @@ use crate::domain::{
     PendingPermission, PermissionDecision, Result, SessionStatus, SubagentRecord, SubagentStatus,
     SubagentUpdate, ToolCallRecord, ToolStatus,
 };
-use crate::ports::{AgentRuntime, EventSink, InsightStore, Store};
+use crate::ports::{AgentRuntime, ApiGateway, EventSink, InsightStore, Store};
 
 struct Live {
     backend: Arc<dyn BackendSession>,
@@ -38,6 +38,8 @@ struct Live {
     chat: bool,
     /// Whether this agent process has been told about Ataraxia yet.
     introduced: bool,
+    /// The local API token this process runs with, revoked when the process is retired.
+    api_token: Option<String>,
 }
 
 /// A conversation that is shown as a subagent of another chat.
@@ -60,6 +62,8 @@ struct Inner {
     handoffs: Mutex<HashMap<SessionId, PathBuf>>,
     /// The page of the guide that a chat's agent is pointed at, when there is one.
     guide: Mutex<Option<PathBuf>>,
+    /// Issues the local API tokens that agent processes start with.
+    api: Mutex<Option<Arc<dyn ApiGateway>>>,
 }
 
 pub struct AgentHost {
@@ -79,6 +83,7 @@ impl AgentHost {
                 handoff_dir: Mutex::new(None),
                 handoffs: Mutex::new(HashMap::new()),
                 guide: Mutex::new(None),
+                api: Mutex::new(None),
             }),
             backends: HashMap::new(),
         }
@@ -87,6 +92,12 @@ impl AgentHost {
     /// The page of the guide to point each chat's agent at (see `guide::install`).
     pub fn with_guide(self, index: PathBuf) -> Self {
         *self.inner.guide.lock() = Some(index);
+        self
+    }
+
+    /// Gives every agent process a token for the local API, revoked when the process goes.
+    pub fn with_api(self, api: Arc<dyn ApiGateway>) -> Self {
+        *self.inner.api.lock() = Some(api);
         self
     }
 
@@ -117,17 +128,31 @@ impl AgentHost {
                 .map(|(session_id, live)| {
                     self.inner.persist(session_id, &live.transcript);
                     self.inner.persist_subagents(session_id, &live.subagents);
-                    live.backend
+                    (live.backend, live.api_token)
                 })
                 .collect()
         };
-        for backend in backends {
+        for (backend, token) in backends {
             backend.shutdown();
+            self.inner.revoke(token.as_deref());
         }
     }
 }
 
 impl Inner {
+    /// Stops a live agent process and takes its API token away.
+    fn retire(&self, live: &Live) {
+        live.backend.shutdown();
+        self.revoke(live.api_token.as_deref());
+    }
+
+    fn revoke(&self, token: Option<&str>) {
+        let Some(token) = token else { return };
+        if let Some(api) = self.api.lock().clone() {
+            api.revoke(token);
+        }
+    }
+
     /// Persist + emit a status change. Caller holds the sessions lock so event order is stable.
     fn publish_status(&self, session_id: SessionId, status: SessionStatus) {
         match now_rfc3339() {
@@ -666,7 +691,7 @@ impl AgentHost {
         let removed = self.inner.sessions.lock().remove(session_id);
         if let Some(live) = removed {
             self.inner.persist(*session_id, &live.transcript);
-            live.backend.shutdown();
+            self.inner.retire(&live);
         }
         self.start_session(session)
     }
@@ -762,7 +787,7 @@ impl AgentRuntime for AgentHost {
                 }
                 // The provider process died: drop the stale session and start a fresh one.
                 if let Some(dead) = sessions.remove(&session.id) {
-                    dead.backend.shutdown();
+                    self.inner.retire(&dead);
                     // Keep what the user already saw; the provider conversation itself restarts.
                     carried = dead.transcript;
                     carried_subagents = dead.subagents;
@@ -814,15 +839,30 @@ impl AgentRuntime for AgentHost {
                 inner.handle(session_id, event);
             }
         });
-        let started = backend.start(BackendContext {
+        // Investigation sessions only read; everything else may write.
+        let api = self
+            .inner
+            .api
+            .lock()
+            .as_ref()
+            .map(|gateway| gateway.issue(session_id, !session.kind.read_only()));
+        let api_token = api.as_ref().map(|access| access.token.clone());
+        let started = match backend.start(BackendContext {
             session_id,
             cwd: worktree.path,
             read_only: session.kind.read_only(),
             model: session.model.clone(),
             effort: session.effort.clone(),
             agent: session.agent.clone(),
+            api,
             emit,
-        })?;
+        }) {
+            Ok(started) => started,
+            Err(error) => {
+                self.inner.revoke(api_token.as_deref());
+                return Err(error);
+            }
+        };
 
         let mut sessions = self.inner.sessions.lock();
         sessions.insert(
@@ -838,6 +878,7 @@ impl AgentRuntime for AgentHost {
                 read_only: session.kind.read_only(),
                 chat: session.kind == crate::domain::SessionKind::Chat,
                 introduced: false,
+                api_token,
             },
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
@@ -1091,7 +1132,7 @@ impl AgentRuntime for AgentHost {
         if let Some(live) = removed {
             self.inner.persist(*session_id, &live.transcript);
             self.inner.persist_subagents(*session_id, &live.subagents);
-            live.backend.shutdown();
+            self.inner.retire(&live);
         }
     }
 
@@ -1303,6 +1344,13 @@ mod tests {
     }
 
     fn harness_with_backend(backend: Arc<dyn AgentBackend>) -> Harness {
+        harness_with_api(backend, None)
+    }
+
+    fn harness_with_api(
+        backend: Arc<dyn AgentBackend>,
+        api: Option<Arc<dyn ApiGateway>>,
+    ) -> Harness {
         let store = Arc::new(FakeStore::healthy());
         let repository_id = RepositoryId::new();
         let worktree_id = WorktreeId::new();
@@ -1344,13 +1392,16 @@ mod tests {
         };
         store.create_session(&session).expect("session");
         let sink = Arc::new(RecordingSink::default());
-        let host = AgentHost::new(store.clone(), sink.clone())
+        let mut host = AgentHost::new(store.clone(), sink.clone())
             .with_backend(ProviderKind::Fake, backend)
             // A second harness to switch to.
             .with_backend(
                 ProviderKind::Codex,
                 Arc::new(FakeBackend::new(Duration::ZERO)),
             );
+        if let Some(api) = api {
+            host = host.with_api(api);
+        }
         host.start_session(&session).expect("start");
         Harness {
             store,
@@ -1372,6 +1423,152 @@ mod tests {
             AgentEvent::TurnDone { ok, .. } => Some(*ok),
             _ => None,
         })
+    }
+
+    /// Hands out numbered tokens and remembers what was issued and revoked.
+    #[derive(Default)]
+    struct FakeGateway {
+        issued: Mutex<Vec<(SessionId, bool, String)>>,
+        revoked: Mutex<Vec<String>>,
+    }
+
+    impl ApiGateway for FakeGateway {
+        fn issue(&self, session_id: SessionId, write: bool) -> crate::ports::ApiAccess {
+            let mut issued = self.issued.lock();
+            let token = format!("token-{}", issued.len());
+            issued.push((session_id, write, token.clone()));
+            crate::ports::ApiAccess {
+                url: "http://127.0.0.1:1".into(),
+                token,
+            }
+        }
+
+        fn revoke(&self, token: &str) {
+            self.revoked.lock().push(token.to_string());
+        }
+    }
+
+    /// A fake backend that remembers the API access each start was given.
+    struct Spy {
+        inner: FakeBackend,
+        seen: Arc<Mutex<Vec<Option<crate::ports::ApiAccess>>>>,
+    }
+
+    impl AgentBackend for Spy {
+        fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+            self.seen.lock().push(ctx.api.clone());
+            self.inner.start(ctx)
+        }
+    }
+
+    #[test]
+    fn each_agent_process_gets_its_own_token_and_loses_it_when_it_stops() {
+        let gateway = Arc::new(FakeGateway::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let h = harness_with_api(
+            Arc::new(Spy {
+                inner: FakeBackend::new(Duration::ZERO),
+                seen: Arc::clone(&seen),
+            }),
+            Some(gateway.clone()),
+        );
+        // A chat may write; the process was handed the token the gateway issued.
+        assert_eq!(
+            gateway.issued.lock().clone(),
+            vec![(h.session.id, true, "token-0".to_string())]
+        );
+        assert_eq!(
+            seen.lock()[0].as_ref().map(|a| a.token.as_str()),
+            Some("token-0")
+        );
+
+        // A hidden investigation session only reads.
+        let mut btw = h.session.clone();
+        btw.id = SessionId::new();
+        btw.kind = crate::domain::SessionKind::Btw;
+        h.store.create_session(&btw).expect("btw session");
+        h.host.start_session(&btw).expect("start btw");
+        assert_eq!(
+            gateway.issued.lock()[1],
+            (btw.id, false, "token-1".to_string())
+        );
+
+        // Starting a running session again does not issue another token.
+        h.host
+            .start_session(&h.session)
+            .expect("restart is a no-op");
+        assert_eq!(gateway.issued.lock().len(), 2);
+        assert!(gateway.revoked.lock().is_empty());
+
+        // Stopping the process revokes its token, and only its own.
+        h.host.stop_session(&h.session.id);
+        assert_eq!(gateway.revoked.lock().clone(), vec!["token-0".to_string()]);
+
+        // A fresh process gets a fresh token.
+        h.host.start_session(&h.session).expect("start again");
+        assert_eq!(gateway.issued.lock()[2].2, "token-2");
+
+        // Shutting the app down revokes whatever is left.
+        h.host.shutdown_all();
+        let mut revoked = gateway.revoked.lock().clone();
+        revoked.sort();
+        assert_eq!(revoked, vec!["token-0", "token-1", "token-2"]);
+    }
+
+    #[test]
+    fn a_backend_that_cannot_start_does_not_leave_a_live_token_behind() {
+        struct Refuses;
+        impl AgentBackend for Refuses {
+            fn start(&self, _ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+                Err(Error::new(ErrorCode::Agent, "no"))
+            }
+        }
+        let gateway = Arc::new(FakeGateway::default());
+        let store = Arc::new(FakeStore::healthy());
+        let repository_id = RepositoryId::new();
+        let worktree_id = WorktreeId::new();
+        store
+            .upsert_repository(&Repository {
+                id: repository_id,
+                root: PathBuf::from("/tmp/repo"),
+                name: "repo".into(),
+                created_at: "t".into(),
+                updated_at: "t".into(),
+            })
+            .expect("repo");
+        store
+            .upsert_worktree(&Worktree {
+                id: worktree_id,
+                repository_id,
+                path: PathBuf::from("/tmp/repo"),
+                branch: None,
+                head: None,
+                created_at: "t".into(),
+                updated_at: "t".into(),
+            })
+            .expect("worktree");
+        let session = ChatSession {
+            id: SessionId::new(),
+            repository_id,
+            worktree_id,
+            provider: ProviderKind::Fake,
+            title: "Chat".into(),
+            status: SessionStatus::Idle,
+            model: None,
+            effort: None,
+            agent: None,
+            kind: crate::domain::SessionKind::Chat,
+            parent_session_id: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            last_opened_at: None,
+        };
+        store.create_session(&session).expect("session");
+        let host = AgentHost::new(store, Arc::new(RecordingSink::default()))
+            .with_backend(ProviderKind::Fake, Arc::new(Refuses))
+            .with_api(gateway.clone());
+        assert!(host.start_session(&session).is_err());
+        assert_eq!(gateway.revoked.lock().clone(), vec!["token-0".to_string()]);
     }
 
     #[test]

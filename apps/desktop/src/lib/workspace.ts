@@ -70,6 +70,7 @@ export type BranchView = {
 export type BranchList = { branches: BranchView[]; workspace: WorkspaceSnapshot };
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export function emptyWorkspace(): WorkspaceSnapshot {
   return {
@@ -128,4 +129,12 @@ export function workspaceListBranches(worktreeId: WorktreeId) {
 /** Tries to move to a branch; when git refuses, the rejection says why and nothing changed. */
 export function workspaceSelectBranch(worktreeId: WorktreeId, name: string) {
   return invoke<WorkspaceSnapshot>("workspace_select_branch", { worktreeId, name });
+}
+
+/**
+ * The files of the selected worktree changed under the app (a removal, a checkout or a pull in a
+ * terminal, a file deleted by another program). Resolves to the function that stops listening.
+ */
+export function listenFilesChanged(handler: (worktreeId: WorktreeId) => void): Promise<UnlistenFn> {
+  return listen<{ worktreeId: WorktreeId }>("worktree://files-changed", (event) => handler(event.payload.worktreeId));
 }

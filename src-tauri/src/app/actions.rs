@@ -2,7 +2,7 @@
 //! component's priority in the review queue. Never something an agent does by itself: the chat or
 //! BTW calls these because the developer asked, and every result is reported back in words.
 //!
-//! These work on the store alone, so the chat's MCP server and the BTW engine share them.
+//! These work on the store alone, so the chat's local API and the BTW engine share them.
 
 use serde_json::Value;
 use uuid::Uuid;

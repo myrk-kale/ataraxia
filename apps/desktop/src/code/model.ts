@@ -234,10 +234,41 @@ export function shownLabel(
   if (reference) {
     return `${branch ?? "Working tree"} against ${reference}`;
   }
-  if (!checkpoint) {
-    return "Nothing to review";
+  if (!checkpoint || checkpoint.source === "compare") {
+    return "No comparison chosen";
   }
   return checkpoint.source === "turn" ? "Last agent turn" : "Edits since the last check";
+}
+
+/**
+ * Why the Changed and Components lists are empty, and what to do about it. Nothing is compared
+ * unless a reference was picked: without one, only what the agent changed in a turn can show.
+ */
+export function noDiffMessage(reference: string | null, problem: string | null, branch: string | null): string {
+  if (reference) {
+    return problem ? `Nothing to show against ${reference}: ${problem}` : `No differences against ${reference}.`;
+  }
+  if (problem) {
+    return problem;
+  }
+  const after = "What the agent changes shows here after each of its turns.";
+  return branch
+    ? `No comparison chosen. Pick a branch or a commit in Compare with… (in the header) to see what ${branch} changes against it. ${after}`
+    : `This worktree is not on a branch, so there is nothing to compare. Switch to a branch in the header, then pick what to compare it with in Compare with…. ${after}`;
+}
+
+/** The checkpoint a review follows when none is chosen: the latest that is not a comparison. */
+export function latestOfTurns<T extends Pick<Checkpoint, "source">>(checkpoints: readonly T[]): T | null {
+  return [...checkpoints].reverse().find((item) => item.source !== "compare") ?? null;
+}
+
+/** Two values that serialize alike: a reload that found nothing new keeps what is on screen. */
+export function unchanged<T>(before: T, after: T): boolean {
+  try {
+    return before === after || JSON.stringify(before) === JSON.stringify(after);
+  } catch {
+    return false;
+  }
 }
 
 /** Units in the order to review them: most critical first, then by position. */

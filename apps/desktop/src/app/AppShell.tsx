@@ -622,7 +622,7 @@ export function AppShell() {
               ) : null}
             </Button>
           </Tip>
-          <Tip label="Terminal (Ctrl/⌘ J)">
+          <Tip label="Terminal (Ctrl/⌘ `)">
             <Button
               aria-label="Toggle terminal"
               aria-pressed={terminalOpen}
@@ -749,9 +749,7 @@ export function AppShell() {
       <SettingsDialog
         isOpen={settingsOpen}
         provider={selectedSession?.provider ?? null}
-        repository={selectedRepository}
         onClose={() => setSettingsOpen(false)}
-        onError={setError}
       />
       <Toast message={error} onDismiss={() => setError(null)} />
     </div>
