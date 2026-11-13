@@ -1,22 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { AsciiBackground } from "./AsciiBackground";
-import { MARK_HEIGHT, MARK_STROKE } from "./BrandMark";
-import { layout, pathD, type Placement } from "./glyphs";
-import { introEnabled, lerpPlacement, settleAt, strokeProgress, wordPlacement } from "./timeline";
+import { layout, pathD } from "./glyphs";
+import { introEnabled, settleAt, strokeProgress, wordPlacement } from "./timeline";
 
 const WORD = layout();
-/** Line width of the letters on screen; the first A thickens to the logo's as it lands. */
+/** Line width of the letters on screen. */
 const LETTER_STROKE = 1.2;
-const FALLBACK_MARK = { left: 29, top: 20, height: MARK_HEIGHT };
-
-/** Where the first A lands: the real logo in the header, measured on every frame. */
-function markPlacement(): Placement {
-  const rect = document.querySelector<HTMLElement>('[data-intro="mark"]')?.getBoundingClientRect() ?? FALLBACK_MARK;
-  return { ox: rect.left, oy: rect.top, s: rect.height / 100 };
-}
 
 /**
- * The opening of the app (see timeline.ts): ATARAXIA is drawn, and its first A becomes the logo.
+ * The opening of the app (see timeline.ts): ATARAXIA is drawn, then fades into the interface.
  * It sits over the interface, already rendered underneath, and removes itself at the end.
  * Skipped for people who prefer reduced motion.
  */
@@ -55,21 +47,16 @@ export function Intro() {
       }
       const home = wordPlacement(window.innerWidth, window.innerHeight);
       WORD.items.forEach((letter) => {
-        const lead = letter.index === 0;
-        // The first A is the only letter that moves on its own; the others keep their place.
-        const place = lead ? lerpPlacement(home, markPlacement(), settle.travel) : home;
-        const dx = lead ? 0 : letter.x;
         letter.glyph.strokes.forEach((cmds, k) => {
           const element = paths.current[letter.index]?.[k];
           if (!element) {
             return;
           }
           const progress = strokeProgress(elapsed, letter.index, k, letter.glyph.strokes.length);
-          element.setAttribute("d", pathD(cmds, place, dx));
+          element.setAttribute("d", pathD(cmds, home, letter.x));
           element.setAttribute("stroke-dashoffset", String(1 - progress));
           element.style.visibility = progress > 0 ? "visible" : "hidden";
-          element.style.opacity = lead ? "1" : String(1 - settle.fade);
-          element.setAttribute("stroke-width", String(LETTER_STROKE + (lead ? (MARK_STROKE - LETTER_STROKE) * settle.travel : 0)));
+          element.style.opacity = String(1 - settle.fade);
         });
       });
       if (backdropRef.current) {

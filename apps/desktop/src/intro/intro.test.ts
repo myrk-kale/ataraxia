@@ -3,7 +3,6 @@ import { GLYPHS, layout, pathD, TRACKING, WORD } from "./glyphs";
 import {
   DRAW_END_MS,
   INTRO_MS,
-  lerpPlacement,
   SETTLE_START_MS,
   settleAt,
   strokeProgress,
@@ -85,18 +84,15 @@ describe("timing", () => {
 
   it("keeps the interface hidden while the word is drawn and holds before moving", () => {
     const held = settleAt(SETTLE_START_MS - 1);
-    expect(held).toMatchObject({ fade: 0, travel: 0, backdrop: 1, done: false });
+    expect(held).toMatchObject({ fade: 0, backdrop: 1, done: false });
   });
 
-  it("then fades the other letters, moves the first A and clears the backdrop", () => {
+  it("then fades the letters and clears the backdrop", () => {
     const mid = settleAt(SETTLE_START_MS + 300);
     expect(mid.fade).toBeGreaterThan(0);
-    expect(mid.travel).toBeGreaterThan(0);
-    expect(mid.travel).toBeLessThan(1);
     expect(mid.backdrop).toBeLessThan(1);
     const end = settleAt(INTRO_MS - 1);
     expect(end).toMatchObject({ fade: 1, backdrop: 0, done: false });
-    expect(end.travel).toBeGreaterThan(0.99);
     expect(settleAt(INTRO_MS).done).toBe(true);
   });
 
@@ -105,16 +101,8 @@ describe("timing", () => {
     for (let t = 10; t <= INTRO_MS; t += 10) {
       const now = settleAt(t);
       expect(now.fade).toBeGreaterThanOrEqual(before.fade);
-      expect(now.travel).toBeGreaterThanOrEqual(before.travel);
       expect(now.backdrop).toBeLessThanOrEqual(before.backdrop);
       before = now;
     }
-  });
-
-  it("moves the first A between two placements exactly", () => {
-    const a = { ox: 100, oy: 300, s: 0.56 };
-    const b = { ox: 29, oy: 20, s: 0.2 };
-    expect(lerpPlacement(a, b, 0)).toEqual(a);
-    expect(lerpPlacement(a, b, 1)).toEqual(b);
   });
 });

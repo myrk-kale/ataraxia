@@ -4,6 +4,8 @@ import { Button } from "../../ui/Button";
 import { QuietSelect, type SelectOption } from "../../ui/QuietSelect";
 import { AREAS, SIZE_LIMITS, type FontArea } from "./fonts";
 import { installedFonts } from "./installedFonts";
+import { useBackground } from "../../chat/background";
+import { Toggle } from "../../ui/Overlay";
 import { BUILT_IN_THEMES, useAppearance, type Mode } from "./store";
 
 const SWATCHES = ["--cg-canvas", "--cg-panel", "--cg-ink", "--cg-accent", "--cg-green", "--cg-red"] as const;
@@ -100,6 +102,7 @@ const MODES: { id: Mode; label: string }[] = [
 /** Theme and typefaces: the two things that change how the whole app looks. */
 export function AppearanceSettings() {
   const { themeId, mode, themes, imported, kind, setTheme, setMode, importThemes, removeTheme, resetFonts } = useAppearance();
+  const background = useBackground();
   const picker = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<{ text: string; problem: boolean }[]>([]);
 
@@ -213,6 +216,16 @@ export function AppearanceSettings() {
             type="file"
             onChange={(event) => void onFiles(event.target.files)}
           />
+        </SettingRow>
+      </section>
+
+      <section aria-label="Background" className="flex flex-col">
+        <h3 className="mb-1 text-small font-semibold text-cg-muted-strong">Background</h3>
+        <SettingRow
+          hint="The A of ATARAXIA as slow ASCII art while a chat has not begun. When it has, the A rises away and a faint field of characters keeps drifting behind the conversation, lit softly where the cursor passes. Off leaves the plain background. It is a still picture when the computer asks for reduced motion."
+          title="Animated background"
+        >
+          <Toggle hideLabel isSelected={background.enabled} label="Animated background" onChange={background.set} />
         </SettingRow>
       </section>
 

@@ -217,6 +217,13 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return 1;
     }
+    case "agent_prompt": {
+      // A prompt starts the conversation: the user's message appears, as the real host reports it.
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      const turnId = `t${Date.now()}`;
+      emit("agent://event", { type: "delta", sessionId, turnId, role: "user", text: String(args?.text ?? "") });
+      return turnId;
+    }
     case "terminal_ensure": return { sessionId: "p1", created: true };
     default: {
       const result = handleInsights(cmd, args, emit);
