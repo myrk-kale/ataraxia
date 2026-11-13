@@ -1,4 +1,4 @@
-import { Check, CircleAlert, GitCompareArrows, Lock, RefreshCw, WrapText } from "lucide-react";
+import { Check, CircleAlert, GitCompareArrows, Lock, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -27,7 +27,7 @@ import {
   type Unit,
 } from "../lib/insights";
 import { errorCode, errorText, useInsightEvents } from "../lib/useInsightEvents";
-import type { ChatSession, Worktree } from "../lib/workspace";
+import { listenFilesChanged, type ChatSession, type Worktree } from "../lib/workspace";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { Segmented, Tip } from "../ui/Overlay";
@@ -40,12 +40,17 @@ import {
   shownLabel,
   fileScore,
   languageFor,
+  latestOfTurns,
   lineChanges,
   mapLine,
+  noDiffMessage,
   stepIn,
+  unchanged,
   unitLine,
   unitQueue,
 } from "./model";
+import { ShownRow } from "./ShownRow";
+import { createSyncScheduler } from "./sync";
 
 // Monaco is large and Code may never be opened: load it with the space, not with the app.
 const MonacoEditor = lazy(() => import("./MonacoEditor").then((module) => ({ default: module.MonacoEditor })));
@@ -95,6 +100,8 @@ type Doc = {
   head: string | null;
   /** The head is a fixed revision: `disk` holds that revision's text and nothing can be saved. */
   fixed: boolean;
+  /** The file was removed from disk while it was open; the buffer still holds its text. */
+  gone?: boolean;
 };
 
 export function CodeSpace({
@@ -161,18 +168,24 @@ export function CodeSpace({
     }
   }
 
+  // `quiet` is a reload nobody asked for (the files changed under the app): it never shows a
+  // notice for a hiccup and leaves the screen alone when it found nothing new.
   const loadReview = useCallback(
-    async (checkpointId: string | null) => {
+    async (checkpointId: string | null, quiet = false) => {
       if (!sessionId) {
         setReview(null);
         setReviewState(READY);
         return;
       }
       try {
-        setReview(await codeReview(sessionId, checkpointId));
+        const next = await codeReview(sessionId, checkpointId);
+        setReview((current) => (unchanged(current, next) ? current : next));
         reviewShown.current = true;
         setReviewState(READY);
       } catch (err) {
+        if (quiet) {
+          return;
+        }
         // Once a review is on screen a failed refresh is a notice; before that it is the screen.
         if (reviewShown.current) {
           onError(errorText(err));
@@ -186,27 +199,34 @@ export function CodeSpace({
 
   /**
    * What the review shows: the current branch against the reference the header picked, or, with
-   * no reference, the agent's latest turn. Comparing records the working tree as it is now, so
-   * asking again after an edit shows the edit.
+   * no reference, only what the agent changed in its last turn (nothing is compared by default).
+   * Comparing records the working tree as it is now, so asking again after an edit shows the edit.
    */
-  const openTarget = useCallback(async () => {
-    if (reference && sessionId) {
-      try {
-        const compared = await codeCompare(sessionId, reference, null, true);
-        setCompareProblem(null);
-        await loadReview(compared.id);
-        return;
-      } catch (err) {
-        setReview(null);
-        reviewShown.current = true;
-        setReviewState(READY);
-        setCompareProblem(errorText(err));
-        return;
+  const openTarget = useCallback(
+    async (quiet = false) => {
+      if (reference && sessionId) {
+        try {
+          const compared = await codeCompare(sessionId, reference, null, true);
+          setCompareProblem(null);
+          await loadReview(compared.id, quiet);
+          return;
+        } catch (err) {
+          // A hiccup while the files are changing (git busy) is not an answer: keep what is shown.
+          if (quiet && errorCode(err) !== "invalid" && errorCode(err) !== "not-found") {
+            return;
+          }
+          setReview(null);
+          reviewShown.current = true;
+          setReviewState(READY);
+          setCompareProblem(errorText(err));
+          return;
+        }
       }
-    }
-    setCompareProblem(null);
-    await loadReview(null);
-  }, [reference, sessionId, loadReview]);
+      setCompareProblem(null);
+      await loadReview(null, quiet);
+    },
+    [reference, sessionId, loadReview],
+  );
 
   useEffect(() => {
     setDoc(null);
@@ -217,20 +237,31 @@ export function CodeSpace({
     void openTarget();
   }, [openTarget]);
 
-  const loadTree = useCallback(() => {
-    if (!worktreeId) {
-      setTree([]);
-      setTreeState(READY);
-      return;
-    }
-    setTreeState(LOADING);
-    codeTree(worktreeId)
-      .then((paths) => {
-        setTree(paths);
+  // `quiet`: the files changed under the app, so the list is read again without a spinner and the
+  // screen is left alone when it came back the same.
+  const loadTree = useCallback(
+    (quiet = false) => {
+      if (!worktreeId) {
+        setTree([]);
         setTreeState(READY);
-      })
-      .catch((err: unknown) => setTreeState({ kind: "failed", message: errorText(err) }));
-  }, [worktreeId]);
+        return;
+      }
+      if (!quiet) {
+        setTreeState(LOADING);
+      }
+      codeTree(worktreeId)
+        .then((paths) => {
+          setTree((current) => (unchanged(current, paths) ? current : paths));
+          setTreeState(READY);
+        })
+        .catch((err: unknown) => {
+          if (!quiet) {
+            setTreeState({ kind: "failed", message: errorText(err) });
+          }
+        });
+    },
+    [worktreeId],
+  );
 
   useEffect(() => {
     loadTree();
@@ -259,10 +290,12 @@ export function CodeSpace({
     }
     if (event.type === "checkpoint" && event.sessionId === sessionId) {
       if (reference) {
-        void openTarget();
+        void openTarget(true);
         return;
       }
-      void loadReview(checkpoint && review?.checkpoints.at(-1)?.id !== checkpoint.id ? checkpoint.id : null);
+      // The view follows the agent's latest turn; a comparison made earlier does not count.
+      const latest = latestOfTurns(review?.checkpoints ?? []);
+      void loadReview(checkpoint && latest?.id !== checkpoint.id ? checkpoint.id : null);
     }
   });
 
@@ -356,8 +389,10 @@ export function CodeSpace({
 
   // The current version is the working tree, so it can be edited. The previous version is the past,
   // and so is a branch or commit taken as the head: neither can be.
-  const readOnly = version === "previous" || !doc?.disk || Boolean(doc?.fixed);
   const dirty = doc?.disk && !doc.fixed ? doc.buffer !== doc.disk.text : false;
+  // A file removed from disk is read-only unless it holds edits that were not saved: those stay
+  // editable so they can still be written back.
+  const readOnly = version === "previous" || !doc?.disk || Boolean(doc?.fixed) || Boolean(doc?.gone && !dirty);
   // The file changed after the checkpoint was taken: "current" is no longer what it recorded.
   const editedSince = Boolean(doc && !doc.fixed && doc.head !== null && doc.disk && doc.disk.text !== doc.head);
   const hasPrevious = Boolean(doc && (doc.base !== null || !doc.disk));
@@ -391,15 +426,16 @@ export function CodeSpace({
         return;
       }
       const text = editor.current?.value() ?? current.buffer;
-      if (text === current.disk.text && !overwrite) {
+      // A file removed from disk is written again as it is (nothing there to conflict with).
+      if (text === current.disk.text && !overwrite && !current.gone) {
         return;
       }
       setSaving(true);
       try {
-        const mtimeMs = await codeWrite(worktreeId, current.path, text, overwrite ? null : current.disk.mtimeMs);
+        const mtimeMs = await codeWrite(worktreeId, current.path, text, overwrite || current.gone ? null : current.disk.mtimeMs);
         setDoc((state) =>
           state && state.path === current.path
-            ? { ...state, buffer: text, disk: state.disk ? { ...state.disk, text, mtimeMs } : state.disk }
+            ? { ...state, gone: false, buffer: text, disk: state.disk ? { ...state.disk, text, mtimeMs } : state.disk }
             : state,
         );
         setConflict(false);
@@ -449,30 +485,139 @@ export function CodeSpace({
     }
   }, [worktreeId, onError]);
 
+  // Reads the open file again: another program, or a git command in a terminal, may have changed
+  // or removed it. A clean buffer follows the disk; one with unsaved edits is never replaced (a
+  // change is a conflict, a removal keeps the text on screen and says so).
+  const syncOpenDoc = useCallback(async () => {
+    const current = docRef.current;
+    if (!current || current.fixed || !worktreeId) {
+      return;
+    }
+    let disk: FileContent;
+    try {
+      disk = await codeRead(worktreeId, current.path);
+    } catch (err) {
+      if (errorCode(err) === "not-found" && current.disk) {
+        setDoc((state) => (state && state.path === current.path && !state.gone ? { ...state, gone: true } : state));
+      }
+      return;
+    }
+    const latest = docRef.current;
+    if (!latest || latest.path !== current.path || latest.fixed) {
+      return;
+    }
+    if (!latest.disk) {
+      // It was missing when opened and is back.
+      setDoc((state) => (state && state.path === latest.path ? { ...state, disk, buffer: disk.text, gone: false } : state));
+      setVersion("current");
+      return;
+    }
+    if (disk.mtimeMs === latest.disk.mtimeMs && !latest.gone) {
+      return;
+    }
+    if (latest.buffer === latest.disk.text) {
+      setDoc((state) => (state && state.path === latest.path ? { ...state, disk, buffer: disk.text, gone: false } : state));
+    } else {
+      setDoc((state) => (state && state.path === latest.path && state.gone ? { ...state, gone: false } : state));
+      setConflict(true);
+    }
+  }, [worktreeId]);
+
   // Another program may change the file while the window is in the background.
   useEffect(() => {
-    async function onFocus() {
-      const current = docRef.current;
-      if (!current?.disk || current.fixed || !worktreeId) {
-        return;
-      }
-      try {
-        const disk = await codeRead(worktreeId, current.path);
-        if (disk.mtimeMs === current.disk.mtimeMs) {
-          return;
-        }
-        if (current.buffer === current.disk.text) {
-          setDoc((state) => (state && state.path === current.path ? { ...state, disk, buffer: disk.text } : state));
-        } else {
-          setConflict(true);
-        }
-      } catch {
-        // The file may have been removed; the next save reports it.
-      }
-    }
+    const onFocus = () => void syncOpenDoc();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, [syncOpenDoc]);
+
+  // The files changed under the app (the core noticed it: a git command in a terminal, a file
+  // made or deleted by another program): read again the views over them.
+  const syncFromGit = useCallback(() => {
+    loadTree(true);
+    if (reference) {
+      void openTarget(true);
+    }
+    void syncOpenDoc();
+  }, [loadTree, reference, openTarget, syncOpenDoc]);
+  const syncRef = useRef(syncFromGit);
+  syncRef.current = syncFromGit;
+  useEffect(() => {
+    if (!worktreeId) {
+      return;
+    }
+    // Bursts become one reload, and none runs while the space or the window cannot be seen.
+    const scheduler = createSyncScheduler({
+      run: () => syncRef.current(),
+      canRun: () => !document.hidden && fileSection.current !== null && fileSection.current.offsetParent !== null,
+    });
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenFilesChanged((id) => {
+      if (id === worktreeId) {
+        scheduler.request();
+      }
+    }).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
+    const resume = () => scheduler.resume();
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("focus", resume);
+    const seen =
+      typeof IntersectionObserver === "function" && fileSection.current
+        ? new IntersectionObserver((entries) => entries.some((entry) => entry.isIntersecting) && scheduler.resume())
+        : null;
+    if (seen && fileSection.current) {
+      seen.observe(fileSection.current);
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+      scheduler.dispose();
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("focus", resume);
+      seen?.disconnect();
+    };
   }, [worktreeId]);
+
+  // A new checkpoint (a comparison read again, a turn that ended) changes what the open file is
+  // compared with: both sides are read again so the marks and the "edited since" notice are true.
+  const checkpointId = checkpoint?.id ?? null;
+  useEffect(() => {
+    const current = docRef.current;
+    if (!current || current.fixed) {
+      return;
+    }
+    let cancelled = false;
+    const inside = checkpoint?.files.some((file) => file.path === current.path) ?? false;
+    void (async () => {
+      try {
+        const [head, base] =
+          checkpoint && inside
+            ? await Promise.all([codeFileAt(checkpoint.id, current.path, "head"), codeFileAt(checkpoint.id, current.path, "base")])
+            : [null, null];
+        if (cancelled) {
+          return;
+        }
+        setDoc((state) =>
+          state && state.path === current.path && (state.head !== head || state.base !== base) ? { ...state, head, base } : state,
+        );
+        if (!inside) {
+          setVersion((now) => (now === "previous" && docRef.current?.disk ? "current" : now));
+        }
+      } catch {
+        // The sides stay as they were; the next change reads them again.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only another checkpoint reads the sides again; opening a file reads them itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkpointId]);
 
   async function mark(state: ReviewState) {
     if (!checkpoint || !doc) {
@@ -639,7 +784,7 @@ export function CodeSpace({
         return <Loading text="Reading the project files…" />;
       }
       if (treeState.kind === "failed") {
-        return <Empty action={{ label: "Try again", onClick: loadTree }} text={`Could not read the project files: ${treeState.message}`} />;
+        return <Empty action={{ label: "Try again", onClick: () => loadTree() }} text={`Could not read the project files: ${treeState.message}`} />;
       }
       return (
         <ProjectTree
@@ -684,13 +829,7 @@ export function CodeSpace({
       return (
         <Empty
           action={{ label: reference ? "Check again" : "Check for changes", onClick: () => void refreshCheckpoint() }}
-          text={
-            compareProblem
-              ? reference
-                ? `Nothing to show against ${reference}: ${compareProblem}`
-                : compareProblem
-              : "No changes to review yet. They appear when the agent finishes a turn, or pick a branch or commit to compare with in the header."
-          }
+          text={noDiffMessage(reference, compareProblem, worktree?.branch ?? null)}
         />
       );
     }
@@ -716,24 +855,16 @@ export function CodeSpace({
         <div className="flex flex-col gap-2 px-3 pt-3 pb-2">
           <Segmented<Mode> label="Navigator" options={MODES} value={mode} onChange={setMode} />
           {mode !== "tree" && session ? (
-            <div className="flex items-center gap-1">
-              <Tip
-                label={
-                  reference
-                    ? "The current branch against the reference picked in the header, from where they split"
-                    : "What the agent changed last. Pick a branch or a commit in the header to compare against it."
-                }
-              >
-                <p aria-label="Showing" className="min-w-0 flex-1 truncate px-1.5 py-1 text-small text-cg-muted-strong">
-                  {shownLabel(checkpoint, reference, worktree?.branch ?? null)}
-                </p>
-              </Tip>
-              <Tip label={reference ? "Compare again with the working tree as it is now" : "Record the working tree as a new checkpoint"}>
-                <Button aria-label="Refresh checkpoint" variant="icon" onClick={() => void refreshCheckpoint()}>
-                  <RefreshCw size={14} />
-                </Button>
-              </Tip>
-            </div>
+            <ShownRow
+              hint={
+                reference
+                  ? "The current branch against the reference picked in the header, from where they split"
+                  : "Nothing is compared until a branch or a commit is picked in the header. Until then, what the agent changed last."
+              }
+              refreshHint={reference ? "Compare again with the working tree as it is now" : "Record the working tree as a new checkpoint"}
+              text={shownLabel(checkpoint, reference, worktree?.branch ?? null)}
+              onRefresh={() => void refreshCheckpoint()}
+            />
           ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody()}</div>
@@ -748,6 +879,7 @@ export function CodeSpace({
                 title={dirty ? `${doc.path}: unsaved changes. Press Ctrl or Cmd S to save.` : doc.path}
               >
                 {doc.path}
+                {doc.gone ? <span> (removed)</span> : null}
                 {dirty ? (
                   <>
                     <span aria-hidden="true"> *</span>
@@ -842,6 +974,28 @@ export function CodeSpace({
                     {state === "changes-requested" ? "Changes requested" : "Needs changes"}
                   </Button>
                 </div>
+              </div>
+            ) : null}
+
+            {doc.gone ? (
+              <div
+                className="flex items-center gap-3 border-b border-cg-line bg-cg-accent-bg px-4 py-2 text-small text-cg-ink"
+                data-testid="removed-banner"
+                role="alert"
+              >
+                <span className="flex-1">
+                  {dirty
+                    ? "This file was removed from disk. Your unsaved edits are still here."
+                    : "This file was removed from disk. Its last text is shown read-only."}
+                </span>
+                <Button variant="quiet" onClick={() => void save()}>
+                  Write it again
+                </Button>
+                {dirty ? null : (
+                  <Button variant="quiet" onClick={() => setDoc(null)}>
+                    Close
+                  </Button>
+                )}
               </div>
             ) : null}
 

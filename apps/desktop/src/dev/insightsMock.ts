@@ -97,6 +97,13 @@ const priority = {
 };
 
 const tree = [...files.map((f) => f.path), "src/studio/__init__.py", "src/studio/documents/__init__.py", "pyproject.toml", ".gitignore"].sort();
+// Files "removed in a terminal" from the preview (see `__ataraxiaMock` in tauriMock.ts).
+const removed = new Set<string>();
+export function removeFile(path: string) {
+  removed.add(path);
+}
+// `?review=none` previews a chat with no checkpoint: nothing is compared until one is picked.
+const noReview = new URLSearchParams(globalThis.location?.search ?? "").get("review") === "none";
 
 function sample(path: string, version: "base" | "head"): string {
   if (path.endsWith("tokens.py")) {
@@ -230,8 +237,12 @@ let btwTasks: Task[] = [];
 export function handleInsights(cmd: string, args: Record<string, unknown> | undefined, emit: Emit): { handled: boolean; value?: unknown } {
   const ok = (value: unknown) => ({ handled: true, value });
   switch (cmd) {
-    case "code_tree": return ok(tree);
-    case "code_read": return ok(read(String(args?.path)));
+    case "code_tree": return ok(tree.filter((path) => !removed.has(path)));
+    case "code_read":
+      if (removed.has(String(args?.path))) {
+        throw new Error(`error[not-found]: ${String(args?.path)} does not exist`);
+      }
+      return ok(read(String(args?.path)));
     case "code_write": {
       const path = String(args?.path);
       const entry = contents.get(path) ?? { text: "", mtimeMs: 1_000_000 };
@@ -242,6 +253,9 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
     }
     case "code_file_at": return ok(args?.side === "base" ? sample(String(args?.path), "base") : sample(String(args?.path), "head"));
     case "code_review": {
+      if (noReview && !args?.checkpointId) {
+        return ok({ checkpoints: [], checkpoint: null, priority: null, marks: [], comments: [], artifacts: [] });
+      }
       const target = args?.checkpointId === "cp1" ? earlier : args?.checkpointId === "cp-compare" ? { ...checkpoint, id: "cp-compare", seq: 3, source: "compare", base_label: "main (merge base)", head_label: "feature/x", head_live: false } : checkpoint;
       return ok({ checkpoints: target.id === "cp-compare" ? [earlier, checkpoint, target] : [earlier, checkpoint], checkpoint: target, priority: target === checkpoint ? priority : { files: fileScores.slice(2, 4), components: priority.components.slice(1, 3) }, marks: [{ checkpoint_id: "cp2", path: "src/studio/documents/service.py", state: "approved", updated_at: now }], comments: [{ id: "c1", checkpoint_id: "cp2", path: "src/studio/auth/tokens.py", line: 9, side: "head", text: "Should the hash be salted per user?", created_at: now }], artifacts: artifactList().filter((a) => a.checkpoint_id === target.id) });
     }

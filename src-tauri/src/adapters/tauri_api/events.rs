@@ -7,6 +7,9 @@ pub const AGENT_EVENT: &str = "agent://event";
 pub const INSIGHT_EVENT: &str = "insight://event";
 /// The worktrees or their branches changed under the app (a checkout in a terminal, say).
 pub const WORKSPACE_EVENT: &str = "workspace://changed";
+/// The files of the selected worktree changed (`{ "worktreeId": ... }`): added, removed,
+/// renamed or edited, by git or by anything else.
+pub const FILES_EVENT: &str = "worktree://files-changed";
 
 pub struct TauriEventSink {
     app: AppHandle,

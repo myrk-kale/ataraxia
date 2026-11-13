@@ -28,6 +28,19 @@ are the section of this file for its version.
 
 - The MCP server (`ataraxia mcp`) and the MCP server screen in Settings.
 
+### Fixed
+
+- The Files tree, the Changed list and the open file now follow the repository by themselves: a
+  `git rm`, `checkout`, `stash` or `pull` in a terminal, or a file made, renamed or deleted by another
+  program, shows up within a few seconds. A file that disappears while open is marked removed, keeps
+  its text, and never loses unsaved edits.
+- Code no longer shows a diff nobody asked for. With no comparison chosen it shows only what the agent
+  changed in its last turn (the old comparison and the automatic working tree against `HEAD` are
+  gone), and otherwise says why there is nothing to show and to pick a branch or a commit in
+  "Compare with…".
+- The label above the Changed list (`feat/x against develop`) is cut with an ellipsis instead of
+  spilling over the editor, keeps the refresh button in place and shows the full text on hover.
+
 ## [0.1.0] - 2026-11-13
 
 First release.

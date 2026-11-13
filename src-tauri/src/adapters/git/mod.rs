@@ -7,7 +7,9 @@ use crate::domain::{
     BranchInfo, ChangedFile, CommitInfo, Error, ErrorCode, FileChange, GitRefs, Hunk, RefInfo,
     RepoInfo, Result, WorktreeInfo,
 };
-use crate::ports::Git;
+use crate::ports::{FilesProbe, Git};
+
+mod probe;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitCli;
@@ -30,28 +32,15 @@ impl Git for GitCli {
     }
 
     fn head_marker(&self, worktree: &Path) -> Result<String> {
-        let dot_git = worktree.join(".git");
-        // A linked worktree has a `.git` file pointing at its own directory under the main one.
-        let git_dir = if dot_git.is_file() {
-            let text = std::fs::read_to_string(&dot_git)
-                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-            let target = text
-                .trim()
-                .strip_prefix("gitdir:")
-                .map(str::trim)
-                .ok_or_else(|| Error::new(ErrorCode::NotARepo, "unreadable .git file"))?;
-            let target = PathBuf::from(target);
-            if target.is_absolute() {
-                target
-            } else {
-                worktree.join(target)
-            }
-        } else {
-            dot_git
-        };
-        std::fs::read_to_string(git_dir.join("HEAD"))
-            .map(|text| text.trim().to_string())
-            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        probe::head_marker(worktree)
+    }
+
+    fn files_probe(&self, worktree: &Path) -> Result<FilesProbe> {
+        probe::files_probe(worktree)
+    }
+
+    fn status_stamp(&self, worktree: &Path) -> Result<String> {
+        probe::status_stamp(worktree)
     }
 
     fn list_branches(&self, worktree: &Path) -> Result<Vec<BranchInfo>> {

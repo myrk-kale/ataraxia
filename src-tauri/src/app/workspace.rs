@@ -1,5 +1,6 @@
 //! Workspace use-cases: repositories, worktrees, chat sessions.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use crate::domain::time::now_rfc3339;
 use crate::domain::{
     ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus, Worktree,
 };
-use crate::ports::{Git, Store};
+use crate::ports::{FilesProbe, Git, Store};
 
 const PREF_SELECTED_REPO: &str = "selected_repository_id";
 const PREF_SELECTED_WORKTREE: &str = "selected_worktree_id";
@@ -40,6 +41,14 @@ pub struct BranchView {
 pub struct BranchList {
     pub branches: Vec<BranchView>,
     pub workspace: WorkspaceSnapshot,
+}
+
+/// What the files of a worktree looked like the last time [`WorkspaceService::follow_files`]
+/// looked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilesSeen {
+    probe: FilesProbe,
+    status: String,
 }
 
 pub struct WorkspaceService<'a> {
@@ -309,6 +318,55 @@ impl<'a> WorkspaceService<'a> {
         Ok(changed)
     }
 
+    /// Follows the files of the selected worktree: notices when they changed under the app (a
+    /// `git rm`, `checkout`, `stash` or `pull` in a terminal, or a file made or deleted by
+    /// another program) and returns that worktree.
+    ///
+    /// Each call reads the probe (file reads only). The status, which costs a git process, is
+    /// read when the probe moved, when `check_status` says it is time, and the first time a
+    /// worktree is seen, which only fills `seen`. The index moving on its own (another tool
+    /// refreshing it) is not news: what counts is `HEAD`, or the status, differing from last time.
+    pub fn follow_files(
+        &self,
+        seen: &mut HashMap<WorktreeId, FilesSeen>,
+        check_status: bool,
+    ) -> Result<Option<WorktreeId>> {
+        let selected = self
+            .preference_id(PREF_SELECTED_WORKTREE)?
+            .and_then(|id| uuid::Uuid::parse_str(&id).ok())
+            .map(WorktreeId);
+        let worktree = match selected {
+            Some(id) => self.store.get_worktree(id)?,
+            None => None,
+        };
+        let Some(worktree) = worktree else {
+            seen.clear();
+            return Ok(None);
+        };
+        // Only the worktree on screen is watched; coming back to another one reads it fresh.
+        seen.retain(|id, _| *id == worktree.id);
+        // A worktree whose folder is gone or unreadable is left as it is.
+        let Ok(probe) = self.git.files_probe(&worktree.path) else {
+            return Ok(None);
+        };
+        let Some(before) = seen.get_mut(&worktree.id) else {
+            let status = self.git.status_stamp(&worktree.path).unwrap_or_default();
+            seen.insert(worktree.id, FilesSeen { probe, status });
+            return Ok(None);
+        };
+        let moved = before.probe != probe;
+        let head_moved = before.probe.head != probe.head;
+        before.probe = probe;
+        let mut changed = head_moved;
+        if moved || check_status {
+            if let Ok(status) = self.git.status_stamp(&worktree.path) {
+                changed |= before.status != status;
+                before.status = status;
+            }
+        }
+        Ok(changed.then_some(worktree.id))
+    }
+
     pub fn create_session(
         &self,
         repository_id: RepositoryId,
@@ -459,6 +517,72 @@ mod tests {
         let snapshot = service.open_repository(&root).expect("reopen");
         assert_eq!(snapshot.repositories.len(), 1);
         assert_eq!(store.list_repositories().unwrap().len(), 1);
+    }
+
+    fn probe(head: &str, index: &str) -> FilesProbe {
+        FilesProbe {
+            head: head.into(),
+            index: index.into(),
+        }
+    }
+
+    #[test]
+    fn the_status_is_read_only_when_something_moved_or_it_is_time_and_only_news_is_reported() {
+        let root = PathBuf::from("/tmp/ataraxia-files");
+        let git = FakeGit::with_repo(
+            root.clone(),
+            vec![WorktreeInfo {
+                path: root.clone(),
+                branch: Some("main".into()),
+                head: None,
+            }],
+        );
+        let mut store = FakeStore::default();
+        store.healthy = true;
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        let id = service.open_repository(&root).unwrap().selected_worktree_id;
+        let id = id.unwrap();
+        *git.files.lock().unwrap() = (probe("main c1", "i1"), "s1".into());
+        let mut seen = HashMap::new();
+
+        // The first look only learns.
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), None);
+        let learned = git.status_reads();
+
+        // Nothing moved and it is not time: no process, no news.
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), None);
+        assert_eq!(git.status_reads(), learned);
+        // It is time and nothing changed: the status is read, and it says nothing new.
+        assert_eq!(service.follow_files(&mut seen, true).unwrap(), None);
+        assert_eq!(git.status_reads(), learned + 1);
+
+        // The index moved (`git rm`, `stash`): the status is read at once and it differs.
+        *git.files.lock().unwrap() = (probe("main c1", "i2"), "s2".into());
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), Some(id));
+        assert_eq!(git.status_reads(), learned + 2);
+        assert_eq!(service.follow_files(&mut seen, true).unwrap(), None);
+
+        // The index touched by another tool (a refresh) with the same status is not news.
+        *git.files.lock().unwrap() = (probe("main c1", "i3"), "s2".into());
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), None);
+
+        // A commit that moved HEAD (a `pull`) is news even when the status stays clean.
+        *git.files.lock().unwrap() = (probe("main c2", "i3"), "s2".into());
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), Some(id));
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), None);
+
+        // A file changed by a program that never touches git shows on the next status read.
+        *git.files.lock().unwrap() = (probe("main c2", "i3"), "s3".into());
+        assert_eq!(service.follow_files(&mut seen, false).unwrap(), None);
+        assert_eq!(service.follow_files(&mut seen, true).unwrap(), Some(id));
+
+        // Only the worktree on screen is watched: with none selected, nothing is kept.
+        store.set_preference(PREF_SELECTED_WORKTREE, "").unwrap();
+        assert_eq!(service.follow_files(&mut seen, true).unwrap(), None);
+        assert!(seen.is_empty());
     }
 
     mod real_git {
@@ -784,6 +908,107 @@ mod tests {
             assert_eq!(head_name(&repo), "main");
             let _ = service.follow_git(&mut seen, false);
             assert!(!service.follow_git(&mut seen, false).unwrap());
+            let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+        }
+
+        #[test]
+        fn files_removed_added_renamed_or_changed_outside_the_app_are_followed() {
+            let (repo, other, store) = setup();
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            let id = service
+                .open_repository(&repo)
+                .unwrap()
+                .selected_worktree_id
+                .unwrap();
+            let mut seen = HashMap::new();
+            // Every look reads the status here, as the app does every few seconds.
+            let news = |seen: &mut HashMap<WorktreeId, FilesSeen>| {
+                service.follow_files(seen, true).unwrap() == Some(id)
+            };
+
+            // Learning, then quiet.
+            assert!(!news(&mut seen));
+            assert!(!news(&mut seen));
+
+            // `git rm` in a terminal.
+            git(&repo, &["rm", "-q", "a.txt"]);
+            assert!(news(&mut seen));
+            assert!(!news(&mut seen));
+            // `git stash` brings it back.
+            git(&repo, &["stash", "-q"]);
+            assert!(news(&mut seen));
+            assert!(repo.join("a.txt").exists());
+            // `git checkout` of another branch: files and HEAD both move.
+            git(&repo, &["checkout", "-q", "feature/b"]);
+            assert!(news(&mut seen));
+            assert!(!news(&mut seen));
+            // A fast-forward `pull`: the status stays clean, only HEAD moves.
+            git(&repo, &["checkout", "-q", "main"]);
+            assert!(news(&mut seen));
+            git(&repo, &["merge", "-q", "--ff-only", "feature/b"]);
+            assert!(news(&mut seen), "a fast-forward changes the files");
+            assert_eq!(
+                std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+                "changed on b\n"
+            );
+            // A plain file made, renamed and deleted with no git at all.
+            std::fs::write(repo.join("new.txt"), "x\n").unwrap();
+            assert!(news(&mut seen));
+            std::fs::rename(repo.join("new.txt"), repo.join("renamed.txt")).unwrap();
+            assert!(news(&mut seen));
+            std::fs::remove_file(repo.join("renamed.txt")).unwrap();
+            assert!(news(&mut seen));
+            // Editing a file that was already modified still counts.
+            std::fs::write(repo.join("a.txt"), "first edit\n").unwrap();
+            assert!(news(&mut seen));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(repo.join("a.txt"), "second edit\n").unwrap();
+            assert!(news(&mut seen));
+            assert!(!news(&mut seen));
+            // The worktree of another branch is followed as well once it is the one on screen,
+            // through its own `.git` file.
+            let other_id = service
+                .bootstrap()
+                .unwrap()
+                .worktrees
+                .into_iter()
+                .find(|w| w.path.canonicalize().ok() == other.canonicalize().ok())
+                .unwrap()
+                .id;
+            service.select_worktree(other_id).unwrap();
+            assert_eq!(service.follow_files(&mut seen, true).unwrap(), None);
+            std::fs::write(other.join("a.txt"), "edited over there\n").unwrap();
+            assert_eq!(
+                service.follow_files(&mut seen, true).unwrap(),
+                Some(other_id)
+            );
+            let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+        }
+
+        #[test]
+        fn looking_at_the_files_never_rewrites_the_index() {
+            let (repo, _other, store) = setup();
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            service.open_repository(&repo).unwrap();
+            let mut seen = HashMap::new();
+            // A touched file makes the index stale, which a plain `git status` would refresh.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+            let index = repo.join(".git/index");
+            let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+            for _ in 0..3 {
+                service.follow_files(&mut seen, true).unwrap();
+            }
+            assert_eq!(
+                std::fs::metadata(&index).unwrap().modified().unwrap(),
+                before
+            );
             let _ = std::fs::remove_dir_all(repo.parent().unwrap());
         }
 

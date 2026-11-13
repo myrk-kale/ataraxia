@@ -116,6 +116,15 @@ pub trait Syntax: Send + Sync {
     fn symbols(&self, path: &str, text: &str) -> Option<Vec<crate::domain::Symbol>>;
 }
 
+/// See [`Git::files_probe`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilesProbe {
+    /// `HEAD` as written, and the commit it resolves to when that can be told from the files.
+    pub head: String,
+    /// Size and modification time of the index.
+    pub index: String,
+}
+
 pub trait Git: Send + Sync {
     fn discover(&self, path: &Path) -> Result<RepoInfo>;
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>>;
@@ -124,6 +133,20 @@ pub trait Git: Send + Sync {
     /// without running git, so it is cheap enough to ask every second.
     fn head_marker(&self, _worktree: &Path) -> Result<String> {
         unsupported("head_marker")
+    }
+
+    /// What `HEAD` and the index look like right now, read without running git: the commit
+    /// `HEAD` resolves to, and the size and time of the index file. Cheap enough to ask every
+    /// second.
+    fn files_probe(&self, _worktree: &Path) -> Result<FilesProbe> {
+        unsupported("files_probe")
+    }
+
+    /// A fingerprint of the files of a worktree as git sees them: its `status` (tracked changes
+    /// and untracked files) together with the size and time of every file listed. It costs one
+    /// git process, so it is asked when the probe moved and now and then.
+    fn status_stamp(&self, _worktree: &Path) -> Result<String> {
+        unsupported("status_stamp")
     }
 
     /// Every local branch, newest first, with where each one is checked out.
