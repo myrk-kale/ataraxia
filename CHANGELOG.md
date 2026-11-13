@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-13
+
 ### Added
 
 - macOS: a Homebrew cask (`brew install --cask myrk-kale/tap/ataraxia`) that puts `Ataraxia.app` in
@@ -67,5 +69,6 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/myrk-kale/ataraxia/releases/tag/v0.1.0

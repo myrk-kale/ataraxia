@@ -157,16 +157,16 @@ Fedora 36 and newer, Arch and the like)
 
 ```bash
 brew install myrk-kale/tap/ataraxia                      # Homebrew on Linux
-sudo apt install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.deb   # Debian, Ubuntu
-sudo dnf install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.rpm   # Fedora, openSUSE
-chmod +x ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage && ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage
+sudo apt install ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.deb   # Debian, Ubuntu
+sudo dnf install ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.rpm   # Fedora, openSUSE
+chmod +x ataraxia-v0.1.1-x86_64-unknown-linux-gnu.AppImage && ./ataraxia-v0.1.1-x86_64-unknown-linux-gnu.AppImage
 ```
 
 The `.tar.gz` holds the bare binary. Whatever the route, the window needs GTK 3 and WebKitGTK 4.1 from
 the distribution (`sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0`, or `sudo dnf install webkit2gtk4.1
 gtk3`); the `.deb` and `.rpm` ask for them by themselves.
 
-**Windows** (x64): run `ataraxia-v0.1.0-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
+**Windows** (x64): run `ataraxia-v0.1.1-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
 or use the `.msi` for managed installs. The installer is not signed, so SmartScreen shows "More info
 > Run anyway". WebView2 is installed along with it when the machine lacks it.
 
