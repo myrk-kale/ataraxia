@@ -13,7 +13,7 @@ function render(selected: string | null, busy = false, subagents = SUBAGENTS) {
   return renderToStaticMarkup(
     <SubagentBar
       busy={busy}
-      mainLabel="Codex"
+      mainLabel="main"
       selected={selected}
       subagents={subagents}
       onSelect={() => {}}
@@ -29,7 +29,7 @@ describe("SubagentBar", () => {
 
   it("lists the main conversation and every subagent with its state", () => {
     const html = render(null);
-    expect(html).toContain("Codex");
+    expect(html).toContain("main");
     expect(html).toContain("Explore the repo");
     expect(html).toContain("Review the diff");
     expect(html).toContain("text-cg-green");

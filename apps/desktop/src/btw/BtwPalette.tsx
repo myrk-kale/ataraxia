@@ -42,6 +42,7 @@ export function BtwPalette({
   session,
   space,
   item,
+  others,
   providers,
   resume,
   onError,
@@ -51,6 +52,8 @@ export function BtwPalette({
   session: ChatSession | null;
   space: string;
   item: BtwContextItem | null;
+  /** What the other spaces have open (file, decision, diagram), so it is known from any of them. */
+  others: BtwContextItem[];
   providers: ProviderDescriptor[];
   /** A past investigation to reopen, from the session's history. */
   resume: BtwTask | null;
@@ -62,6 +65,8 @@ export function BtwPalette({
   const [task, setTask] = useState<BtwTask | null>(null);
   const [expanded, setExpanded] = useState<ChatSession | null>(null);
   const [live, setLive] = useState<ModelChoice[]>([]);
+  // Only a pick the user made is kept; until then the BTW follows the model the chat is on.
+  const [picked, setPicked] = useState<string | null>(remembered);
   const [choice, setChoice] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const sessionId = session?.id ?? null;
@@ -95,10 +100,19 @@ export function BtwPalette({
     requestAnimationFrame(() => input.current?.focus());
   }, [isOpen, resume, sessionId, onError]);
 
-  // What runs it: the last choice if it is still on offer, else the chat's own provider.
+  // What runs it: the user's own pick if it is still on offer, else the model the chat uses now.
   useEffect(() => {
-    setChoice((now) => (options.some((option) => option.value === now && !option.disabled) ? now : startingChoice(options, session, remembered())));
-  }, [options, session]);
+    setChoice(startingChoice(options, session, picked));
+  }, [options, session, picked]);
+
+  function pickModel(value: string) {
+    setPicked(value);
+    try {
+      window.localStorage.setItem(MODEL_KEY, value);
+    } catch {
+      // Not remembering the choice is harmless.
+    }
+  }
 
   // The answer streams in through the same events as any conversation.
   const taskSession = task?.session_id ?? null;
@@ -181,13 +195,8 @@ export function BtwPalette({
     setTask(null);
     const pick = choice ? decodePick(choice) : null;
     try {
-      window.localStorage.setItem(MODEL_KEY, choice);
-    } catch {
-      // Not remembering the choice is harmless.
-    }
-    try {
       setTask(
-        await btwStart(sessionId, "ask", text, { space, item }, "on-completion", false, pick?.provider ?? null, pick?.model ?? null),
+        await btwStart(sessionId, "ask", text, { space, item, active: others }, "on-completion", false, pick?.provider ?? null, pick?.model ?? null),
       );
       setQuestion("");
     } catch (err) {
@@ -207,6 +216,7 @@ export function BtwPalette({
           </div>
           <div className="min-h-0 flex-1">
             <ChatPanel
+              bare
               contextLabel={null}
               provider={providers.find((candidate) => candidate.kind === expanded.provider) ?? null}
               session={expanded}
@@ -226,7 +236,7 @@ export function BtwPalette({
     <Dialog isOpen={isOpen} label="BTW" placement="top" size="lg" wide onClose={onClose}>
       <div className="flex w-full flex-col">
         <form
-          className="flex items-center gap-2 pr-3"
+          className="flex items-center gap-1 pr-2"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
@@ -236,7 +246,7 @@ export function BtwPalette({
             ref={input}
             aria-label="Ask about what you are looking at"
             autoComplete="off"
-            className="min-w-0 flex-1 border-0 bg-transparent py-5 pl-6 text-heading text-cg-ink placeholder:text-cg-muted"
+            className="min-w-0 flex-1 border-0 bg-transparent py-3 pl-5 text-body text-cg-ink placeholder:text-cg-muted"
             disabled={!session}
             placeholder={session ? "Ask about what you are looking at…" : "Open a chat first"}
             readOnly={phase === "running"}
@@ -255,22 +265,23 @@ export function BtwPalette({
               }
             }}
           />
-          <div className="flex-none border-l border-cg-line pl-2">
+          <div className="flex-none">
             <QuietSelect
               aria-label="Model that runs it"
-              className="max-w-[240px] rounded-cg-md px-2.5 py-1.5 text-ui text-cg-muted-strong"
+              sound
+              className="max-w-[240px] rounded-cg-md px-2 py-1 text-small text-cg-muted-strong"
               disabled={!session || options.length === 0 || phase === "running"}
               options={options}
               searchable={options.length > 8}
               title="The model that answers this question"
               value={choice}
-              onChange={setChoice}
+              onChange={pickModel}
             />
           </div>
         </form>
 
         {hasResult ? (
-          <div className="flex flex-col gap-3 border-t border-cg-line px-6 py-4">
+          <div className="flex flex-col gap-3 border-t border-cg-line px-5 py-3.5">
             <div aria-live="polite" className="max-h-[46vh] overflow-y-auto text-ui leading-6 text-cg-ink">
               {shown ? (
                 <Markdown text={shown} />

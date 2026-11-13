@@ -1,4 +1,4 @@
-import { Check, CircleAlert, GitCompareArrows, Lock, RefreshCw } from "lucide-react";
+import { Check, CircleAlert, GitCompareArrows, Lock, RefreshCw, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -73,6 +73,16 @@ function readMode(): Mode {
   return "components";
 }
 
+const WRAP_KEY = "ataraxia.codeWrap";
+
+function readWrap(): boolean {
+  try {
+    return window.localStorage.getItem(WRAP_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
 type Doc = {
   path: string;
   /** What is on disk now; `null` when the file does not exist (deleted). */
@@ -90,7 +100,6 @@ type Doc = {
 export function CodeSpace({
   session,
   worktree,
-  dark,
   bridge,
   openRequest,
   reference,
@@ -99,7 +108,6 @@ export function CodeSpace({
 }: {
   session: ChatSession | null;
   worktree: Worktree | null;
-  dark: boolean;
   bridge: MutableRefObject<SpaceBridge>;
   /** Another space asked to show a file here (a decision's code, a diagram node). */
   openRequest?: { path: string; line: number | null; n: number } | null;
@@ -109,6 +117,18 @@ export function CodeSpace({
   onError: (message: string) => void;
 }) {
   const [mode, setModeState] = useState<Mode>(readMode);
+  // Long lines run on by default, as in a diff; one shortcut (Alt+Z) wraps them, and it is remembered.
+  const [wrap, setWrap] = useState(readWrap);
+  const toggleWrap = useCallback(() => {
+    setWrap((now) => {
+      try {
+        window.localStorage.setItem(WRAP_KEY, now ? "off" : "on");
+      } catch {
+        // Not remembering the choice is harmless.
+      }
+      return !now;
+    });
+  }, []);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [tree, setTree] = useState<string[]>([]);
   const [reviewState, setReviewState] = useState<LoadState>(LOADING);
@@ -508,6 +528,7 @@ export function CodeSpace({
   useEffect(() => {
     bridge.current.commands = {
       version: toggleVersion,
+      wrap: toggleWrap,
       item: (delta) => {
         if (mode === "components" && units.length > 0) {
           const next = stepIn(units.map((unit) => unit.id), activeUnit, delta);
@@ -536,23 +557,38 @@ export function CodeSpace({
     return () => {
       bridge.current.commands = {};
     };
-  }, [bridge, toggleVersion, queue, units, mode, activeUnit, openUnit, doc, openFile, checkpoint, inCheckpoint, onError]);
+  }, [bridge, toggleVersion, toggleWrap, queue, units, mode, activeUnit, openUnit, doc, openFile, checkpoint, inCheckpoint, onError]);
 
-  useEffect(() => {
-    bridge.current.context = doc
-      ? {
-          kind: selection.current?.text ? "selection" : "file",
-          label: doc.path,
+  // What BTW is told about Code: the selection if there is one, else the component open in the
+  // queue, else the file, whichever space BTW is summoned from.
+  const contextOf = useCallback(
+    (picked: EditorSelection | null) => {
+      if (!doc) {
+        return null;
+      }
+      if (picked?.text) {
+        return { kind: "selection", label: doc.path, path: doc.path, startLine: picked.startLine, endLine: picked.endLine, text: picked.text };
+      }
+      const unit = units.find((item) => item.id === activeUnit && item.path === doc.path);
+      if (unit) {
+        return {
+          kind: "component",
+          label: `Component ${unit.container ? `${unit.container}.` : ""}${unit.name} (${unit.kind}, ${unit.level} priority) in ${doc.path}`,
           path: doc.path,
-          startLine: selection.current?.startLine,
-          endLine: selection.current?.endLine,
-          text: selection.current?.text || undefined,
-        }
-      : null;
+          startLine: unit.start_line,
+          endLine: unit.end_line,
+        };
+      }
+      return { kind: "file", label: doc.path, path: doc.path, startLine: picked?.startLine, endLine: picked?.endLine };
+    },
+    [doc, units, activeUnit],
+  );
+  useEffect(() => {
+    bridge.current.context = contextOf(selection.current);
     return () => {
       bridge.current.context = null;
     };
-  }, [bridge, doc]);
+  }, [bridge, contextOf]);
 
   const requestN = openRequest?.n;
   useEffect(() => {
@@ -661,6 +697,7 @@ export function CodeSpace({
     return mode === "components" ? (
       <ComponentQueue
         activeUnit={activeUnit}
+        openPath={doc?.path ?? null}
         marks={marks}
         priority={priority}
         onOpenFile={(path) => void openFile(path)}
@@ -675,7 +712,7 @@ export function CodeSpace({
 
   return (
     <div className="flex h-full min-h-0">
-      <aside aria-label="Code navigator" className="flex w-[286px] flex-none flex-col border-r border-cg-line bg-cg-sidebar">
+      <aside aria-label="Code navigator" className="flex w-[20.5rem] flex-none flex-col border-r border-cg-line bg-cg-sidebar">
         <div className="flex flex-col gap-2 px-3 pt-3 pb-2">
           <Segmented<Mode> label="Navigator" options={MODES} value={mode} onChange={setMode} />
           {mode !== "tree" && session ? (
@@ -719,6 +756,11 @@ export function CodeSpace({
                 ) : null}
               </span>
               <div className="flex flex-none items-center gap-0.5">
+                <Tip label={wrap ? "Lines are wrapped: let them run on (Alt+Z)" : "Wrap long lines (Alt+Z)"}>
+                  <Button aria-label="Wrap long lines" aria-pressed={wrap} variant="icon" onClick={toggleWrap}>
+                    <WrapText size={15} />
+                  </Button>
+                </Tip>
                 {inCheckpoint ? (
                   <Tip
                     label={
@@ -727,8 +769,8 @@ export function CodeSpace({
                         : !hasPrevious
                           ? "This file is new: there is no previous version"
                           : version === "previous"
-                            ? "Back to the current version, which can be edited (V)"
-                            : "Show how it was before, read-only (V)"
+                            ? "Back to the current version, which can be edited (Alt+V)"
+                            : "Show how it was before, read-only (Alt+V)"
                     }
                   >
                     <Button
@@ -815,6 +857,15 @@ export function CodeSpace({
               </div>
             ) : null}
 
+            {score && score.reasons.length > 0 && !(activeUnit && units.find((item) => item.id === activeUnit)?.path === doc.path) ? (
+              <p
+                aria-label="Why this ranks here"
+                className="flex-none border-b border-cg-line bg-cg-sidebar px-4 py-1.5 text-small leading-5 text-cg-muted-strong"
+              >
+                <span className="text-cg-ink">{score.level} priority (score {score.score}).</span> {sentence(score.reasons.join(" · "))}
+              </p>
+            ) : null}
+
             {activeUnit && units.find((item) => item.id === activeUnit)?.path === doc.path ? (
               <UnitStrip
                 unit={units.find((item) => item.id === activeUnit)!}
@@ -864,7 +915,6 @@ export function CodeSpace({
               ) : (
                 <Suspense fallback={<Empty text="Loading the editor…" />}>
                   <MonacoEditor
-                    dark={dark}
                     docKey={version === "previous" ? `${checkpoint?.id}:${doc.path}@previous` : `${worktreeId}:${doc.path}`}
                     handleRef={editor}
                     language={languageFor(doc.path)}
@@ -874,6 +924,8 @@ export function CodeSpace({
                     value={version === "previous" ? shown : doc.buffer}
                     onBtw={onBtw}
                     onToggleVersion={toggleVersion}
+                    onToggleWrap={toggleWrap}
+                    wrap={wrap}
                     onChange={(text) =>
                       version === "current"
                         ? setDoc((state) => (state && state.path === doc.path ? { ...state, buffer: text } : state))
@@ -882,14 +934,7 @@ export function CodeSpace({
                     onSave={() => void save()}
                     onSelection={(next) => {
                       selection.current = next;
-                      bridge.current.context = {
-                        kind: next.text ? "selection" : "file",
-                        label: doc.path,
-                        path: doc.path,
-                        startLine: next.startLine,
-                        endLine: next.endLine,
-                        text: next.text || undefined,
-                      };
+                      bridge.current.context = contextOf(next);
                     }}
                   />
                 </Suspense>
@@ -901,7 +946,7 @@ export function CodeSpace({
             <p className="max-w-[340px] text-small leading-6 text-cg-muted">
               {mode === "tree"
                 ? "Pick a file to read or edit it."
-                : "Pick a file from the list. Press V to flip between its current and previous version, J and K to step through the queue, and Space to ask a BTW question about what you are reading."}
+                : "Pick a file from the list. Press Alt+V to flip between its current and previous version, J and K to step through the queue, and Ctrl/⌘+K to ask a BTW question about what you are reading."}
             </p>
           </div>
         )}
@@ -947,6 +992,11 @@ function Empty({
   );
 }
 
+/** A reason as the start of a sentence. */
+function sentence(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
 /** Why the open unit is where it is in the queue. */
 function UnitStrip({ unit, onReset }: { unit: Unit; onReset?: (unit: Unit) => void }) {
   const adjusted = (unit.factors ?? []).some((factor) => factor.component === "adjustment");
@@ -959,7 +1009,7 @@ function UnitStrip({ unit, onReset }: { unit: Unit; onReset?: (unit: Unit) => vo
       <span className="text-cg-muted-strong">
         ({unit.kind}, {unit.level} priority, score {unit.score}).
       </span>{" "}
-      <span className="text-cg-muted-strong">{unit.reasons.join(" · ")}</span>
+      <span className="text-cg-muted-strong">{sentence(unit.reasons.join(" · "))}</span>
       {adjusted && onReset ? (
         <>
           {" "}

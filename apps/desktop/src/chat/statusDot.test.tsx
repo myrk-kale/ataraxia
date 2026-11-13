@@ -8,8 +8,9 @@ function render(status: SessionStatus): string {
 }
 
 describe("StatusDot", () => {
-  it("is green when the agent is ready", () => {
-    expect(render("ready")).toContain("bg-cg-green");
+  it("says nothing when the agent is ready", () => {
+    expect(render("ready")).toBe("");
+    expect(render("idle")).toBe("");
   });
 
   it("is amber while busy or waiting, and says so in words", () => {

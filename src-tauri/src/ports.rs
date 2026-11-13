@@ -43,6 +43,19 @@ pub trait AgentRuntime: Send + Sync {
     /// Sends a message to one of the chat's subagents (shown in its own conversation).
     fn message_subagent(&self, session_id: &SessionId, subagent_id: &str, text: &str)
     -> Result<()>;
+    /// Makes `child` (a BTW conversation) a subagent of `parent`: it is listed among the chat's
+    /// subagents with its own conversation, which follows the child's events from now on. Runtimes
+    /// without subagent lists leave this as it is.
+    fn link_subagent(
+        &self,
+        child: &SessionId,
+        parent: &SessionId,
+        title: &str,
+        question: &str,
+    ) -> Result<()> {
+        let _ = (child, parent, title, question);
+        Ok(())
+    }
     /// Ends the live agent process of a session, keeping its saved transcript.
     fn stop_session(&self, session_id: &SessionId);
     /// Models, efforts and agents the live session offers.

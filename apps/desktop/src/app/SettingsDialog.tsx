@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   settingsMcpInfo,
   type McpInfo,
@@ -6,7 +6,18 @@ import {
 import { PROVIDER_LABELS } from "../lib/agent";
 import type { Repository, ProviderKind } from "../lib/workspace";
 import { Button } from "../ui/Button";
-import { Dialog } from "../ui/Overlay";
+import { Dialog, Toggle } from "../ui/Overlay";
+import { play, useSound } from "./sound/sound";
+import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
+
+const TABS = [
+  { id: "appearance", label: "Appearance" },
+  { id: "sound", label: "Sound" },
+  { id: "privacy", label: "Privacy" },
+  { id: "mcp", label: "MCP server" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
 
 /** The configuration as indented JSON; text that is not valid JSON is shown as it came. */
 function prettyJson(text: string): string {
@@ -44,52 +55,161 @@ export function SettingsDialog({
       .catch(() => setMcp(null));
   }, [isOpen, repositoryId, onError]);
 
+  const [tab, setTab] = useState<TabId>("appearance");
+  const sound = useSound();
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // Up and Down (or Left and Right when the list lies flat) move between sections, as in any tab list.
+  function onTabKey(event: KeyboardEvent<HTMLDivElement>) {
+    const forward = event.key === "ArrowDown" || event.key === "ArrowRight";
+    const back = event.key === "ArrowUp" || event.key === "ArrowLeft";
+    if (!forward && !back) {
+      return;
+    }
+    event.preventDefault();
+    const index = TABS.findIndex((item) => item.id === tab);
+    const next = TABS[(index + (forward ? 1 : TABS.length - 1)) % TABS.length]!;
+    setTab(next.id);
+    tabRefs.current[next.id]?.focus();
+  }
+
   return (
-    <Dialog isOpen={isOpen} label="Settings" size="md" onClose={onClose}>
-      <div className="flex flex-col gap-6 p-6">
-        <h2 className="text-heading font-semibold text-cg-ink">Settings</h2>
-
-        <section className="flex flex-col gap-2">
-          <h3 className="text-small font-semibold text-cg-muted-strong">Privacy</h3>
-          <p className="text-small leading-5 text-cg-muted-strong">
-            Nothing is sent to a model by itself. The review queue is computed on this machine from the syntax tree and
-            git. Decisions, diagrams and BTW questions run only when you start them, on the provider you pick
-            {provider ? ` (this chat uses ${PROVIDER_LABELS[provider]})` : ""}, and then that provider receives the diff.
-          </p>
-        </section>
-
-        <section className="flex flex-col gap-2">
-          <h3 className="text-small font-semibold text-cg-muted-strong">MCP server</h3>
-          <p className="text-small leading-5 text-cg-muted">
-            Claude Code gets it automatically, scoped to its own chat. For other agents, register this command. It is
-            read-only unless you add <code className="font-mono text-small">--allow-write</code>, and every call is logged.
-          </p>
-          {mcp ? (
-            <>
-              <pre
-                aria-label="MCP configuration"
-                className="max-h-[130px] overflow-auto rounded-cg-md bg-cg-tint p-3 font-mono text-small leading-5 whitespace-pre-wrap text-cg-muted-strong"
+    <Dialog className="w-[min(800px,94vw)] max-w-none gap-0 p-0" isOpen={isOpen} label="Settings" size="lg" onClose={onClose}>
+      <div className="flex h-[min(620px,84vh)] flex-col">
+        <h2 className="flex-none border-b border-cg-line px-6 py-4 text-heading font-semibold text-cg-ink">Settings</h2>
+        <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+          <div
+            aria-label="Settings sections"
+            aria-orientation="vertical"
+            className="flex flex-none gap-1 overflow-x-auto border-b border-cg-line p-3 sm:w-44 sm:flex-col sm:border-r sm:border-b-0"
+            role="tablist"
+            onKeyDown={onTabKey}
+          >
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                ref={(node) => {
+                  tabRefs.current[item.id] = node;
+                }}
+                aria-controls={`settings-${item.id}`}
+                aria-selected={tab === item.id}
+                className={`rounded-cg-md px-3 py-2 text-left text-ui whitespace-nowrap ${
+                  tab === item.id
+                    ? "bg-cg-tint font-semibold text-cg-ink"
+                    : "text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink"
+                }`}
+                id={`settings-tab-${item.id}`}
+                role="tab"
+                tabIndex={tab === item.id ? 0 : -1}
+                type="button"
+                onClick={() => setTab(item.id)}
               >
-                {prettyJson(mcp.configJson)}
-              </pre>
-              <div>
-                <Button
-                  variant="quiet"
-                  onClick={() => {
-                    void navigator.clipboard
-                      ?.writeText(mcp.configJson)
-                      .then(() => setCopied(true))
-                      .catch(() => undefined);
-                  }}
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <div
+            aria-labelledby={`settings-tab-${tab}`}
+            className="@container min-h-0 min-w-0 flex-1 overflow-y-auto p-6"
+            id={`settings-${tab}`}
+            role="tabpanel"
+          >
+            {tab === "appearance" ? <AppearanceSettings /> : null}
+
+            {tab === "sound" ? (
+              <>
+                <SettingRow
+                  hint="A light tick when you change space or choose a model, and a chime when the agent asks for approval. Nothing else makes a sound."
+                  title="Sound effects"
                 >
-                  {copied ? "Copied" : "Copy configuration"}
-                </Button>
-              </div>
-            </>
-          ) : (
-            <p className="text-small text-cg-muted">Available in the desktop app.</p>
-          )}
-        </section>
+                  <Toggle
+                    hideLabel
+                    isSelected={sound.enabled}
+                    label="Play sounds"
+                    onChange={(enabled) => {
+                      sound.set({ enabled });
+                      if (enabled) {
+                        play("tick", { enabled: true });
+                      }
+                    }}
+                  />
+                </SettingRow>
+                <SettingRow hint="Quiet by design; this only sets how quiet." title="Volume">
+                  <input
+                    aria-label="Sound volume"
+                    aria-valuetext={`${Math.round(sound.volume * 100)} percent`}
+                    className="h-1.5 w-40 cursor-pointer accent-[var(--cg-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={!sound.enabled}
+                    max={1}
+                    min={0}
+                    step={0.05}
+                    type="range"
+                    value={sound.volume}
+                    onChange={(event) => sound.set({ volume: Number(event.target.value) })}
+                    onKeyUp={() => play("tick")}
+                    onPointerUp={() => play("tick")}
+                  />
+                  <span className="w-10 text-right text-small text-cg-muted-strong tabular-nums">{Math.round(sound.volume * 100)}%</span>
+                </SettingRow>
+              </>
+            ) : null}
+
+            {tab === "privacy" ? (
+              <SettingRow
+                hint={
+                  <>
+                    The review queue is computed on this machine from the syntax tree and git. Decisions, diagrams and BTW
+                    questions run only when you start them, on the provider you pick
+                    {provider ? ` (this chat uses ${PROVIDER_LABELS[provider]})` : ""}, and that provider then receives the diff.
+                  </>
+                }
+                title="Nothing is sent by itself"
+              >
+                {null}
+              </SettingRow>
+            ) : null}
+
+            {tab === "mcp" ? (
+              <SettingRow
+                below={
+                  mcp ? (
+                    <pre
+                      aria-label="MCP configuration"
+                      className="max-h-56 overflow-auto rounded-cg-md bg-cg-tint p-3 font-mono text-small leading-5 whitespace-pre-wrap text-cg-muted-strong"
+                    >
+                      {prettyJson(mcp.configJson)}
+                    </pre>
+                  ) : (
+                    <p className="text-small text-cg-muted-strong">Available in the desktop app.</p>
+                  )
+                }
+                hint={
+                  <>
+                    Claude Code gets it automatically, scoped to its own chat. For other agents, register this command. It is
+                    read-only unless you add <code className="font-mono text-small">--allow-write</code>, and every call is
+                    logged.
+                  </>
+                }
+                title="Ataraxia MCP server"
+              >
+                {mcp ? (
+                  <Button
+                    variant="quiet"
+                    onClick={() => {
+                      void navigator.clipboard
+                        ?.writeText(mcp.configJson)
+                        .then(() => setCopied(true))
+                        .catch(() => undefined);
+                    }}
+                  >
+                    {copied ? "Copied" : "Copy"}
+                  </Button>
+                ) : null}
+              </SettingRow>
+            ) : null}
+          </div>
+        </div>
       </div>
     </Dialog>
   );

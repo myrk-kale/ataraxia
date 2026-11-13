@@ -148,13 +148,12 @@ describe("spaces render with real data shapes", () => {
     expect(host.textContent).toContain("Generate…");
   });
 
-  it("Decisions says nothing was generated until you ask, and generating is a choice of model", async () => {
+  it("Decisions generates nothing by itself, and generating is a choice of model", async () => {
     forced = { decisions_list: [] };
     const { DecisionsSpace } = await import("../decisions/DecisionsSpace");
     act(() => root.render(<DecisionsSpace bridge={{ current: newBridge() }} session={session} onError={() => undefined} onOpenFile={() => undefined} />));
     await flush();
     expect(host.textContent).toContain("No decisions yet");
-    expect(host.textContent).toContain("Nothing is generated until you ask");
     expect(calls.some((c) => c.cmd === "decisions_generate")).toBe(false);
 
     // Generate asks which changes, which provider and which model before anything is sent.
@@ -196,6 +195,7 @@ describe("spaces render with real data shapes", () => {
           <BtwPalette
             isOpen
             item={{ kind: "file", label: "tokens.py", path: "src/studio/auth/tokens.py", startLine: 6, endLine: 15 }}
+            others={[]}
             providers={providers}
             resume={null}
             session={session}
@@ -242,7 +242,7 @@ describe("spaces render with real data shapes", () => {
     expect(start.args).toMatchObject({ mode: "ask", authorized: false, returnPolicy: "on-completion", provider: "fake", model: null });
   });
 
-  it("the review queue lists units under the class or file that holds them, each with its reasons", async () => {
+  it("the review queue is a flat list of components, most critical first, with no file names and no reasons", async () => {
     const { ComponentQueue } = await import("../code/FileLists");
     const review = handleInsights("code_review", { checkpointId: null }, () => undefined).value as { priority: never };
     const opened: string[] = [];
@@ -258,17 +258,22 @@ describe("spaces render with real data shapes", () => {
       ),
     );
     const text = host.textContent ?? "";
-    // Components are the file or class that holds the units, never a label a model invented.
-    expect(text).toContain("tokens.py");
-    expect(text).toContain("DocumentRepository");
-    expect(text).toContain("issue_token");
-    expect(text).toContain("touches a sensitive area (`token`)");
-    expect(text).toContain("signature");
+    const names = [...host.querySelectorAll("li button")].map((row) => row.querySelector("span span")?.textContent ?? "");
+    // Components by name, not grouped by the file that holds them.
+    expect(names).toContain("issue_token");
+    expect(names).toContain("DocumentRepository.create");
+    expect(names.indexOf("issue_token")).toBeLessThan(names.indexOf("README.md"));
+    expect(text).not.toContain("tokens.py");
+    expect(text).not.toContain("service.py");
+    // Why a component ranks where it does is said when it is opened, not in the list.
+    expect(text).not.toContain("touches a sensitive area");
+    expect(text).toContain("High");
+    expect(text).toContain("function · changed");
+    expect(text).toContain("signature changed");
     const active = host.querySelector("[aria-selected='true']");
     expect(active?.textContent).toContain("verify");
     const row = [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("dispatch"))!;
     act(() => (row as HTMLButtonElement).click());
     expect(opened).toEqual(["u3"]);
   });
-
 });

@@ -1,5 +1,6 @@
 import { Check, ChevronDown, Search } from "lucide-react";
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { play } from "../app/sound/sound";
 
 export interface SelectOption {
   value: string;
@@ -43,6 +44,8 @@ interface QuietSelectProps {
   className?: string;
   disabled?: boolean;
   title?: string;
+  /** A tick when another option is chosen, for the pickers whose choice changes what the agent does. */
+  sound?: boolean;
   /** Called each time the list opens, so a list that can go stale is read again. */
   onOpen?: () => void;
   onChange: (value: string) => void;
@@ -68,6 +71,7 @@ export function QuietSelect({
   className = "",
   disabled,
   title,
+  sound = false,
   onOpen,
   onChange,
 }: QuietSelectProps) {
@@ -262,6 +266,9 @@ export function QuietSelect({
               onClick={() => {
                 close();
                 if (option.value !== value) {
+                  if (sound) {
+                    play("tick");
+                  }
                   onChange(option.value);
                 }
               }}

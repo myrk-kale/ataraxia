@@ -1,6 +1,8 @@
 import type * as MonacoApi from "monaco-editor";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { loadMonaco, type Monaco } from "./monacoSetup";
+import { useAppearance } from "../app/appearance/store";
+import { familyFor } from "../app/appearance/fonts";
+import { defineAppTheme, loadMonaco, type Monaco } from "./monacoSetup";
 
 export type EditorSelection = {
   /** Line of the cursor. */
@@ -35,13 +37,14 @@ export function MonacoEditor({
   value,
   language,
   readOnly,
-  dark,
+  wrap,
   marks = NO_MARKS,
   handleRef,
   onChange,
   onSave,
   onBtw,
   onToggleVersion,
+  onToggleWrap,
   onSelection,
 }: {
   /** Identifies the document; each key keeps its own buffer and undo history. */
@@ -49,7 +52,8 @@ export function MonacoEditor({
   value: string;
   language: string;
   readOnly: boolean;
-  dark: boolean;
+  /** Long lines wrap at the edge of the editor instead of running on. */
+  wrap: boolean;
   marks?: LineMarks;
   handleRef?: Ref<EditorHandle>;
   onChange?: (text: string) => void;
@@ -57,14 +61,22 @@ export function MonacoEditor({
   onBtw?: () => void;
   /** Flip between the current and the previous version, from inside the editor. */
   onToggleVersion?: () => void;
+  /** Wrap or unwrap long lines (Alt+Z, as in VS Code). */
+  onToggleWrap?: () => void;
   onSelection?: (selection: EditorSelection) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const editorRef = useRef<MonacoApi.editor.IStandaloneCodeEditor | null>(null);
   const decorations = useRef<MonacoApi.editor.IEditorDecorationsCollection | null>(null);
-  const callbacks = useRef({ onChange, onSave, onBtw, onToggleVersion, onSelection });
-  callbacks.current = { onChange, onSave, onBtw, onToggleVersion, onSelection };
+  const callbacks = useRef({ onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection });
+  callbacks.current = { onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection };
+  const appearance = useAppearance();
+  // The editor is created once; what it was created with is read back through a ref.
+  const look = useRef(appearance);
+  look.current = appearance;
+  const wrapRef = useRef(wrap);
+  wrapRef.current = wrap;
   const [ready, setReady] = useState(false);
 
   useImperativeHandle(
@@ -103,9 +115,11 @@ export function MonacoEditor({
       const editor = monaco.editor.create(host.current, {
         automaticLayout: true,
         minimap: { enabled: false },
-        fontFamily: '"Geist Mono Variable", "Geist Mono", ui-monospace, Menlo, monospace',
-        fontSize: 12.5,
-        lineHeight: 20,
+        fontFamily: familyFor("code", look.current.fonts.code),
+        fontSize: look.current.fonts.code.size,
+        lineHeight: Math.round(look.current.fonts.code.size * 1.6),
+        wordWrap: wrapRef.current ? "on" : "off",
+        wrappingIndent: "indent",
         scrollBeyondLastLine: false,
         renderLineHighlight: "none",
         overviewRulerLanes: 0,
@@ -122,8 +136,10 @@ export function MonacoEditor({
       decorations.current = editor.createDecorationsCollection([]);
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => callbacks.current.onSave?.());
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => callbacks.current.onBtw?.());
-      // A bare V would be typed into the code now that the current version can be edited.
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyV, () => callbacks.current.onToggleVersion?.());
+      // The same chord as VS Code: Alt+Z wraps the lines or lets them run on.
+      editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyZ, () => callbacks.current.onToggleWrap?.());
+      // Old and new version: Alt+V, since a bare V would be typed into the code.
+      editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyV, () => callbacks.current.onToggleVersion?.());
       const content = editor.onDidChangeModelContent(() => callbacks.current.onChange?.(editor.getValue()));
       const cursor = editor.onDidChangeCursorSelection((event) => {
         const model = editor.getModel();
@@ -184,9 +200,31 @@ export function MonacoEditor({
     editorRef.current?.updateOptions({ readOnly, domReadOnly: readOnly });
   }, [ready, readOnly]);
 
+  // The theme in use: the built-in ones are defined with the editor, an imported one is defined here.
+  const customTheme = appearance.custom;
   useEffect(() => {
-    monacoRef.current?.editor.setTheme(dark ? "ataraxia-dark" : "ataraxia-light");
-  }, [ready, dark]);
+    const monaco = monacoRef.current;
+    if (!ready || !monaco) {
+      return;
+    }
+    if (customTheme) {
+      defineAppTheme(monaco, customTheme.id, customTheme.monaco);
+    }
+    monaco.editor.setTheme(appearance.monacoTheme);
+  }, [ready, customTheme, appearance.monacoTheme]);
+
+  const codeFont = appearance.fonts.code;
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      fontFamily: familyFor("code", codeFont),
+      fontSize: codeFont.size,
+      lineHeight: Math.round(codeFont.size * 1.6),
+    });
+  }, [ready, codeFont]);
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({ wordWrap: wrap ? "on" : "off" });
+  }, [ready, wrap]);
 
   useEffect(() => {
     const collection = decorations.current;

@@ -21,6 +21,7 @@ use crate::domain::{
     PermissionDecision, Repository, ReturnPolicy, ReviewState, SessionKind, SessionStatus,
     Worktree,
 };
+use crate::domain::{ChatItem, ChatRole};
 use crate::ports::{AgentRuntime, Database, EventSink, Git, InsightSink, InsightStore, Store};
 
 #[derive(Default)]
@@ -496,6 +497,7 @@ fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
             end_line: Some(2),
             text: None,
         }),
+        active: Vec::new(),
     };
     let rendered = w.engine.btw_render_context(w.session.id, &context).unwrap();
     assert!(rendered.contains("File: README.md:1-2"), "{rendered}");
@@ -515,6 +517,7 @@ fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
             end_line: None,
             text: None,
         }),
+        active: Vec::new(),
     };
     assert!(
         !w.engine
@@ -532,6 +535,7 @@ fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
             end_line: None,
             text: None,
         }),
+        active: Vec::new(),
     };
     let rendered = w.engine.btw_render_context(w.session.id, &outside).unwrap();
     assert!(
@@ -633,6 +637,7 @@ fn btw_does_what_it_was_asked_in_ataraxia_and_the_main_agent_hears_what_was_done
     let context = BtwContext {
         space: "code".into(),
         item: None,
+        active: Vec::new(),
     };
     let task = w
         .engine
@@ -742,6 +747,7 @@ fn a_btw_runs_on_the_provider_and_model_that_were_chosen_for_it() {
     let context = BtwContext {
         space: "chat".into(),
         item: None,
+        active: Vec::new(),
     };
     let task = w
         .engine
@@ -777,6 +783,126 @@ fn a_btw_runs_on_the_provider_and_model_that_were_chosen_for_it() {
 }
 
 #[test]
+fn a_btw_knows_what_every_space_has_open_and_is_a_subagent_of_the_chat() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    // Summoned from Code, with a decision and a diagram open in the other spaces.
+    let context = BtwContext {
+        space: "code".into(),
+        item: Some(ContextItem {
+            kind: "component".into(),
+            label: "Component issue_token (function, high priority) in README.md".into(),
+            path: Some("README.md".into()),
+            start_line: Some(1),
+            end_line: Some(1),
+            text: None,
+        }),
+        active: vec![
+            ContextItem {
+                kind: "decision".into(),
+                label: "Decision: Tokens expire in 15 minutes".into(),
+                path: None,
+                start_line: None,
+                end_line: None,
+                text: Some("Security decision #3 (pending): Tokens expire in 15 minutes".into()),
+            },
+            ContextItem {
+                kind: "flow".into(),
+                label: "Flow diagram: Request lifecycle".into(),
+                path: None,
+                start_line: None,
+                end_line: None,
+                text: Some("- entry: Router".into()),
+            },
+        ],
+    };
+    let task = w
+        .engine
+        .btw_start(
+            w.session.id,
+            BtwMode::Ask,
+            "does the decision hold for this function?",
+            &context,
+            ReturnPolicy::OnCompletion,
+            false,
+        )
+        .unwrap();
+    for needle in [
+        "Component issue_token",
+        "Also open in Ataraxia right now",
+        "Tokens expire in 15 minutes",
+        "Flow diagram: Request lifecycle",
+    ] {
+        assert!(
+            task.context_text.contains(needle),
+            "{needle} missing from: {}",
+            task.context_text
+        );
+    }
+    assert!(!task.context_text.contains("fork of that conversation"));
+
+    // The investigation is one of the chat's subagents, with the question as its first message.
+    let listed = w.host.snapshot(&w.session.id).unwrap().subagents;
+    let record = listed
+        .iter()
+        .find(|item| item.id == task.session_id.0.to_string())
+        .expect("listed among the subagents");
+    assert!(record.title.starts_with("BTW: "));
+    assert!(
+        matches!(&record.items[0], ChatItem::Message(m) if m.text == "does the decision hold for this function?")
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_btw_from_the_chat_is_a_fork_of_the_conversation() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host
+        .prompt(&w.session.id, "refactor the token module")
+        .unwrap();
+    wait_for("the main agent to answer", || {
+        let items = w.host.snapshot(&w.session.id).unwrap().items;
+        items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Message(m) if m.role == ChatRole::Assistant && !m.text.is_empty()))
+            .then_some(())
+    });
+    let context = BtwContext {
+        space: "chat".into(),
+        item: None,
+        active: Vec::new(),
+    };
+    let task = w
+        .engine
+        .btw_start(
+            w.session.id,
+            BtwMode::Ask,
+            "what did we decide about expiry?",
+            &context,
+            ReturnPolicy::OnCompletion,
+            false,
+        )
+        .unwrap();
+    assert!(task.context_text.contains("fork of that conversation"));
+    // The fork starts from the history: the question the developer asked the main agent is in what it got.
+    let forked = w.host.snapshot(&task.session_id).unwrap().items;
+    let first = forked
+        .iter()
+        .find_map(|item| match item {
+            ChatItem::Message(m) if m.role == ChatRole::User => Some(m.text.clone()),
+            _ => None,
+        })
+        .expect("the fork was prompted");
+    assert!(first.contains("Conversation so far"), "{first}");
+    assert!(
+        first.contains("Developer: refactor the token module"),
+        "{first}"
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends() {
     let w = world();
     // The main agent is in the middle of a turn.
@@ -788,6 +914,7 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends()
     let context = BtwContext {
         space: "chat".into(),
         item: None,
+        active: Vec::new(),
     };
     let task = w
         .engine

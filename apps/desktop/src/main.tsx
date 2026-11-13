@@ -2,6 +2,7 @@ import { I18nProvider } from "@heroui/react";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { AppShell } from "./app/AppShell";
+import { AppearanceProvider } from "./app/appearance/store";
 import { Intro } from "./intro/Intro";
 import { introEnabled } from "./intro/timeline";
 import "./styles/index.css";
@@ -16,8 +17,10 @@ async function start() {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <I18nProvider locale="en-US">
-        <AppShell />
-        <Intro />
+        <AppearanceProvider>
+          <AppShell />
+          <Intro />
+        </AppearanceProvider>
       </I18nProvider>
     </React.StrictMode>,
   );

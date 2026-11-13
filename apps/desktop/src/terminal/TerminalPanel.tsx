@@ -3,6 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
+import { familyFor } from "../app/appearance/fonts";
+import { useAppearance } from "../app/appearance/store";
 import {
   decodeTerminalBytes,
   encodeTerminalBytes,
@@ -17,13 +19,9 @@ import {
 type TerminalPanelProps = {
   worktreeId: string;
   cwd: string;
-  theme: "light" | "dark";
   onClose: () => void;
 };
 
-const TERMINAL_FONT = '"Geist Mono Variable"';
-const TERMINAL_FONT_STACK = `${TERMINAL_FONT}, "MesloLGS NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-const TERMINAL_FONT_SIZE = 13;
 const MIN_HEIGHT = 150;
 const DEFAULT_HEIGHT = 245;
 
@@ -45,12 +43,16 @@ const XTERM_THEMES = {
 export function TerminalPanel({
   worktreeId,
   cwd,
-  theme,
   onClose,
 }: TerminalPanelProps) {
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
-  const themeRef = useRef(theme);
-  themeRef.current = theme;
+  const appearance = useAppearance();
+  // An imported theme brings its own palette; the built-in ones keep theirs.
+  const palette = appearance.custom ? { ...appearance.custom.terminal } : { ...XTERM_THEMES[appearance.kind] };
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
+  const fontRef = useRef(appearance.fonts.terminal);
+  fontRef.current = appearance.fonts.terminal;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -61,7 +63,7 @@ export function TerminalPanel({
   useEffect(() => {
     let cancelled = false;
     document.fonts
-      .load(`${TERMINAL_FONT_SIZE}px ${TERMINAL_FONT}`)
+      .load(`${fontRef.current.size}px ${familyFor("terminal", fontRef.current)}`)
       .catch(() => undefined)
       .finally(() => {
         if (!cancelled) {
@@ -82,9 +84,9 @@ export function TerminalPanel({
     const term = new Terminal({
       convertEol: true,
       cursorBlink: true,
-      fontFamily: TERMINAL_FONT_STACK,
-      fontSize: TERMINAL_FONT_SIZE,
-      theme: { ...XTERM_THEMES[themeRef.current] },
+      fontFamily: familyFor("terminal", fontRef.current),
+      fontSize: fontRef.current.size,
+      theme: paletteRef.current,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -174,12 +176,24 @@ export function TerminalPanel({
     };
   }, [worktreeId, cwd, fontReady]);
 
+  const paletteKey = JSON.stringify(palette);
   useEffect(() => {
     const term = termRef.current;
     if (term) {
-      term.options.theme = { ...XTERM_THEMES[theme] };
+      term.options.theme = paletteRef.current;
     }
-  }, [theme]);
+  }, [paletteKey]);
+
+  // A new face or size changes the size of a cell, so the grid is fitted again.
+  const terminalFont = appearance.fonts.terminal;
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) {
+      term.options.fontFamily = familyFor("terminal", terminalFont);
+      term.options.fontSize = terminalFont.size;
+      fitRef.current?.fit();
+    }
+  }, [terminalFont]);
 
   function maxHeight(): number {
     return Math.round(window.innerHeight * 0.68);
@@ -222,7 +236,7 @@ export function TerminalPanel({
     grip.addEventListener("pointerup", onUp);
   }
 
-  const background = XTERM_THEMES[theme].background;
+  const background = palette.background;
 
   return (
     <section

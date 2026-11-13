@@ -9,7 +9,7 @@ export function ShortcutLegend({ isOpen, onClose }: { isOpen: boolean; onClose: 
         <ul className="flex flex-col">
           {SHORTCUT_LEGEND.map((row) => (
             <li key={row.label} className="flex items-center gap-3 border-b border-cg-line py-2 last:border-b-0">
-              <span className="flex w-[130px] flex-none items-center gap-1">
+              <span className="flex w-[9.5rem] flex-none items-center gap-1">
                 {row.keys.map((key) => (
                   <Key key={key}>{key}</Key>
                 ))}

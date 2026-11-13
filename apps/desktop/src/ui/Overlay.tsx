@@ -18,6 +18,7 @@ export function Dialog({
   placement = "center",
   size = "md",
   wide = false,
+  className = "",
   children,
 }: {
   isOpen: boolean;
@@ -27,6 +28,8 @@ export function Dialog({
   size?: "sm" | "md" | "lg" | "full";
   /** A wide bar, as in a command palette. */
   wide?: boolean;
+  /** Extra classes for the dialog itself, for a panel that needs its own width. */
+  className?: string;
   children: ReactNode;
 }) {
   return (
@@ -44,8 +47,8 @@ export function Dialog({
         <Modal.Dialog
           aria-label={label}
           className={`rounded-cg-lg border border-cg-line bg-cg-panel text-cg-ink shadow-cg-float ${
-            wide ? "mx-auto mt-[14vh] w-[min(760px,92vw)] max-w-none" : ""
-          }`}
+            wide ? "mx-auto mt-[14vh] w-[min(760px,92vw)] max-w-none gap-0 p-0" : ""
+          } ${className}`}
         >
           {children}
         </Modal.Dialog>
@@ -80,7 +83,7 @@ export function SideDrawer({
       <HeroDrawer.Content placement="right">
         <HeroDrawer.Dialog
           aria-label={label}
-          className="w-[420px] max-w-[92vw] border-l border-cg-line bg-cg-panel text-cg-ink shadow-cg-float"
+          className="w-[30rem] max-w-[92vw] border-l border-cg-line bg-cg-panel text-cg-ink shadow-cg-float"
         >
           {children}
         </HeroDrawer.Dialog>
@@ -196,11 +199,14 @@ export function Toggle({
   label,
   isSelected,
   isDisabled = false,
+  hideLabel = false,
   onChange,
 }: {
   label: string;
   isSelected: boolean;
   isDisabled?: boolean;
+  /** The name stays for assistive technology; the row around the switch already says what it is. */
+  hideLabel?: boolean;
   onChange: (value: boolean) => void;
 }) {
   return (
@@ -208,7 +214,7 @@ export function Toggle({
       <HeroSwitch.Control>
         <HeroSwitch.Thumb />
       </HeroSwitch.Control>
-      <HeroSwitch.Content className="text-ui text-cg-ink">{label}</HeroSwitch.Content>
+      <HeroSwitch.Content className={hideLabel ? "sr-only" : "text-ui text-cg-ink"}>{label}</HeroSwitch.Content>
     </HeroSwitch>
   );
 }

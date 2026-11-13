@@ -60,7 +60,7 @@ export function SessionsPanel({
     <aside
       ref={ref}
       aria-label="Chat sessions"
-      className="absolute top-[54px] right-[75px] z-30 flex max-h-[min(540px,75vh)] w-[345px] flex-col overflow-hidden rounded-cg-lg border border-cg-line bg-cg-panel shadow-cg-pop"
+      className="absolute top-[54px] right-[75px] z-30 flex max-h-[min(540px,75vh)] w-[24.5rem] flex-col overflow-hidden rounded-cg-lg border border-cg-line bg-cg-panel shadow-cg-pop"
     >
       <div className="flex h-[55px] flex-none items-center justify-between border-b border-cg-line px-5 text-small font-semibold text-cg-muted-strong">
         <h2>Sessions</h2>

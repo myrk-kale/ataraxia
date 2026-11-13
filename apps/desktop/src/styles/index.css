@@ -174,12 +174,12 @@
    * job: display (hero), title (dialogs, h1), heading (h2, session names), body (chat text),
    * ui (controls, breadcrumb), small (secondary text, section labels, counts).
    */
-  --text-display: 30px;
-  --text-title: 20px;
-  --text-heading: 16px;
-  --text-body: 14.5px;
-  --text-ui: 13px;
-  --text-small: 12px;
+  --text-display: calc(30px * var(--cg-ui-scale, 1));
+  --text-title: calc(20px * var(--cg-ui-scale, 1));
+  --text-heading: calc(16px * var(--cg-ui-scale, 1));
+  --text-body: var(--cg-chat-size, 14.5px);
+  --text-ui: calc(13px * var(--cg-ui-scale, 1));
+  --text-small: calc(12px * var(--cg-ui-scale, 1));
 
   /*
    * Three radii, each tied to a role: sm for rows, chips and icon buttons; md for buttons, inputs
@@ -206,8 +206,14 @@ body,
   height: 100%;
 }
 
+/* The interface size scales the layout too (every rem), the way a zoom does. */
 html {
-  font-size: 14px;
+  font-size: calc(14px * var(--cg-ui-scale, 1));
+}
+
+/* Chat and reading text can have a face of its own. */
+.cg-chat {
+  font-family: var(--cg-font-chat, var(--font-sans));
 }
 
 body {
@@ -284,6 +290,25 @@ textarea:focus-visible,
 select:focus-visible {
   outline: none;
   border-color: var(--cg-ink);
+}
+
+/*
+ * The fields inside the editor (the find box) are drawn by Monaco, which already marks the
+ * focused one with its own line. The ring a text field would get here is cut by the rounded
+ * edges of the field and shows as stray arcs, so it is taken off; the line takes the control colour.
+ */
+.monaco-editor input:focus-visible,
+.monaco-editor textarea:focus-visible,
+.monaco-diff-editor input:focus-visible,
+.monaco-diff-editor textarea:focus-visible {
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.monaco-editor .monaco-inputbox.synthetic-focus,
+.monaco-diff-editor .monaco-inputbox.synthetic-focus {
+  outline: 1px solid var(--cg-control) !important;
+  outline-offset: -1px !important;
 }
 
 /*

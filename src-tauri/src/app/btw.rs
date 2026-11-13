@@ -17,6 +17,12 @@ use crate::domain::{
 const MAX_SELECTION_CHARS: usize = 8_000;
 const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_CONTEXT_LINES: usize = 200;
+/// The other spaces' items are background, not the question: they get a smaller share.
+const MAX_OTHER_LINES: usize = 80;
+const MAX_OTHER_ITEMS: usize = 4;
+/// How much of the main conversation a fork starts from.
+const MAX_FORK_CHARS: usize = 14_000;
+const MAX_FORK_MESSAGES: usize = 40;
 const MAX_SUMMARY_CHARS: usize = 6_000;
 const MAX_ACTIONS: usize = 20;
 const MAX_QUEUE_LINES: usize = 50;
@@ -61,6 +67,10 @@ pub struct BtwContext {
     pub space: String,
     #[serde(default)]
     pub item: Option<ContextItem>,
+    /// What the other spaces have open (the file or component in Code, the decision, the diagram),
+    /// so BTW knows it whichever space it was summoned from.
+    #[serde(default)]
+    pub active: Vec<ContextItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +118,108 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 impl Engine {
+    /// One open item as text: what it is, where it is, and the code or text it holds.
+    fn render_item(
+        &self,
+        worktree: &std::path::Path,
+        item: &ContextItem,
+        line_budget: usize,
+    ) -> String {
+        let mut out = format!("{} ({})\n", item.label, item.kind);
+        if let Some(path) = &item.path {
+            let lines = match (item.start_line, item.end_line) {
+                (Some(start), Some(end)) if end != start => format!(":{start}-{end}"),
+                (Some(start), _) => format!(":{start}"),
+                _ => String::new(),
+            };
+            out.push_str(&format!("File: {path}{lines}\n"));
+            if looks_secret(path) {
+                out.push_str("(contents withheld: the file looks like it holds secrets)\n");
+                return out;
+            }
+            let body = match &item.text {
+                Some(text) if !text.trim().is_empty() => Some(clip(text, MAX_SELECTION_CHARS)),
+                _ => match self.fs.read_text(worktree, path) {
+                    Ok(file) if !file.binary && !file.too_large => {
+                        let all: Vec<&str> = file.text.lines().collect();
+                        let start = item
+                            .start_line
+                            .map_or(0, |line| line.saturating_sub(1) as usize);
+                        let end = item
+                            .end_line
+                            .map_or(all.len().min(start + line_budget), |line| line as usize);
+                        let end = end.min(all.len()).min(start + line_budget);
+                        (start < end).then(|| all[start..end].join("\n"))
+                    }
+                    // Paths outside the worktree, or unreadable ones, are simply not attached.
+                    _ => None,
+                },
+            };
+            if let Some(body) = body {
+                out.push_str(&format!("```\n{body}\n```\n"));
+            }
+        } else if let Some(text) = &item.text {
+            out.push_str(&format!("```\n{}\n```\n", clip(text, MAX_SELECTION_CHARS)));
+        }
+        out
+    }
+
+    /// The main conversation as a fork starts from it: the latest messages, oldest first, each
+    /// cut to a sensible length, and the tools it used by name only.
+    fn fork_transcript(&self, parent: SessionId) -> String {
+        let live = self
+            .runtime
+            .snapshot(&parent)
+            .map(|snapshot| snapshot.items)
+            .unwrap_or_default();
+        let items = if live.is_empty() {
+            self.db.list_chat_items(parent).unwrap_or_default()
+        } else {
+            live
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for item in &items {
+            match item {
+                crate::domain::ChatItem::Message(message) if !message.text.trim().is_empty() => {
+                    let who = match message.role {
+                        crate::domain::ChatRole::User => "Developer",
+                        crate::domain::ChatRole::Assistant => "Agent",
+                        crate::domain::ChatRole::System => continue,
+                    };
+                    lines.push(format!("{who}: {}", clip(message.text.trim(), 2_500)));
+                }
+                crate::domain::ChatItem::Tool(tool) => {
+                    lines.push(format!("(Agent used {})", tool.name))
+                }
+                _ => {}
+            }
+        }
+        let skip = lines.len().saturating_sub(MAX_FORK_MESSAGES);
+        let mut kept: Vec<&String> = Vec::new();
+        let mut size = 0;
+        for line in lines[skip..].iter().rev() {
+            size += line.chars().count();
+            if size > MAX_FORK_CHARS {
+                break;
+            }
+            kept.push(line);
+        }
+        kept.reverse();
+        if kept.is_empty() {
+            return String::new();
+        }
+        let earlier = lines.len() - kept.len();
+        let mut out = String::from("Conversation so far (the chat you are a fork of):\n");
+        if earlier > 0 {
+            out.push_str(&format!("({earlier} earlier items left out)\n"));
+        }
+        for line in kept {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// The exact text that will be attached to the question, so the user can inspect it.
     pub fn btw_render_context(
         &self,
@@ -130,46 +242,23 @@ impl Engine {
             session.title,
             context.space
         );
-        let Some(item) = &context.item else {
-            return Ok(out);
-        };
-        out.push_str(&format!("Looking at: {} ({})\n", item.label, item.kind));
-        if let Some(path) = &item.path {
-            let lines = match (item.start_line, item.end_line) {
-                (Some(start), Some(end)) if end != start => format!(":{start}-{end}"),
-                (Some(start), _) => format!(":{start}"),
-                _ => String::new(),
-            };
-            out.push_str(&format!("File: {path}{lines}\n"));
-            if looks_secret(path) {
-                out.push_str("(contents withheld: the file looks like it holds secrets)\n");
-                return Ok(out);
+        if let Some(item) = &context.item {
+            out.push_str("Looking at: ");
+            out.push_str(&self.render_item(&worktree.path, item, MAX_CONTEXT_LINES));
+        }
+        let others: Vec<&ContextItem> = context.active.iter().take(MAX_OTHER_ITEMS).collect();
+        if !others.is_empty() {
+            out.push_str("\nAlso open in Ataraxia right now:\n");
+            for item in others {
+                out.push_str("- ");
+                out.push_str(&self.render_item(&worktree.path, item, MAX_OTHER_LINES));
             }
-            let body = match &item.text {
-                Some(text) if !text.trim().is_empty() => Some(clip(text, MAX_SELECTION_CHARS)),
-                _ => match self.fs.read_text(&worktree.path, path) {
-                    Ok(file) if !file.binary && !file.too_large => {
-                        let all: Vec<&str> = file.text.lines().collect();
-                        let start = item
-                            .start_line
-                            .map_or(0, |line| line.saturating_sub(1) as usize);
-                        let end = item
-                            .end_line
-                            .map_or(all.len().min(start + MAX_CONTEXT_LINES), |line| {
-                                line as usize
-                            });
-                        let end = end.min(all.len()).min(start + MAX_CONTEXT_LINES);
-                        (start < end).then(|| all[start..end].join("\n"))
-                    }
-                    // Paths outside the worktree, or unreadable ones, are simply not attached.
-                    _ => None,
-                },
-            };
-            if let Some(body) = body {
-                out.push_str(&format!("```\n{body}\n```\n"));
-            }
-        } else if let Some(text) = &item.text {
-            out.push_str(&format!("```\n{}\n```\n", clip(text, MAX_SELECTION_CHARS)));
+        }
+        if context.space == "chat" {
+            out.push_str(
+                "\nThis was asked from the chat itself: you are a fork of that conversation, \
+                 whose history you are given below the question.\n",
+            );
         }
         Ok(out)
     }
@@ -272,9 +361,28 @@ impl Engine {
             }
         };
         let brief = self.btw_actions_brief(&parent);
-        let prompt =
-            format!("{framing}\n\n{brief}\nContext:\n{context_text}\nQuestion:\n{question}");
+        // From the chat it is a fork: it starts from what the main conversation has said so far.
+        let fork = if context.space == "chat" {
+            self.fork_transcript(parent_session_id)
+        } else {
+            String::new()
+        };
+        let fork = if fork.is_empty() {
+            fork
+        } else {
+            format!("\n{fork}")
+        };
+        let prompt = format!(
+            "{framing}\n\n{brief}\nContext:\n{context_text}\nQuestion:\n{question}\n{fork}"
+        );
         self.runtime.start_session(&hidden)?;
+        // It is one of the chat's subagents from the start: listed there, with its own conversation.
+        if let Err(error) =
+            self.runtime
+                .link_subagent(&hidden.id, &parent_session_id, &hidden.title, question)
+        {
+            eprintln!("ataraxia: could not list BTW among the subagents: {error}");
+        }
         if mode == BtwMode::Change {
             self.turn_started(hidden.id);
         }

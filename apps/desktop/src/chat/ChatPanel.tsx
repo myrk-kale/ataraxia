@@ -25,7 +25,9 @@ import {
   type SessionOptions,
 } from "../lib/agent";
 import type { ChatSession } from "../lib/workspace";
+import { play } from "../app/sound/sound";
 import { toBlocks } from "./blocks";
+import { parseBtwReport } from "./btwReport";
 import { Hero } from "./Hero";
 import { ProviderMark } from "./ProviderMark";
 import { SessionSettings } from "./SessionSettings";
@@ -51,6 +53,9 @@ export function suggestionsFor(contextLabel: string | null): string[] {
   ];
 }
 
+/** What the conversation with the chat's own agent is called, next to its subagents. */
+const MAIN_AGENT = "main";
+
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -59,11 +64,14 @@ export function ChatPanel({
   session,
   provider,
   contextLabel,
+  bare = false,
   onSessionChange,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
   contextLabel: string | null;
+  /** No agent mark or name beside the composer. */
+  bare?: boolean;
   onSessionChange: (session: ChatSession) => void;
 }) {
   const sessionId = session.id;
@@ -144,6 +152,16 @@ export function ChatPanel({
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.provider]);
+
+  // The agent asking for approval is heard as well as seen, once per request.
+  const askedFor = useRef<string | null>(null);
+  useEffect(() => {
+    const id = state.pending?.requestId ?? null;
+    if (id && askedFor.current !== id) {
+      play("alert");
+    }
+    askedFor.current = id;
+  }, [state.pending]);
 
   const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
   const canWrite = activeSubagent === null || provider?.settings.subagent_messages === true;
@@ -268,7 +286,7 @@ export function ChatPanel({
   const providerLabel = PROVIDER_LABELS[session.provider] ?? session.provider;
 
   // The divider sits before the first item produced by the running agent process.
-  function renderItems(items: ChatItem[], restoredSplit: number, author: string, mark: boolean) {
+  function renderItems(items: ChatItem[], restoredSplit: number) {
     const blocks = toBlocks(items, restoredSplit);
     let seen = 0;
     return blocks.flatMap((block) => {
@@ -276,25 +294,40 @@ export function ChatPanel({
       const startsAfterRestore = restoredSplit > 0 && seen === restoredSplit;
       seen += count;
 
+      const report = block.kind === "user" ? parseBtwReport(block.item.text) : null;
       const node =
-        block.kind === "user" ? (
+        block.kind === "user" && report ? (
+          <section
+            key={block.key}
+            aria-label="BTW report"
+            className="flex max-w-[680px] min-w-0 flex-col gap-3 rounded-cg-lg border border-cg-line px-5 py-4"
+          >
+            <h4 className="text-small font-semibold text-cg-muted-strong">BTW finished</h4>
+            {report.map((entry, index) => (
+              <div key={`${index}:${entry.asked}`} className="flex min-w-0 flex-col gap-1.5">
+                <p className="text-ui font-medium break-words text-cg-ink [overflow-wrap:anywhere]">{entry.asked}</p>
+                {entry.summary ? (
+                  <div className="min-w-0 text-body leading-[1.7] break-words [overflow-wrap:anywhere]">
+                    <Markdown text={entry.summary} />
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </section>
+        ) : block.kind === "user" ? (
           <div
             key={block.key}
-            className="max-w-[min(80%,600px)] self-end rounded-cg-lg bg-cg-bubble px-5.5 py-4.5 text-body leading-[1.7] whitespace-pre-wrap"
+            className="max-w-[min(80%,600px)] min-w-0 self-end rounded-cg-lg bg-cg-bubble px-5.5 py-4.5 text-body leading-[1.7] break-words whitespace-pre-wrap [overflow-wrap:anywhere]"
           >
             {block.item.text}
           </div>
         ) : (
           <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
-            <div className="flex items-center gap-2 text-ui text-cg-muted">
-              {mark ? <ProviderMark provider={session.provider} size={18} /> : null}
-              <strong className="font-semibold text-cg-ink">{author}</strong>
-            </div>
             {block.items.map((item) =>
               item.kind === "tool" ? (
                 <ToolCard key={item.callId} tool={item} />
               ) : (
-                <div key={item.id} className="text-body leading-[1.7]">
+                <div key={item.id} className="min-w-0 text-body leading-[1.7] break-words [overflow-wrap:anywhere]">
                   <Markdown text={item.text} />
                 </div>
               ),
@@ -305,20 +338,13 @@ export function ChatPanel({
     });
   }
 
-  const rendered = renderItems(
-    state.items,
-    state.restoredCount > 0 ? state.restoredCount : -1,
-    providerLabel,
-    true,
-  );
-  const subagentRendered = activeSubagent
-    ? renderItems(activeSubagent.items, -1, "Subagent", false)
-    : [];
+  const rendered = renderItems(state.items, state.restoredCount > 0 ? state.restoredCount : -1);
+  const subagentRendered = activeSubagent ? renderItems(activeSubagent.items, -1) : [];
 
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
-    <section className="flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+    <section className="cg-chat flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} className="h-full overflow-y-auto" onScroll={onScroll}>
           <div
@@ -442,7 +468,7 @@ export function ChatPanel({
 
       <SubagentBar
         busy={busy && view !== null}
-        mainLabel={providerLabel}
+        mainLabel={MAIN_AGENT}
         provider={session.provider}
         selected={activeSubagent ? activeSubagent.id : null}
         subagents={state.subagents}
@@ -471,7 +497,7 @@ export function ChatPanel({
                 ? canWrite
                   ? `Message ${activeSubagent.title}…`
                   : "This provider cannot message a subagent"
-                : `Ask ${providerLabel} to change something…`
+                : `Ask ${MAIN_AGENT} to change something…`
             }
             rows={2}
             value={draft}
@@ -480,8 +506,12 @@ export function ChatPanel({
           />
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
             <div className="flex min-w-0 items-center gap-2.5">
-              <ProviderMark provider={session.provider} size={24} />
-              <span className="truncate text-ui font-semibold text-cg-ink">{providerLabel}</span>
+              {bare ? null : (
+                <>
+                  <ProviderMark provider={session.provider} size={24} />
+                  <span className="truncate text-ui font-semibold text-cg-ink">{MAIN_AGENT}</span>
+                </>
+              )}
               <StatusDot status={state.status} />
             </div>
             {activeSubagent ? (
@@ -490,7 +520,7 @@ export function ChatPanel({
                 type="button"
                 onClick={() => setView(null)}
               >
-                ← Back to {providerLabel} (Esc)
+                ← Back to {MAIN_AGENT} (Esc)
               </button>
             ) : (
             <div className="flex flex-none items-center gap-3">

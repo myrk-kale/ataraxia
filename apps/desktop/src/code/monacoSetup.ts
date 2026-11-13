@@ -54,6 +54,34 @@ export function loadMonaco(): Promise<Monaco> {
   return loading;
 }
 
+/** Registers an imported theme under its id, replacing an earlier version of it. */
+export function defineAppTheme(monaco: Monaco, name: string, data: Parameters<Monaco["editor"]["defineTheme"]>[1]) {
+  monaco.editor.defineTheme(name, data);
+}
+
+/** The find widget, hovers and the fields inside the editor, from the interface tokens of a theme. */
+function widget(t: { float: string; ink: string; line: string; tint: string; muted: string; mutedStrong: string; accent: string; accentBg: string; red: string }) {
+  return {
+    "editorWidget.background": t.float,
+    "editorWidget.foreground": t.ink,
+    "editorWidget.border": t.line,
+    "input.background": t.tint,
+    "input.foreground": t.ink,
+    "input.border": t.line,
+    "input.placeholderForeground": t.muted,
+    "inputOption.activeBackground": t.accentBg,
+    "inputOption.activeBorder": t.accent,
+    "inputOption.activeForeground": t.ink,
+    "inputOption.hoverBackground": t.tint,
+    "icon.foreground": t.mutedStrong,
+    disabledForeground: t.muted,
+    errorForeground: t.red,
+    "toolbar.hoverBackground": t.tint,
+    "editor.findMatchBackground": `${t.accent}59`,
+    "editor.findMatchHighlightBackground": `${t.accent}33`,
+  };
+}
+
 function defineThemes(monaco: Monaco) {
   monaco.editor.defineTheme("ataraxia-light", {
     base: "vs",
@@ -71,6 +99,7 @@ function defineThemes(monaco: Monaco) {
       "editorIndentGuide.background1": "#eae9e6",
       "editorGutter.background": "#ffffff",
       "scrollbarSlider.background": "#dbdad566",
+      ...widget({ float: "#ffffff", ink: "#232522", line: "#dbdad5", tint: "#f4f4f1", muted: "#686b66", mutedStrong: "#50534e", accent: "#665698", accentBg: "#f0edf8", red: "#a4444c" }),
     },
   });
   monaco.editor.defineTheme("ataraxia-dark", {
@@ -89,6 +118,7 @@ function defineThemes(monaco: Monaco) {
       "editorIndentGuide.background1": "#272926",
       "editorGutter.background": "#161715",
       "scrollbarSlider.background": "#36383366",
+      ...widget({ float: "#161715", ink: "#e8e9e6", line: "#363833", tint: "#1f211e", muted: "#8b8e89", mutedStrong: "#a9aca6", accent: "#a99cd8", accentBg: "#2a2740", red: "#d98a90" }),
     },
   });
 }

@@ -257,7 +257,8 @@ export type BtwContextItem = {
   text?: string;
 };
 
-export type BtwContext = { space: string; item?: BtwContextItem | null };
+/** What BTW is told: the space it was summoned from and its open item, plus what the other spaces have open. */
+export type BtwContext = { space: string; item?: BtwContextItem | null; active?: BtwContextItem[] };
 
 export type BtwTask = {
   id: BtwTaskId;
