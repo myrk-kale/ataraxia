@@ -1835,7 +1835,15 @@ mod tests {
         assert_eq!((wrong.status, code(&wrong)), (401, "unauthorized"));
         let short = req("GET", "/v1/decisions", Some("abc")).go(&server);
         assert_eq!(short.status, 401);
-        let near = format!("{}0", &access.token[..63]);
+        // One character off. The tokens are random hex, so the last one is sometimes already `0`:
+        // swap it for something it is not.
+        let last = if access.token.ends_with('0') {
+            '1'
+        } else {
+            '0'
+        };
+        let near = format!("{}{last}", &access.token[..63]);
+        assert_ne!(near, access.token);
         assert_eq!(
             req("GET", "/v1/decisions", Some(&near)).go(&server).status,
             401
