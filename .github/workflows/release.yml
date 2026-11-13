@@ -144,7 +144,7 @@ jobs:
         # Not on Windows: the binary there is a window-only program, with no console to answer on.
         if: runner.os != 'Windows'
         shell: bash
-        run: scripts/smoke-mcp.sh "src-tauri/target/${{ matrix.target }}/release/ataraxia"
+        run: scripts/smoke-binary.sh "src-tauri/target/${{ matrix.target }}/release/ataraxia"
 
       - name: Collect the files of this platform
         shell: bash

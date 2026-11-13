@@ -88,7 +88,7 @@ jobs:
           brew audit --cask --online local/verify/ataraxia || echo "(the cask audit is advisory)"
           brew install --cask local/verify/ataraxia
           test -d /Applications/Ataraxia.app
-          scripts/smoke-mcp.sh /Applications/Ataraxia.app/Contents/MacOS/ataraxia
+          scripts/smoke-binary.sh /Applications/Ataraxia.app/Contents/MacOS/ataraxia
           if xattr /Applications/Ataraxia.app | grep -q com.apple.quarantine; then
             echo "the app is still quarantined"
             exit 1
