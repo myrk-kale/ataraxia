@@ -400,7 +400,6 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
       }, 900);
       return ok(artifact);
     }
-    case "settings_mcp_info": return ok({ command: "/Applications/Ataraxia.app/Contents/MacOS/ataraxia", args: ["mcp", "--db", "/Users/dev/Library/Application Support/ataraxia/ataraxia.sqlite3"], configJson: JSON.stringify({ mcpServers: { ataraxia: { command: "/Applications/Ataraxia.app/Contents/MacOS/ataraxia", args: ["mcp", "--db", "/path/ataraxia.sqlite3"] } } }) });
     default: return { handled: false };
   }
 }

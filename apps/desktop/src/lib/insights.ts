@@ -317,8 +317,6 @@ export type InsightEvent =
   | { type: "decisionThread"; decisionId: DecisionId }
   | { type: "btw"; taskId: BtwTaskId; parentSessionId: SessionId; status: ArtifactStatus };
 
-export type McpInfo = { command: string; args: string[]; configJson: string };
-
 export function listenInsightEvents(handler: (event: InsightEvent) => void): Promise<UnlistenFn> {
   return listen<InsightEvent>("insight://event", (event) => handler(event.payload));
 }
@@ -418,9 +416,6 @@ export const flowDeletePreset = (presetId: FlowPresetId) =>
 export const flowGenerate = (sessionId: SessionId, presetId: FlowPresetId, extra: string) =>
   invoke<Artifact>("flow_generate", { sessionId, presetId, extra });
 export const flowList = (sessionId: SessionId) => invoke<Artifact[]>("flow_list", { sessionId });
-
-// settings
-export const settingsMcpInfo = () => invoke<McpInfo>("settings_mcp_info");
 
 // diff target
 export const codeRefs = (sessionId: SessionId) => invoke<GitRefs>("code_refs", { sessionId });
