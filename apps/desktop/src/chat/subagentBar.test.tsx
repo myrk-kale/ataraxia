@@ -32,10 +32,11 @@ describe("SubagentBar", () => {
     expect(html).toContain("Codex");
     expect(html).toContain("Explore the repo");
     expect(html).toContain("Review the diff");
-    expect(html).toContain("bg-cg-green");
-    expect(html).toContain("bg-cg-amber");
-    expect(html).toContain("bg-cg-red");
-    expect(html).toContain("cg-pulse");
+    expect(html).toContain("text-cg-green");
+    expect(html).toContain("animate-spin");
+    expect(html).toContain("text-cg-red");
+    expect(html).toContain("working");
+    expect(html).toContain("failed");
   });
 
   it("marks the open conversation as current", () => {

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark";
 
+const THEME_KEY = "ataraxia.theme";
+
 function systemTheme(): ThemeMode {
   return window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
@@ -15,18 +17,28 @@ function applyTheme(theme: ThemeMode) {
   root.dataset.theme = theme;
 }
 
-export function useThemeMode() {
-  const [theme, setTheme] = useState<ThemeMode>(() => {
-    const stored = window.localStorage.getItem("ataraxia.theme");
+function readTheme(): ThemeMode {
+  try {
+    const stored = window.localStorage.getItem(THEME_KEY);
     if (stored === "light" || stored === "dark") {
       return stored;
     }
-    return systemTheme();
-  });
+  } catch {
+    // Storage can be blocked; the system theme is a fine default.
+  }
+  return systemTheme();
+}
+
+export function useThemeMode() {
+  const [theme, setTheme] = useState<ThemeMode>(readTheme);
 
   useEffect(() => {
     applyTheme(theme);
-    window.localStorage.setItem("ataraxia.theme", theme);
+    try {
+      window.localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // Not remembering the theme is harmless.
+    }
   }, [theme]);
 
   return {

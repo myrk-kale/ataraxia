@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { X } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
 import {
   decodeTerminalBytes,
@@ -30,7 +31,7 @@ const XTERM_THEMES = {
   light: {
     background: "#fafaf9",
     foreground: "#50564f",
-    cursor: "#7465a6",
+    cursor: "#665698",
     selectionBackground: "rgba(143, 126, 190, 0.23)",
   },
   dark: {
@@ -180,6 +181,26 @@ export function TerminalPanel({
     }
   }, [theme]);
 
+  function maxHeight(): number {
+    return Math.round(window.innerHeight * 0.68);
+  }
+
+  // The same resize from the keyboard: arrows nudge the height, Home and End jump to the limits.
+  function onGripKey(event: KeyboardEvent<HTMLDivElement>) {
+    const steps: Record<string, number> = { ArrowUp: 24, ArrowDown: -24 };
+    const max = maxHeight();
+    if (event.key in steps) {
+      event.preventDefault();
+      setHeight((now) => Math.min(max, Math.max(MIN_HEIGHT, now + steps[event.key]!)));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setHeight(MIN_HEIGHT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setHeight(max);
+    }
+  }
+
   // Drag the top edge to resize; pointer capture keeps the drag alive outside the grip.
   function onGripDown(event: PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -206,24 +227,31 @@ export function TerminalPanel({
   return (
     <section
       aria-label="Terminal"
-      className="relative flex flex-none flex-col overflow-hidden border-t border-cg-line-strong"
+      className="relative flex flex-none flex-col overflow-hidden border-t border-cg-control"
       style={{ height, background }}
     >
       <div
-        aria-hidden="true"
-        className="group relative h-[5px] flex-none cursor-ns-resize"
+        aria-label="Resize terminal. Arrow keys change the height."
+        aria-orientation="horizontal"
+        aria-valuemax={maxHeight()}
+        aria-valuemin={MIN_HEIGHT}
+        aria-valuenow={height}
+        className="group relative h-2 flex-none cursor-ns-resize"
+        role="separator"
+        tabIndex={0}
+        onKeyDown={onGripKey}
         onPointerDown={onGripDown}
       >
-        <span className="absolute top-0 left-1/2 h-0.5 w-11 -translate-x-1/2 rounded-sm bg-cg-line-strong group-hover:bg-cg-muted" />
+        <span className="absolute top-0.5 left-1/2 h-0.5 w-11 -translate-x-1/2 rounded-cg-sm bg-cg-control group-hover:bg-cg-muted-strong" />
       </div>
       <header className="flex h-6 flex-none items-center justify-end px-4">
         <button
           aria-label="Close terminal"
-          className="grid h-5 w-5 place-items-center text-[16px] leading-none text-cg-muted hover:text-cg-ink"
+          className="grid h-6 w-6 place-items-center rounded-cg-sm text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink"
           type="button"
           onClick={onClose}
         >
-          ×
+          <X aria-hidden="true" size={14} />
         </button>
       </header>
       <div ref={hostRef} className="min-h-0 flex-1 px-6 pb-2" />

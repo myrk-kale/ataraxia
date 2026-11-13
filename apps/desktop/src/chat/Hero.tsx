@@ -9,13 +9,11 @@ export function Hero({
   children?: ReactNode;
 }) {
   return (
-    <div className="mx-auto my-auto max-w-[650px] px-[30px] text-center">
-      <h1 className="mb-[9px] text-display font-semibold tracking-[-0.6px]">
+    <div className="mx-auto my-auto max-w-[650px] px-8.5 text-center">
+      <h1 className="mb-2.5 text-display font-semibold tracking-[-0.6px]">
         What shall we build?
       </h1>
-      {contextLabel ? (
-        <p className="text-small text-cg-muted">{contextLabel.replace(" · ", "  ·  ")}</p>
-      ) : null}
+      {contextLabel ? <p className="text-small text-cg-muted">{contextLabel}</p> : null}
       {children}
     </div>
   );

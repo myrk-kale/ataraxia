@@ -25,6 +25,20 @@ export function Intro() {
   const backdropRef = useRef<HTMLDivElement>(null);
   const paths = useRef<(SVGPathElement | null)[][]>([]);
 
+  // Any key or click skips it.
+  useEffect(() => {
+    if (done) {
+      return;
+    }
+    const skip = () => setDone(true);
+    window.addEventListener("keydown", skip);
+    window.addEventListener("pointerdown", skip);
+    return () => {
+      window.removeEventListener("keydown", skip);
+      window.removeEventListener("pointerdown", skip);
+    };
+  }, [done]);
+
   useEffect(() => {
     if (done) {
       document.documentElement.removeAttribute("data-intro-running");
@@ -74,6 +88,7 @@ export function Intro() {
     <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-[100]">
       <div ref={backdropRef} className="absolute inset-0 bg-cg-panel">
         <AsciiBackground />
+        <p className="absolute inset-x-0 bottom-8 text-center text-small text-cg-muted-strong">Press any key to skip</p>
       </div>
       <svg className="absolute inset-0 h-full w-full overflow-visible text-cg-ink" fill="none">
         {WORD.items.map((letter) =>

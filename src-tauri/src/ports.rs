@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
-use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::ids::{CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     AgentEvent, ChatItem, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository,
     Result, SessionStatus, Worktree, WorktreeInfo,
@@ -43,6 +43,8 @@ pub trait AgentRuntime: Send + Sync {
     /// Sends a message to one of the chat's subagents (shown in its own conversation).
     fn message_subagent(&self, session_id: &SessionId, subagent_id: &str, text: &str)
     -> Result<()>;
+    /// Ends the live agent process of a session, keeping its saved transcript.
+    fn stop_session(&self, session_id: &SessionId);
     /// Models, efforts and agents the live session offers.
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions>;
 }
@@ -52,13 +54,169 @@ pub trait EventSink: Send + Sync {
     fn emit_agent(&self, event: AgentEvent);
 }
 
+fn unsupported<T>(what: &str) -> Result<T> {
+    Err(crate::domain::Error::new(
+        crate::domain::ErrorCode::Unsupported,
+        format!("{what} is not supported by this adapter"),
+    ))
+}
+
+/// Outbound channel for derived-work changes (Tauri `emit` in production).
+pub trait InsightSink: Send + Sync {
+    fn emit_insight(&self, event: crate::domain::InsightEvent);
+}
+
+/// Everything the engine persists, behind one handle.
+pub trait Database: Store + InsightStore {}
+impl<T: Store + InsightStore> Database for T {}
+
+/// Structure of source code, so changes can be attributed to functions and classes.
+pub trait Syntax: Send + Sync {
+    /// Name of the language when the file is one this parser knows.
+    fn language_of(&self, path: &str) -> Option<&'static str>;
+    /// Symbols of a file, outermost first; `None` for languages without a grammar.
+    fn symbols(&self, path: &str, text: &str) -> Option<Vec<crate::domain::Symbol>>;
+}
+
 pub trait Git: Send + Sync {
     fn discover(&self, path: &Path) -> Result<RepoInfo>;
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>>;
+
+    /// What `HEAD` says right now (`ref: refs/heads/main`, or a commit id when detached), read
+    /// without running git, so it is cheap enough to ask every second.
+    fn head_marker(&self, _worktree: &Path) -> Result<String> {
+        unsupported("head_marker")
+    }
+
+    /// Every local branch, newest first, with where each one is checked out.
+    fn list_branches(&self, _worktree: &Path) -> Result<Vec<crate::domain::BranchInfo>> {
+        unsupported("list_branches")
+    }
+
+    /// Checks a local branch out in `worktree`. Never forced: a dirty tree that would be
+    /// overwritten, or a branch another worktree holds, is an error carrying git's own words.
+    fn switch_branch(&self, _worktree: &Path, _name: &str) -> Result<()> {
+        unsupported("switch_branch")
+    }
+
+    /// Commit id `HEAD` points at.
+    fn head_rev(&self, _worktree: &Path) -> Result<String> {
+        unsupported("head_rev")
+    }
+
+    /// Records the working tree (tracked and untracked, ignoring `.gitignore`d files) as a
+    /// commit without touching the index, the branch or the files. The commit is kept alive
+    /// under `refs/ataraxia/<keep>`.
+    fn snapshot(&self, _worktree: &Path, _keep: &str) -> Result<String> {
+        unsupported("snapshot")
+    }
+
+    /// Tree id of a revision, so two snapshots can be compared for equality.
+    fn tree_id(&self, _worktree: &Path, _rev: &str) -> Result<String> {
+        unsupported("tree_id")
+    }
+
+    fn changed_files(
+        &self,
+        _worktree: &Path,
+        _base: &str,
+        _head: &str,
+    ) -> Result<Vec<crate::domain::ChangedFile>> {
+        unsupported("changed_files")
+    }
+
+    /// Text of `path` at `rev`; `None` when it does not exist there or is binary.
+    fn file_at(&self, _worktree: &Path, _rev: &str, _path: &str) -> Result<Option<String>> {
+        unsupported("file_at")
+    }
+
+    /// Unified diff of one file between two revisions.
+    fn diff_file(&self, _worktree: &Path, _base: &str, _head: &str, _path: &str) -> Result<String> {
+        unsupported("diff_file")
+    }
+
+    /// Commit a user-typed revision (branch, tag, sha, `HEAD~2`...) points at.
+    fn resolve_rev(&self, _worktree: &Path, _spec: &str) -> Result<String> {
+        unsupported("resolve_rev")
+    }
+
+    fn merge_base(&self, _worktree: &Path, _a: &str, _b: &str) -> Result<String> {
+        unsupported("merge_base")
+    }
+
+    /// Branches, tags and recent commits the diff can be taken against.
+    fn list_refs(&self, _worktree: &Path) -> Result<crate::domain::GitRefs> {
+        unsupported("list_refs")
+    }
+
+    /// One commit by branch, tag, abbreviated or full id.
+    fn commit_info(&self, _worktree: &Path, _rev: &str) -> Result<crate::domain::CommitInfo> {
+        unsupported("commit_info")
+    }
+
+    /// The newest commits that touched any of `paths`.
+    fn commits_touching(
+        &self,
+        _worktree: &Path,
+        _paths: &[String],
+        _limit: usize,
+    ) -> Result<Vec<crate::domain::CommitInfo>> {
+        unsupported("commits_touching")
+    }
+
+    /// Where the change is in a file: the blocks of a zero-context diff.
+    fn changed_ranges(
+        &self,
+        _worktree: &Path,
+        _base: &str,
+        _head: &str,
+        _paths: &[String],
+    ) -> Result<Vec<crate::domain::Hunk>> {
+        unsupported("changed_ranges")
+    }
+
+    /// Files at `rev` that mention `name` as a whole word.
+    fn files_mentioning(&self, _worktree: &Path, _rev: &str, _name: &str) -> Result<Vec<String>> {
+        unsupported("files_mentioning")
+    }
+
+    /// Every file git knows about plus untracked ones that are not ignored, relative paths.
+    fn list_files(&self, _worktree: &Path) -> Result<Vec<String>> {
+        unsupported("list_files")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    pub path: String,
+    pub text: String,
+    pub binary: bool,
+    pub too_large: bool,
+    pub size: u64,
+    /// Modification time in milliseconds; the guard for [`Fs::write_text`].
+    pub mtime_ms: i64,
 }
 
 pub trait Fs: Send + Sync {
     fn exists(&self, path: &Path) -> Result<bool>;
+
+    /// Reads a file inside `root`; paths that escape it are refused.
+    fn read_text(&self, _root: &Path, _relative: &str) -> Result<FileContent> {
+        unsupported("read_text")
+    }
+
+    /// Writes a file inside `root`. When `expected_mtime_ms` is set and the file changed since,
+    /// nothing is written and a `Conflict` error is returned. Returns the new mtime.
+    fn write_text(
+        &self,
+        _root: &Path,
+        _relative: &str,
+        _text: &str,
+        _expected_mtime_ms: Option<i64>,
+    ) -> Result<i64> {
+        unsupported("write_text")
+    }
 }
 
 pub trait Store: Send + Sync {
@@ -110,6 +268,142 @@ pub trait Store: Send + Sync {
 
     fn get_preference(&self, key: &str) -> Result<Option<String>>;
     fn set_preference(&self, key: &str, value: &str) -> Result<()>;
+}
+
+/// Persistence of everything derived from an agent's work.
+pub trait InsightStore: Send + Sync {
+    fn create_checkpoint(&self, checkpoint: &crate::domain::Checkpoint) -> Result<()>;
+    fn update_checkpoint_status(
+        &self,
+        id: CheckpointId,
+        status: crate::domain::ArtifactStatus,
+    ) -> Result<()>;
+    fn get_checkpoint(&self, id: CheckpointId) -> Result<Option<crate::domain::Checkpoint>>;
+    /// Oldest first.
+    fn list_checkpoints(&self, session_id: SessionId) -> Result<Vec<crate::domain::Checkpoint>>;
+    /// Deletes every checkpoint of a chat, and with them everything that hangs off one: review
+    /// queues, decisions and their threads, diagrams, marks, comments and set priorities.
+    fn delete_session_checkpoints(&self, session_id: SessionId) -> Result<()>;
+    fn latest_checkpoint(&self, session_id: SessionId)
+    -> Result<Option<crate::domain::Checkpoint>>;
+
+    /// Inserts the artifact, or returns the one that already exists for the same
+    /// (checkpoint, kind, dedupe key); the bool tells whether it was created now.
+    fn ensure_artifact(
+        &self,
+        artifact: &crate::domain::Artifact,
+    ) -> Result<(crate::domain::Artifact, bool)>;
+    fn update_artifact(
+        &self,
+        id: crate::domain::ArtifactId,
+        status: crate::domain::ArtifactStatus,
+        content: Option<&serde_json::Value>,
+        provenance: Option<&serde_json::Value>,
+        error: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()>;
+    fn get_artifact(
+        &self,
+        id: crate::domain::ArtifactId,
+    ) -> Result<Option<crate::domain::Artifact>>;
+    fn list_artifacts(
+        &self,
+        session_id: SessionId,
+        kind: Option<crate::domain::ArtifactKind>,
+    ) -> Result<Vec<crate::domain::Artifact>>;
+    /// Marks the ready artifacts of `kind` older than `checkpoint` as stale.
+    fn mark_artifacts_stale(
+        &self,
+        session_id: SessionId,
+        kind: crate::domain::ArtifactKind,
+        keep: CheckpointId,
+        updated_at: &str,
+    ) -> Result<usize>;
+    /// Artifacts a previous run left `queued` or `running` (the app closed meanwhile).
+    fn interrupted_artifacts(&self) -> Result<Vec<crate::domain::Artifact>>;
+
+    fn insert_decision(&self, decision: &crate::domain::Decision) -> Result<()>;
+    fn update_decision(&self, decision: &crate::domain::Decision, reason: &str) -> Result<()>;
+    fn get_decision(
+        &self,
+        id: crate::domain::DecisionId,
+    ) -> Result<Option<crate::domain::Decision>>;
+    fn list_decisions(&self, session_id: SessionId) -> Result<Vec<crate::domain::Decision>>;
+    fn set_unit_priority(&self, priority: &crate::domain::UnitPriority) -> Result<()>;
+    fn clear_unit_priority(
+        &self,
+        checkpoint_id: crate::domain::ids::CheckpointId,
+        path: &str,
+        name: &str,
+    ) -> Result<()>;
+    fn list_unit_priorities(
+        &self,
+        checkpoint_id: crate::domain::ids::CheckpointId,
+    ) -> Result<Vec<crate::domain::UnitPriority>>;
+    fn add_decision_commit(&self, commit: &crate::domain::DecisionCommit) -> Result<()>;
+    fn remove_decision_commit(&self, id: crate::domain::DecisionId, rev: &str) -> Result<()>;
+    fn list_decision_commits(
+        &self,
+        id: crate::domain::DecisionId,
+    ) -> Result<Vec<crate::domain::DecisionCommit>>;
+    fn decision_revisions(
+        &self,
+        id: crate::domain::DecisionId,
+    ) -> Result<Vec<crate::domain::DecisionRevision>>;
+    fn add_decision_message(&self, message: &crate::domain::DecisionMessage) -> Result<()>;
+    fn list_decision_messages(
+        &self,
+        id: crate::domain::DecisionId,
+    ) -> Result<Vec<crate::domain::DecisionMessage>>;
+
+    fn set_review_mark(&self, mark: &crate::domain::ReviewMark) -> Result<()>;
+    fn list_review_marks(&self, id: CheckpointId) -> Result<Vec<crate::domain::ReviewMark>>;
+    fn add_review_comment(&self, comment: &crate::domain::ReviewComment) -> Result<()>;
+    fn list_review_comments(&self, id: CheckpointId) -> Result<Vec<crate::domain::ReviewComment>>;
+
+    fn insert_btw_task(&self, task: &crate::domain::BtwTask) -> Result<()>;
+    fn update_btw_task(
+        &self,
+        id: crate::domain::BtwTaskId,
+        status: crate::domain::ArtifactStatus,
+        summary: Option<&str>,
+        returned_at: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()>;
+    fn get_btw_task(&self, id: crate::domain::BtwTaskId) -> Result<Option<crate::domain::BtwTask>>;
+    fn btw_task_for_session(&self, session_id: SessionId)
+    -> Result<Option<crate::domain::BtwTask>>;
+    fn list_btw_tasks(&self, parent: SessionId) -> Result<Vec<crate::domain::BtwTask>>;
+
+    fn list_flow_presets(
+        &self,
+        repository_id: RepositoryId,
+    ) -> Result<Vec<crate::domain::FlowPreset>>;
+    fn get_flow_preset(
+        &self,
+        id: crate::domain::FlowPresetId,
+    ) -> Result<Option<crate::domain::FlowPreset>>;
+    fn upsert_flow_preset(&self, preset: &crate::domain::FlowPreset) -> Result<()>;
+    fn delete_flow_preset(&self, id: crate::domain::FlowPresetId) -> Result<()>;
+
+    /// Hidden child sessions of a chat, newest first.
+    fn list_child_sessions(&self, parent: SessionId) -> Result<Vec<crate::domain::ChatSession>>;
+    fn replace_subagents(
+        &self,
+        session_id: SessionId,
+        records: &[crate::domain::SubagentRecord],
+    ) -> Result<()>;
+    fn list_subagents(&self, session_id: SessionId) -> Result<Vec<crate::domain::SubagentRecord>>;
+
+    fn audit_mcp(
+        &self,
+        at: &str,
+        tool: &str,
+        scope: Option<&str>,
+        write: bool,
+        ok: bool,
+        detail: &str,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

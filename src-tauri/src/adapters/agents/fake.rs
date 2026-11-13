@@ -51,6 +51,7 @@ impl AgentBackend for FakeBackend {
             emit: ctx.emit,
             step_delay: self.step_delay,
             live_settings: self.live_settings,
+            read_only: ctx.read_only,
             state: Arc::new(Mutex::new(FakeState::default())),
         }))
     }
@@ -72,6 +73,7 @@ struct FakeSession {
     emit: Emitter,
     step_delay: Duration,
     live_settings: bool,
+    read_only: bool,
     state: Arc<Mutex<FakeState>>,
 }
 
@@ -124,7 +126,22 @@ impl BackendSession for FakeSession {
         }
     }
 
-    fn prompt(&self, turn_id: TurnId, _text: &str) -> Result<()> {
+    fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+        // Tasks the app gives to hidden sessions get a scripted answer in one go, so the
+        // whole pipeline can be exercised without a real agent.
+        if let Some(answer) = scripted_answer(text, self.read_only) {
+            let emit = Arc::clone(&self.emit);
+            let delay = self.step_delay;
+            thread::spawn(move || {
+                thread::sleep(delay);
+                emit(BackendEvent::Delta {
+                    turn_id,
+                    text: answer,
+                });
+                emit(BackendEvent::TurnDone { turn_id, ok: true });
+            });
+            return Ok(());
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.state.lock().cancel = Some(Arc::clone(&cancel));
 
@@ -278,4 +295,55 @@ impl TurnRun {
             detail: "Allow reading README.md in the selected worktree?".into(),
         });
     }
+}
+
+/// Canned answers for the app's own prompts (`None` for an ordinary chat message).
+fn scripted_answer(text: &str, read_only: bool) -> Option<String> {
+    if text.contains("ATARAXIA_TASK:decisions") {
+        return Some(
+            "```json\n{\"decisions\":[{\"type\":\"behavior\",\"title\":\"Keep the change behind the existing entry point?\",\
+\"summary\":\"The change reuses the current entry point instead of adding a new one.\",\
+\"context\":\"A new entry point would have duplicated validation.\",\
+\"rationale\":\"One place to validate keeps behavior consistent.\",\
+\"alternatives\":[{\"title\":\"New entry point\",\"note\":\"More explicit, but duplicates checks.\"}],\
+\"files\":[{\"path\":\"README.md\",\"start_line\":1,\"end_line\":3}]},\
+{\"type\":\"dependencies\",\"title\":\"Avoid a new dependency\",\"summary\":\"The helper is written locally.\",\
+\"files\":[]}]}\n```"
+                .to_string(),
+        );
+    }
+    if text.contains("ATARAXIA_TASK:flow") {
+        return Some(
+            "{\"summary\":\"Request enters, is validated, then stored.\",\"nodes\":[\
+{\"id\":\"entry\",\"label\":\"Entry point\",\"kind\":\"entry\",\"description\":\"Receives the request.\",\"refs\":[{\"path\":\"README.md\",\"line\":1}]},\
+{\"id\":\"validate\",\"label\":\"Validate\",\"kind\":\"function\",\"description\":\"Checks the input.\",\"refs\":[]},\
+{\"id\":\"store\",\"label\":\"Store\",\"kind\":\"data\",\"description\":\"Persists the result.\",\"refs\":[]}],\
+\"edges\":[{\"source\":\"entry\",\"target\":\"validate\",\"label\":\"calls\"},{\"source\":\"validate\",\"target\":\"store\",\"label\":\"writes\"}]}"
+                .to_string(),
+        );
+    }
+    if text.contains("[fake:actions]") {
+        // Does what the question says to the first component of the review queue the prompt lists.
+        let first = text
+            .lines()
+            .skip_while(|line| !line.starts_with("Review queue of"))
+            .nth(1)
+            .and_then(|line| line.strip_prefix("- "))
+            .and_then(|line| {
+                let mut parts = line.split(" | ");
+                let (_, name, place) = (parts.next()?, parts.next()?, parts.next()?);
+                Some((name.to_string(), place.rsplit_once(':')?.0.to_string()))
+            });
+        let (name, path) = first.unwrap_or_else(|| ("missing".into(), "missing.rs".into()));
+        return Some(format!(
+            "I commented on {name}, raised it and started the rest.\n\n```ataraxia-actions\n[\
+{{\"type\":\"comment\",\"path\":\"{path}\",\"unit\":\"{name}\",\"text\":\"Fake comment on {name}\"}},\
+{{\"type\":\"priority\",\"path\":\"{path}\",\"unit\":\"{name}\",\"score\":99,\"reason\":\"fake reason\"}},\
+{{\"type\":\"comment\",\"path\":\"{path}\",\"unit\":\"no_such_component\",\"text\":\"lost\"}},\
+{{\"type\":\"generate_decisions\",\"focus\":\"retries\"}},\
+{{\"type\":\"generate_flow\",\"preset\":\"Execution flow\",\"focus\":\"the entry point\"}}]\n```"
+        ));
+    }
+    read_only
+        .then(|| "Here is what I found (fake read-only answer): nothing was modified.".to_string())
 }

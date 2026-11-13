@@ -82,6 +82,8 @@ pub struct BackendContext {
     pub effort: Option<String>,
     /// Named agent to run as (`None` = the provider's default agent).
     pub agent: Option<String>,
+    /// The session only investigates: provider-side sandboxing keeps it from writing.
+    pub read_only: bool,
     pub emit: Emitter,
 }
 

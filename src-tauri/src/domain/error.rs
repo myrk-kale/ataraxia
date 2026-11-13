@@ -12,6 +12,8 @@ pub enum ErrorCode {
     NotARepo,
     Unsupported,
     Agent,
+    /// The file changed on disk after it was read.
+    Conflict,
 }
 
 impl ErrorCode {
@@ -23,6 +25,7 @@ impl ErrorCode {
             Self::NotARepo => "not-a-repo",
             Self::Unsupported => "unsupported",
             Self::Agent => "agent",
+            Self::Conflict => "conflict",
         }
     }
 }

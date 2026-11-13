@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Ataraxia</title>
+  <rect width="64" height="64" rx="14" fill="#232522" />
+  <g transform="translate(11.25 7) scale(0.5)" fill="none" stroke="#fafaf9" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M0 100 L41.5 0 L83 100" />
+    <path d="M14.94 64 L68.06 64" />
+  </g>
+</svg>

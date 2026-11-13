@@ -23,7 +23,7 @@ function CustomModelInput({ onSubmit }: { onSubmit: (model: string) => void }) {
   return (
     <input
       aria-label="Custom model id"
-      className="w-full rounded-lg border border-cg-line bg-cg-tint px-2.5 py-2 text-small text-cg-ink outline-none placeholder:text-cg-muted/70 focus:border-cg-line-strong"
+      className="w-full rounded-cg-md border border-cg-control bg-cg-tint px-2.5 py-2 text-small text-cg-ink placeholder:text-cg-muted focus:border-cg-ink"
       placeholder="Custom model id ↵"
       spellCheck={false}
       value={draft}

@@ -37,21 +37,37 @@ enum Launcher {
     Fixed { program: PathBuf, args: Vec<String> },
 }
 
+/// How to start Ataraxia's own MCP server for a session (see [`crate::mcp`]).
+#[derive(Debug, Clone)]
+pub struct McpLaunch {
+    pub exe: PathBuf,
+    pub db: PathBuf,
+}
+
 pub struct ClaudeBackend {
     launcher: Launcher,
+    mcp: Option<McpLaunch>,
 }
 
 impl ClaudeBackend {
     pub fn new() -> Self {
         Self {
             launcher: Launcher::Resolve,
+            mcp: None,
         }
+    }
+
+    /// Gives every session Ataraxia's MCP server, scoped to that session.
+    pub fn with_mcp(mut self, mcp: McpLaunch) -> Self {
+        self.mcp = Some(mcp);
+        self
     }
 
     /// Runs a stand-in program that speaks the same frames (tests).
     pub fn with_command(program: PathBuf, args: Vec<String>) -> Self {
         Self {
             launcher: Launcher::Fixed { program, args },
+            mcp: None,
         }
     }
 
@@ -60,14 +76,20 @@ impl ClaudeBackend {
         model: Option<&str>,
         effort: Option<&str>,
         agent: Option<&str>,
+        read_only: bool,
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
             Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| (
-                    program,
-                    launch_args(permission_mode().as_deref(), model, effort, agent),
-                ))
+                .map(|program| {
+                    // Read-only sessions run in plan mode, whatever the user configured.
+                    let mode = if read_only {
+                        Some("plan".to_string())
+                    } else {
+                        permission_mode()
+                    };
+                    (program, launch_args(mode.as_deref(), model, effort, agent))
+                })
                 .ok_or_else(|| {
                     format!(
                         "claude CLI not found. Install Claude Code or set {OVERRIDE_ENV} to its path."
@@ -75,6 +97,29 @@ impl ClaudeBackend {
                 }),
         }
     }
+}
+
+/// Inline `--mcp-config` registering Ataraxia's server, scoped to one chat. Investigation
+/// sessions get it read-only.
+pub fn mcp_config_json(
+    mcp: &McpLaunch,
+    session_id: crate::domain::ids::SessionId,
+    write: bool,
+) -> String {
+    let mut args = vec![
+        "mcp".to_string(),
+        "--db".to_string(),
+        mcp.db.to_string_lossy().into_owned(),
+        "--session".to_string(),
+        session_id.0.to_string(),
+    ];
+    if write {
+        args.push("--allow-write".into());
+    }
+    serde_json::json!({
+        "mcpServers": { "ataraxia": { "command": mcp.exe.to_string_lossy(), "args": args } }
+    })
+    .to_string()
 }
 
 /// Permission mode passed to `claude --permission-mode`. Defaults to `auto`; set
@@ -134,7 +179,7 @@ impl Default for ClaudeBackend {
 
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command(None, None, None).map(|_| ())
+        self.command(None, None, None, false).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
@@ -143,8 +188,14 @@ impl AgentBackend for ClaudeBackend {
                 ctx.model.as_deref(),
                 ctx.effort.as_deref(),
                 ctx.agent.as_deref(),
+                ctx.read_only,
             )
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
+        let mut args = args;
+        if let (Launcher::Resolve, Some(mcp)) = (&self.launcher, &self.mcp) {
+            args.push("--mcp-config".into());
+            args.push(mcp_config_json(mcp, ctx.session_id, !ctx.read_only));
+        }
         let shared = Arc::new(ClaudeShared {
             emit: ctx.emit,
             process: OnceLock::new(),
@@ -1084,6 +1135,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = backend
             .start(BackendContext {
+                read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
                 model: None,

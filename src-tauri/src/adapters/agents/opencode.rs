@@ -143,7 +143,9 @@ impl AgentBackend for OpenCodeBackend {
         let _ = shared.apply(
             ctx.model.as_deref(),
             ctx.effort.as_deref(),
-            ctx.agent.as_deref(),
+            ctx.agent
+                .as_deref()
+                .or(if ctx.read_only { Some("plan") } else { None }),
         );
         Ok(Arc::new(AcpSession { shared }))
     }
@@ -1016,6 +1018,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = mock_backend()
             .start(BackendContext {
+                read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
                 model: model.map(str::to_string),
@@ -1318,6 +1321,7 @@ mod tests {
         assert!(backend.availability().is_ok());
         let error = backend
             .start(BackendContext {
+                read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
                 model: None,

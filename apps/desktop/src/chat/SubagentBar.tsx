@@ -1,14 +1,17 @@
-import { Square } from "lucide-react";
+import { Check, Loader2, Square, X } from "lucide-react";
 import type { SubagentView } from "../lib/agent";
+import type { ProviderKind } from "../lib/workspace";
+import { ProviderMark } from "./ProviderMark";
 
-function dotClass(status: SubagentView["status"]): string {
+/** Running, done and failed differ in shape as well as colour. */
+function StatusGlyph({ status }: { status: SubagentView["status"] }) {
   switch (status) {
     case "running":
-      return "bg-cg-amber cg-pulse";
+      return <Loader2 aria-hidden="true" className="flex-none animate-spin text-cg-muted-strong" size={12} />;
     case "failed":
-      return "bg-cg-red";
+      return <X aria-hidden="true" className="flex-none text-cg-red" size={12} />;
     default:
-      return "bg-cg-green";
+      return <Check aria-hidden="true" className="flex-none text-cg-green" size={12} />;
   }
 }
 
@@ -26,6 +29,7 @@ export function SubagentBar({
   subagents,
   selected,
   mainLabel,
+  provider,
   busy,
   onSelect,
   onStop,
@@ -34,6 +38,8 @@ export function SubagentBar({
   /** The selected subagent id, or null for the main conversation. */
   selected: string | null;
   mainLabel: string;
+  /** Which agent the main conversation belongs to, for its mark. */
+  provider?: ProviderKind;
   busy: boolean;
   onSelect: (id: string | null) => void;
   onStop: () => void;
@@ -58,9 +64,7 @@ export function SubagentBar({
         type="button"
         onClick={() => onSelect(null)}
       >
-        <span aria-hidden="true" className="text-cg-accent">
-          ✳
-        </span>
+        {provider ? <ProviderMark provider={provider} size={16} /> : null}
         <span className="truncate">{mainLabel}</span>
       </button>
       {subagents.map((item) => (
@@ -68,14 +72,10 @@ export function SubagentBar({
           key={item.id}
           aria-current={selected === item.id ? "true" : undefined}
           className={chip(selected === item.id)}
-          title={`${item.title} (${STATUS_LABEL[item.status]})`}
-          type="button"
+                    type="button"
           onClick={() => onSelect(item.id)}
         >
-          <span
-            aria-hidden="true"
-            className={`h-1.5 w-1.5 flex-none rounded-full ${dotClass(item.status)}`}
-          />
+          <StatusGlyph status={item.status} />
           <span className="truncate">{item.title}</span>
           <span className="sr-only">{STATUS_LABEL[item.status]}</span>
         </button>
@@ -83,7 +83,7 @@ export function SubagentBar({
       {busy ? (
         <button
           aria-label="Stop"
-          className="ml-auto grid h-6 w-6 flex-none place-items-center rounded-md text-cg-muted hover:bg-cg-tint hover:text-cg-ink"
+          className="ml-auto grid h-6 w-6 flex-none place-items-center rounded-cg-sm text-cg-muted hover:bg-cg-tint hover:text-cg-ink"
           title="Stop the running turn"
           type="button"
           onClick={onStop}

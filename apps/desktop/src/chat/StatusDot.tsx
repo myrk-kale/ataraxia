@@ -30,15 +30,15 @@ const COLOR: Record<Tone, string> = {
   red: "bg-cg-red",
 };
 
-/** Minimal harness status: green (ready), yellow (busy or waiting), red (stopped or failed). */
+/**
+ * The agent's state as a dot and a word: green (ready), amber (busy or waiting), red (stopped
+ * or failed). The word carries the meaning, so the colour never has to.
+ */
 export function StatusDot({ status }: { status: SessionStatus }) {
-  const tone = TONE[status];
   return (
-    <span
-      aria-label={LABEL[status]}
-      className={`h-1.5 w-1.5 rounded-full ${COLOR[tone]} ${tone === "yellow" ? "cg-pulse" : ""}`}
-      role="status"
-      title={LABEL[status]}
-    />
+    <span className="inline-flex items-center gap-1.5 text-small text-cg-muted-strong" role="status">
+      <span aria-hidden="true" className={`h-1.5 w-1.5 flex-none rounded-full ${COLOR[TONE[status]]}`} />
+      {LABEL[status]}
+    </span>
   );
 }

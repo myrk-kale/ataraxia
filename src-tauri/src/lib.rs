@@ -9,6 +9,7 @@
 pub mod adapters;
 pub mod app;
 pub mod domain;
+pub mod mcp;
 pub mod ports;
 
 use adapters::tauri_api;
@@ -23,6 +24,7 @@ pub fn run() {
             let state = tauri_api::build_app_state(app.handle())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(state);
+            tauri_api::follow_git(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -31,6 +33,8 @@ pub fn run() {
             tauri_api::workspace_open_repository,
             tauri_api::workspace_select_repository,
             tauri_api::workspace_select_worktree,
+            tauri_api::workspace_list_branches,
+            tauri_api::workspace_select_branch,
             tauri_api::workspace_create_session,
             tauri_api::workspace_open_session,
             tauri_api::terminal_ensure,
@@ -47,6 +51,44 @@ pub fn run() {
             tauri_api::agent_cancel,
             tauri_api::agent_resolve_permission,
             tauri_api::agent_get_snapshot,
+            tauri_api::session_get,
+            tauri_api::code_tree,
+            tauri_api::code_read,
+            tauri_api::code_write,
+            tauri_api::code_file_at,
+            tauri_api::code_review,
+            tauri_api::code_refresh_checkpoint,
+            tauri_api::code_set_review_mark,
+            tauri_api::code_add_comment,
+            tauri_api::artifacts_list,
+            tauri_api::artifact_retry,
+            tauri_api::checkpoints_list,
+            tauri_api::decisions_generate,
+            tauri_api::review_reset_priority,
+            tauri_api::artifacts_delete_all,
+            tauri_api::decision_create,
+            tauri_api::decision_link_commit,
+            tauri_api::decision_unlink_commit,
+            tauri_api::decision_commit_candidates,
+            tauri_api::decisions_list,
+            tauri_api::decision_detail,
+            tauri_api::decision_set_state,
+            tauri_api::decision_comment,
+            tauri_api::decision_post_message,
+            tauri_api::decision_request_change,
+            tauri_api::btw_preview_context,
+            tauri_api::btw_start,
+            tauri_api::btw_list,
+            tauri_api::btw_return,
+            tauri_api::btw_session,
+            tauri_api::flow_presets,
+            tauri_api::flow_save_preset,
+            tauri_api::flow_delete_preset,
+            tauri_api::flow_generate,
+            tauri_api::flow_list,
+            tauri_api::settings_mcp_info,
+            tauri_api::code_refs,
+            tauri_api::code_compare,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

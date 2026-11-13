@@ -1,3 +1,4 @@
+import { Check, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
 import type { ChatSession, SessionId, Worktree } from "../lib/workspace";
@@ -59,17 +60,17 @@ export function SessionsPanel({
     <aside
       ref={ref}
       aria-label="Chat sessions"
-      className="cg-page-in absolute top-[54px] right-[75px] z-30 flex max-h-[min(540px,75vh)] w-[345px] flex-col overflow-hidden rounded-xl border border-cg-line bg-cg-panel shadow-[0_18px_50px_rgba(27,30,26,0.12)]"
+      className="absolute top-[54px] right-[75px] z-30 flex max-h-[min(540px,75vh)] w-[345px] flex-col overflow-hidden rounded-cg-lg border border-cg-line bg-cg-panel shadow-cg-pop"
     >
-      <div className="flex h-[55px] flex-none items-center justify-between border-b border-cg-line px-5 text-micro font-bold tracking-[1.1px] text-cg-muted-strong">
-        <span>SESSIONS</span>
+      <div className="flex h-[55px] flex-none items-center justify-between border-b border-cg-line px-5 text-small font-semibold text-cg-muted-strong">
+        <h2>Sessions</h2>
         <button
           aria-label="Close sessions"
-          className="text-[21px] leading-none text-cg-muted hover:text-cg-ink"
+          className="grid h-7 w-7 place-items-center rounded-cg-sm text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink"
           type="button"
           onClick={onClose}
         >
-          ×
+          <X aria-hidden="true" size={15} />
         </button>
       </div>
       <div className="overflow-auto px-2.5 pt-3.5 pb-5">
@@ -80,7 +81,7 @@ export function SessionsPanel({
         ) : (
           groups.map((worktreeId) => (
             <div key={worktreeId} className="mb-4">
-              <div className="mx-3 mt-2 mb-2.5 font-mono text-micro text-cg-muted">
+              <div className="mx-3 mt-2 mb-2.5 font-mono text-small text-cg-muted">
                 {worktreeLabel(worktrees.find((item) => item.id === worktreeId))}
               </div>
               {sessions
@@ -88,23 +89,23 @@ export function SessionsPanel({
                 .map((session) => (
                   <button
                     key={session.id}
-                    className={`flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left hover:bg-cg-tint ${
+                    aria-current={session.id === selectedId ? "true" : undefined}
+                    className={`flex w-full items-start gap-3 rounded-cg-md px-3 py-3 text-left hover:bg-cg-tint ${
                       session.id === selectedId ? "bg-cg-tint" : ""
                     }`}
                     type="button"
                     onClick={() => onSelect(session.id)}
                   >
-                    <span
-                      aria-hidden="true"
-                      className={`mt-1 h-2 w-2 flex-none rounded-full ${
-                        session.id === selectedId ? "bg-cg-accent" : "bg-cg-line-strong"
-                      }`}
-                    />
+                    {session.id === selectedId ? (
+                      <Check aria-hidden="true" className="mt-0.5 flex-none text-cg-accent" size={14} />
+                    ) : (
+                      <span aria-hidden="true" className="mt-1 h-3.5 w-3.5 flex-none" />
+                    )}
                     <span className="min-w-0 flex-1">
                       <strong className="block truncate text-ui font-semibold">
                         {session.title}
                       </strong>
-                      <small className="mt-1.5 block text-micro text-cg-muted">
+                      <small className="mt-1.5 block text-small text-cg-muted">
                         {PROVIDER_LABELS[session.provider]}
                       </small>
                     </span>

@@ -19,7 +19,7 @@ use crate::domain::{
     PendingPermission, PermissionDecision, Result, SessionStatus, SubagentRecord, SubagentStatus,
     SubagentUpdate, ToolCallRecord, ToolStatus,
 };
-use crate::ports::{AgentRuntime, EventSink, Store};
+use crate::ports::{AgentRuntime, EventSink, InsightStore, Store};
 
 struct Live {
     backend: Arc<dyn BackendSession>,
@@ -30,10 +30,13 @@ struct Live {
     pending: Option<PendingPermission>,
     /// Leading transcript items from before this agent process started.
     restored_count: usize,
+    /// Investigation-only session: every permission request is refused.
+    read_only: bool,
 }
 
 struct Inner {
     store: Arc<dyn Store>,
+    insights: Option<Arc<dyn InsightStore>>,
     sink: Arc<dyn EventSink>,
     sessions: Mutex<HashMap<SessionId, Live>>,
 }
@@ -48,11 +51,20 @@ impl AgentHost {
         Self {
             inner: Arc::new(Inner {
                 store,
+                insights: None,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
             }),
             backends: HashMap::new(),
         }
+    }
+
+    /// Lets the host keep subagent conversations across restarts.
+    pub fn with_insights(mut self, insights: Arc<dyn InsightStore>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.insights = Some(insights);
+        }
+        self
     }
 
     pub fn with_backend(mut self, kind: ProviderKind, backend: Arc<dyn AgentBackend>) -> Self {
@@ -67,6 +79,7 @@ impl AgentHost {
                 .drain()
                 .map(|(session_id, live)| {
                     self.inner.persist(session_id, &live.transcript);
+                    self.inner.persist_subagents(session_id, &live.subagents);
                     live.backend
                 })
                 .collect()
@@ -98,6 +111,14 @@ impl Inner {
     fn persist(&self, session_id: SessionId, transcript: &[ChatItem]) {
         if let Err(error) = self.store.replace_chat_items(session_id, transcript) {
             eprintln!("ataraxia: could not persist transcript: {error}");
+        }
+    }
+
+    fn persist_subagents(&self, session_id: SessionId, subagents: &[SubagentRecord]) {
+        if let Some(insights) = &self.insights {
+            if let Err(error) = insights.replace_subagents(session_id, subagents) {
+                eprintln!("ataraxia: could not persist subagents: {error}");
+            }
         }
     }
 
@@ -205,6 +226,17 @@ impl Inner {
                 if live.active_turn != Some(turn_id) {
                     return;
                 }
+                if live.read_only {
+                    // Investigations never write: refuse without bothering the user.
+                    let backend = Arc::clone(&live.backend);
+                    std::thread::spawn(move || {
+                        let _ = backend.resolve_permission(&PermissionDecision {
+                            request_id,
+                            allow: false,
+                        });
+                    });
+                    return;
+                }
                 live.pending = Some(PendingPermission {
                     request_id,
                     turn_id,
@@ -227,6 +259,7 @@ impl Inner {
                 }
                 finish_turn(live, turn_id, ok);
                 self.persist(session_id, &live.transcript);
+                self.persist_subagents(session_id, &live.subagents);
                 self.sink.emit_agent(AgentEvent::TurnDone {
                     session_id,
                     turn_id,
@@ -243,6 +276,12 @@ impl Inner {
             }
             BackendEvent::Subagent { id, title, update } => {
                 apply_subagent(&mut live.subagents, &id, &title, &update);
+                if matches!(
+                    update,
+                    SubagentUpdate::Done { .. } | SubagentUpdate::Detached
+                ) {
+                    self.persist_subagents(session_id, &live.subagents);
+                }
                 self.sink.emit_agent(AgentEvent::Subagent {
                     session_id,
                     subagent_id: id,
@@ -585,6 +624,17 @@ impl AgentRuntime for AgentHost {
                 }
             }
         }
+        if carried_subagents.is_empty() {
+            if let Some(insights) = &self.inner.insights {
+                carried_subagents = insights.list_subagents(session.id).unwrap_or_default();
+                // A subagent cannot outlive the app, whatever it was doing when it closed.
+                for record in carried_subagents.iter_mut() {
+                    if record.status == SubagentStatus::Running {
+                        record.status = SubagentStatus::Failed;
+                    }
+                }
+            }
+        }
         if carried.is_empty() {
             carried = self
                 .inner
@@ -622,6 +672,7 @@ impl AgentRuntime for AgentHost {
         let started = backend.start(BackendContext {
             session_id,
             cwd: worktree.path,
+            read_only: session.kind.read_only(),
             model: session.model.clone(),
             effort: session.effort.clone(),
             agent: session.agent.clone(),
@@ -639,6 +690,7 @@ impl AgentRuntime for AgentHost {
                 subagents: carried_subagents,
                 active_turn: None,
                 pending: None,
+                read_only: session.kind.read_only(),
             },
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
@@ -814,6 +866,15 @@ impl AgentRuntime for AgentHost {
                 self.inner.publish_status(*session_id, SessionStatus::Ready);
                 Err(error)
             }
+        }
+    }
+
+    fn stop_session(&self, session_id: &SessionId) {
+        let removed = self.inner.sessions.lock().remove(session_id);
+        if let Some(live) = removed {
+            self.inner.persist(*session_id, &live.transcript);
+            self.inner.persist_subagents(*session_id, &live.subagents);
+            live.backend.shutdown();
         }
     }
 
@@ -1023,6 +1084,8 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            kind: crate::domain::SessionKind::Chat,
+            parent_session_id: None,
             created_at: "t".into(),
             updated_at: "t".into(),
             last_opened_at: None,

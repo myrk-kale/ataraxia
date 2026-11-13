@@ -39,7 +39,7 @@ function StatusIcon({ status }: { status: ToolItem["status"] }) {
 
 function Label({ children }: { children: string }) {
   return (
-    <div className="mb-1 text-nano font-bold tracking-[1px] text-cg-muted uppercase">
+    <div className="mb-1 text-small font-semibold text-cg-muted">
       {children}
     </div>
   );
@@ -48,7 +48,7 @@ function Label({ children }: { children: string }) {
 function Block({ text, className }: { text: string; className?: string }) {
   return (
     <pre
-      className={`max-h-64 overflow-auto rounded-md bg-cg-tint p-2.5 font-mono text-small leading-5 whitespace-pre-wrap ${className ?? ""}`}
+      className={`max-h-64 overflow-auto rounded-cg-sm bg-cg-tint p-2.5 font-mono text-small leading-5 whitespace-pre-wrap ${className ?? ""}`}
     >
       {text}
     </pre>
@@ -57,7 +57,7 @@ function Block({ text, className }: { text: string; className?: string }) {
 
 function DiffBlock({ lines }: { lines: DiffLine[] }) {
   return (
-    <pre className="max-h-64 overflow-auto rounded-lg bg-cg-tint py-1.5 font-mono text-small leading-5">
+    <pre className="max-h-64 overflow-auto rounded-cg-md bg-cg-tint py-1.5 font-mono text-small leading-5">
       {lines.map((line, index) => (
         <div key={index} className={`px-2 whitespace-pre-wrap ${DIFF_CLASS[line.kind]}`}>
           {DIFF_MARK[line.kind]} {line.text}
@@ -135,7 +135,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       aria-label="Copy output"
-      className="rounded p-1 text-cg-muted hover:bg-cg-tint hover:text-cg-ink"
+      className="rounded-cg-sm p-1 text-cg-muted hover:bg-cg-tint hover:text-cg-ink"
       type="button"
       onClick={() => {
         void copy();
@@ -149,7 +149,7 @@ function CopyButton({ text }: { text: string }) {
 export function ToolCard({ tool }: { tool: ToolItem }) {
   const summary = toolSummary(tool.input);
   return (
-    <details className="group rounded-[11px] border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
+    <details className="group rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 [&::-webkit-details-marker]:hidden">
         <ChevronRight
           className="shrink-0 text-cg-muted transition-transform group-open:rotate-90"

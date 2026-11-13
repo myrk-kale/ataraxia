@@ -35,3 +35,13 @@ pub struct WorktreeInfo {
     pub branch: Option<String>,
     pub head: Option<String>,
 }
+
+/// A local branch, and where it is checked out, if anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchInfo {
+    pub name: String,
+    /// It is the branch the asked worktree has checked out.
+    pub current: bool,
+    /// Another worktree has it checked out (git will not check it out a second time).
+    pub worktree_path: Option<PathBuf>,
+}
