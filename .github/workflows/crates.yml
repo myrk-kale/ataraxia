@@ -82,4 +82,6 @@ jobs:
             echo "${name} ${version} already published"
             exit 0
           fi
-          cargo publish --locked
+          # The interface (src-tauri/web) is built here and ignored by git, and cargo counts an
+          # ignored file that goes into the package as a change. Nothing else differs from the tag.
+          cargo publish --locked --allow-dirty

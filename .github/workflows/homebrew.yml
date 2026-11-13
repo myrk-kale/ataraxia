@@ -67,6 +67,8 @@ jobs:
       - name: Audit, install and test the formula
         run: |
           brew tap-new --no-git local/verify >/dev/null
+          # Recent Homebrew refuses to load a formula from a tap it does not trust.
+          brew trust local/verify
           cp tap/Formula/ataraxia.rb "$(brew --repository local/verify)/Formula/"
           brew audit --strict --online local/verify/ataraxia
           brew install local/verify/ataraxia
@@ -89,6 +91,8 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           brew tap-new --no-git local/verify >/dev/null
+          # Older Homebrew has no `brew trust` and does not need it.
+          brew trust local/verify || true
           cp tap/Formula/ataraxia.rb "$(brew --repository local/verify)/Formula/"
           brew install local/verify/ataraxia
           brew test local/verify/ataraxia
