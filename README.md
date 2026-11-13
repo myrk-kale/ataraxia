@@ -18,7 +18,8 @@ and a diagram of how it fits together in one window, and you move between them f
 1. Install it.
 
    ```bash
-   brew install myrk-kale/tap/ataraxia   # macOS and Linux
+   brew install --cask myrk-kale/tap/ataraxia   # macOS: the app, in Applications
+   brew install myrk-kale/tap/ataraxia          # Linux (and the command line on macOS)
    ```
 
    On Windows, run the `-setup.exe` from the [latest release](https://github.com/myrk-kale/ataraxia/releases/latest).
@@ -140,11 +141,15 @@ Every release is on the [releases page](https://github.com/myrk-kale/ataraxia/re
 `.sha256` beside it and a build attestation: `gh attestation verify <file> --repo myrk-kale/ataraxia`.
 They are built by the release pipeline, never by hand.
 
-**macOS** (Apple silicon and Intel; there is no installer, it comes through Homebrew)
+**macOS** (Apple silicon and Intel, macOS 11 or newer; there is no installer, it comes through Homebrew)
 
 ```bash
-brew install myrk-kale/tap/ataraxia   # the `ataraxia` binary: it opens the app, and `ataraxia mcp` is the MCP server
+brew install --cask myrk-kale/tap/ataraxia   # Ataraxia.app, in Applications and in Launchpad
+brew install myrk-kale/tap/ataraxia          # or only the `ataraxia` binary, with `ataraxia mcp` for agents
 ```
+
+The app is not signed with an Apple Developer ID. The cask removes the quarantine mark from it, which is
+what lets it open on the first try; the rest of the app is the one this repository builds.
 
 **Linux** (`x86_64` and `aarch64`; built on Ubuntu 22.04, so it runs on Ubuntu 22.04 and newer, Debian 12,
 Fedora 36 and newer, Arch and the like)

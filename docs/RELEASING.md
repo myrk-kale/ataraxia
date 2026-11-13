@@ -9,7 +9,7 @@ git tag vX.Y.Z  ──►  Release workflow
                       ├─ version           Cargo.toml, tauri.conf.json, the tag and the CHANGELOG agree
                       ├─ build  (x4)       macOS universal · Linux x86_64 · Linux aarch64 · Windows x64
                       │                    each smoke-tests the binary and attests its files
-                      ├─ release           checks the eleven files and their checksums, creates the GitHub release
+                      ├─ release           checks the twelve files and their checksums, creates the GitHub release
                       ├─ homebrew          installs the formula on macOS and Linux, then pushes it to the tap
                       └─ crates            dispatches crates.yml, which publishes the crate
 ```
@@ -18,12 +18,14 @@ git tag vX.Y.Z  ──►  Release workflow
 
 | Platform | Files |
 | --- | --- |
-| macOS (universal: Apple silicon and Intel) | `ataraxia-vX.Y.Z-universal-apple-darwin.tar.gz`, the bare binary, for Homebrew and `cargo binstall`. There is no installer: macOS is installed with brew |
+| macOS (universal: Apple silicon and Intel) | `ataraxia-vX.Y.Z-universal-apple-darwin.app.tar.gz` (`Ataraxia.app`, for the cask) and `….tar.gz` (the bare binary, for the formula and `cargo binstall`). There is no installer: macOS is installed with brew |
 | Linux x86_64 and aarch64 (built on Ubuntu 22.04) | `….deb`, `….rpm`, `….AppImage`, `….tar.gz`, for each architecture |
 | Windows x64 | `….-setup.exe` (NSIS installer, per user or per machine), `….msi` |
 
-Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, macOS and Linux) is
-generated from those checksums by `packaging/render.sh`. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
+Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, the binary on macOS and
+Linux) and the cask (`brew install --cask myrk-kale/tap/ataraxia`, `Ataraxia.app` in Applications on
+macOS) are generated from those checksums by `packaging/render.sh`. The Homebrew workflow installs the
+cask on a macOS runner and runs the installed app's binary before it pushes anything. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
 another project); its binary is still `ataraxia`.
 
 ## Cutting a release
@@ -57,7 +59,7 @@ These live in the repository settings (Settings > Secrets and variables > Action
 | `HOMEBREW_TAP_DEPLOY_KEY` | secret | The private half of an SSH key whose public half is a deploy key, with write access, on `myrk-kale/homebrew-tap` |
 | `PUBLISH_CRATE` | variable | `true` to publish the crate in a release; anything else skips it |
 
-The tap is shared with other projects; this one adds `Formula/ataraxia.rb`. The crate needs no secret: it
+The tap is shared with other projects; this one adds `Formula/ataraxia.rb` and `Casks/ataraxia.rb`. The crate needs no secret: it
 is published with Trusted Publishing (below).
 
 ## Trusted Publishing on crates.io
@@ -84,6 +86,7 @@ already published: the sign-in runs first, and the publish is skipped.
 ## Not done yet
 
 - **Signing.** The Windows installer is not Authenticode-signed, so SmartScreen warns on first run (the
-  README says what to click). Signing would add a code-signing certificate as a secret and a step in the
-  `build` job; `tauri build` reads it from environment variables. macOS has no installer, so nothing to sign.
+  README says what to click). The macOS app is not signed or notarised with an Apple Developer ID; the cask
+  removes the quarantine mark instead. Signing either would add a certificate as a secret and a step in the
+  `build` job; `tauri build` reads them from environment variables.
 - **Windows on Arm** and a Linux `musl` build.

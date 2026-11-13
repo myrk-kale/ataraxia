@@ -6,6 +6,12 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- macOS: a Homebrew cask (`brew install --cask myrk-kale/tap/ataraxia`) that puts `Ataraxia.app` in
+  Applications. The release now carries the app as `….app.tar.gz`; the formula still installs the bare
+  binary for the command line.
+
 ## [0.1.0] - 2026-11-13
 
 First release.
