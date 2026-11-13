@@ -87,6 +87,7 @@ fn thread_start_params(
     reviewer: Option<&str>,
     model: Option<&str>,
     read_only: bool,
+    extra_dirs: &[PathBuf],
 ) -> Value {
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
@@ -98,6 +99,14 @@ fn thread_start_params(
     }
     if let Some(model) = model {
         params["model"] = json!(model);
+    }
+    // Other repositories of the workspace may be written too. Reading is open already.
+    if !read_only && !extra_dirs.is_empty() {
+        let roots: Vec<String> = extra_dirs
+            .iter()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .collect();
+        params["config"] = json!({ "sandbox_workspace_write": { "writable_roots": roots } });
     }
     params
 }
@@ -165,6 +174,7 @@ impl AgentBackend for CodexBackend {
                     approvals_reviewer().as_deref(),
                     ctx.model.as_deref(),
                     ctx.read_only,
+                    &ctx.extra_dirs,
                 ),
                 Some(HANDSHAKE_TIMEOUT),
             )?;
@@ -1475,18 +1485,32 @@ mod tests {
             Some("auto_review"),
             Some("gpt-x"),
             false,
+            &[],
         );
         assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["approvalsReviewer"], "auto_review");
         assert_eq!(params["approvalPolicy"], "on-request");
         assert_eq!(params["sandbox"], "workspace-write");
-        let manual = thread_start_params(Path::new("/work"), None, None, false);
+        let manual = thread_start_params(Path::new("/work"), None, None, false, &[]);
         assert_eq!(
-            thread_start_params(Path::new("/work"), None, None, true)["sandbox"],
+            thread_start_params(Path::new("/work"), None, None, true, &[])["sandbox"],
             "read-only"
         );
         assert!(manual.get("approvalsReviewer").is_none());
         assert!(manual.get("model").is_none());
+        assert!(manual.get("config").is_none());
+    }
+
+    #[test]
+    fn the_other_repositories_of_a_workspace_become_writable_roots_unless_read_only() {
+        let others = [PathBuf::from("/work/api"), PathBuf::from("/work/web")];
+        let params = thread_start_params(Path::new("/work/app"), None, None, false, &others);
+        assert_eq!(
+            params["config"]["sandbox_workspace_write"]["writable_roots"],
+            json!(["/work/api", "/work/web"])
+        );
+        let reading = thread_start_params(Path::new("/work/app"), None, None, true, &others);
+        assert!(reading.get("config").is_none());
     }
 
     use std::sync::mpsc::{self, Receiver};
@@ -1511,6 +1535,7 @@ mod tests {
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
                 model: None,
                 effort: None,
                 agent: None,

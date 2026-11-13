@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorkspaceId, WorktreeId};
 use crate::domain::{
-    ChatItem, ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
+    ChatItem, ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Workspace, Worktree,
+    WorktreeInfo,
 };
 use crate::ports::{FilesProbe, Fs, Git, PtyHost, Store};
 
@@ -113,6 +114,8 @@ pub struct FakeStore {
     repositories: Mutex<Vec<Repository>>,
     worktrees: Mutex<Vec<Worktree>>,
     sessions: Mutex<Vec<ChatSession>>,
+    workspaces: Mutex<Vec<Workspace>>,
+    session_worktrees: Mutex<HashMap<SessionId, Vec<WorktreeId>>>,
     preferences: Mutex<HashMap<String, String>>,
     chat_items: Mutex<HashMap<SessionId, Vec<ChatItem>>>,
 }
@@ -218,6 +221,71 @@ impl Store for FakeStore {
             .iter()
             .find(|item| item.repository_id == repository_id && item.path == path)
             .cloned())
+    }
+
+    fn upsert_workspace(&self, workspace: &Workspace) -> Result<()> {
+        let mut workspaces = self.workspaces.lock().expect("workspaces");
+        match workspaces.iter_mut().find(|item| item.id == workspace.id) {
+            Some(existing) => *existing = workspace.clone(),
+            None => workspaces.push(workspace.clone()),
+        }
+        Ok(())
+    }
+
+    fn list_workspaces(&self) -> Result<Vec<Workspace>> {
+        let mut all = self.workspaces.lock().expect("workspaces").clone();
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(all)
+    }
+
+    fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>> {
+        Ok(self
+            .workspaces
+            .lock()
+            .expect("workspaces")
+            .iter()
+            .find(|item| item.id == id)
+            .cloned())
+    }
+
+    fn delete_workspace(&self, id: WorkspaceId) -> Result<()> {
+        self.workspaces
+            .lock()
+            .expect("workspaces")
+            .retain(|item| item.id != id);
+        Ok(())
+    }
+
+    fn list_workspace_sessions(&self, workspace_id: WorkspaceId) -> Result<Vec<ChatSession>> {
+        Ok(self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .iter()
+            .filter(|item| {
+                item.workspace_id == Some(workspace_id)
+                    && item.kind == crate::domain::SessionKind::Chat
+            })
+            .cloned()
+            .collect())
+    }
+
+    fn set_session_worktrees(&self, id: SessionId, worktrees: &[WorktreeId]) -> Result<()> {
+        self.session_worktrees
+            .lock()
+            .expect("session worktrees")
+            .insert(id, worktrees.to_vec());
+        Ok(())
+    }
+
+    fn session_worktrees(&self, id: SessionId) -> Result<Vec<WorktreeId>> {
+        Ok(self
+            .session_worktrees
+            .lock()
+            .expect("session worktrees")
+            .get(&id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn create_session(&self, session: &ChatSession) -> Result<()> {

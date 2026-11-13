@@ -94,6 +94,7 @@ fn world() -> World {
     db.upsert_worktree(&worktree).unwrap();
     let session = ChatSession {
         id: SessionId::new(),
+        workspace_id: None,
         repository_id: repository.id,
         worktree_id: worktree.id,
         provider: ProviderKind::Fake,
@@ -1482,4 +1483,164 @@ fn any_two_revisions_can_be_compared_and_the_same_comparison_is_the_same_checkpo
             .then_some(())
     });
     let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+/// A second repository, added to the world's chat as a member of its workspace.
+fn add_second_repository(w: &World) -> (PathBuf, RepositoryId) {
+    let other = std::env::temp_dir().join(format!("ataraxia-engine-b-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["config", "user.email", "t@example.com"]);
+    git(&other, &["config", "user.name", "T"]);
+    git(&other, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(other.join("api.txt"), "one\ntwo\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "init"]);
+    let now = "2026-01-01T00:00:00Z".to_string();
+    let repository = Repository {
+        id: RepositoryId::new(),
+        root: other.clone(),
+        name: "api".into(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    w.db.upsert_repository(&repository).unwrap();
+    let worktree = Worktree {
+        id: WorktreeId::new(),
+        repository_id: repository.id,
+        path: other.clone(),
+        branch: Some("main".into()),
+        head: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    w.db.upsert_worktree(&worktree).unwrap();
+    w.db.set_session_worktrees(w.session.id, &[worktree.id])
+        .unwrap();
+    (other, repository.id)
+}
+
+#[test]
+fn a_turn_that_changes_two_repositories_leaves_one_checkpoint_in_each_and_each_is_reviewed_alone() {
+    let w = world();
+    let (other, other_id) = add_second_repository(&w);
+
+    w.engine.turn_started(w.session.id);
+    std::fs::write(
+        w.repo.join("README.md"),
+        "# demo\nchanged here\nline three\n",
+    )
+    .unwrap();
+    std::fs::write(other.join("api.txt"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(other.join("new.txt"), "fresh\n").unwrap();
+    w.engine.on_agent_event(&AgentEvent::TurnDone {
+        session_id: w.session.id,
+        turn_id: TurnId::new(),
+        ok: true,
+    });
+
+    let all = wait_for("both checkpoints", || {
+        let list = w.db.list_checkpoints(w.session.id).unwrap();
+        (list.len() == 2).then_some(list)
+    });
+    assert_eq!(all[0].seq + 1, all[1].seq);
+    assert_eq!(
+        all[0].turn_id, all[1].turn_id,
+        "one turn, one checkpoint per repository"
+    );
+
+    // Its own repository by default, the other one when asked for.
+    let own = w.engine.review_in(w.session.id, None, None).unwrap();
+    assert_eq!(own.checkpoints.len(), 1);
+    assert_eq!(
+        own.checkpoint.as_ref().unwrap().repository_id,
+        w.session.repository_id
+    );
+    assert_eq!(own.checkpoint.unwrap().files[0].path, "README.md");
+    let there = w
+        .engine
+        .review_in(w.session.id, None, Some(other_id))
+        .unwrap();
+    let mut files: Vec<String> = there
+        .checkpoint
+        .as_ref()
+        .unwrap()
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    files.sort();
+    assert_eq!(files, ["api.txt", "new.txt"]);
+    assert_eq!(
+        there.checkpoints.len(),
+        1,
+        "a repository lists only its own checkpoints"
+    );
+
+    // The selector's counts: nothing is marked yet, and marking one file lowers them.
+    let counts = w.engine.repo_changes(w.session.id).unwrap();
+    let of = |id: RepositoryId| {
+        counts
+            .iter()
+            .find(|item| item.repository_id == id)
+            .copied()
+            .unwrap()
+    };
+    assert_eq!(
+        (
+            of(w.session.repository_id).files,
+            of(w.session.repository_id).unreviewed
+        ),
+        (1, 1)
+    );
+    assert_eq!((of(other_id).files, of(other_id).unreviewed), (2, 2));
+    let checkpoint = there.checkpoint.unwrap();
+    w.engine
+        .set_review_mark(checkpoint.id, "api.txt", ReviewState::Approved)
+        .unwrap();
+    let counts = w.engine.repo_changes(w.session.id).unwrap();
+    assert_eq!(
+        counts
+            .iter()
+            .find(|item| item.repository_id == other_id)
+            .unwrap()
+            .unreviewed,
+        1
+    );
+
+    // Refreshing and comparing act on the repository asked for.
+    git(&other, &["checkout", "-q", "-b", "feature"]);
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "more"]);
+    let compared = w
+        .engine
+        .compare_in(w.session.id, "main", None, false, Some(other_id))
+        .unwrap();
+    assert_eq!(compared.repository_id, other_id);
+    let refs = w.engine.code_refs_in(w.session.id, Some(other_id)).unwrap();
+    assert!(refs.refs.iter().any(|item| item.name == "main"));
+    assert!(
+        w.engine
+            .refresh_checkpoint_in(w.session.id, Some(RepositoryId::new()))
+            .is_err()
+    );
+
+    let _ = std::fs::remove_dir_all(&w.repo);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+fn a_helper_session_looks_at_the_same_repositories_as_its_chat() {
+    let w = world();
+    let (other, _) = add_second_repository(&w);
+    let helper = w
+        .engine
+        .hidden_session(&w.session, SessionKind::Analysis, "Helper")
+        .unwrap();
+    assert_eq!(
+        w.db.session_worktrees(helper.id).unwrap(),
+        w.db.session_worktrees(w.session.id).unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+    let _ = std::fs::remove_dir_all(&other);
 }

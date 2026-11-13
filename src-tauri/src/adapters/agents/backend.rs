@@ -77,6 +77,8 @@ pub type Emitter = Arc<dyn Fn(BackendEvent) + Send + Sync>;
 pub struct BackendContext {
     pub session_id: SessionId,
     pub cwd: PathBuf,
+    /// Other repositories of the chat's workspace the agent may read and edit, besides `cwd`.
+    pub extra_dirs: Vec<PathBuf>,
     /// Model override chosen for this chat (`None` = provider default).
     pub model: Option<String>,
     /// Reasoning-effort override (`None` = provider default).

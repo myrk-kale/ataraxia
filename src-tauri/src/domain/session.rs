@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::agent::ProviderKind;
-use super::ids::{RepositoryId, SessionId, WorktreeId};
+use super::ids::{RepositoryId, SessionId, WorkspaceId, WorktreeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -91,6 +91,10 @@ impl SessionKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: SessionId,
+    /// The workspace the chat belongs to. Its agent sees every member repository.
+    #[serde(default)]
+    pub workspace_id: Option<WorkspaceId>,
+    /// The chat's own repository and worktree: where its agent starts.
     pub repository_id: RepositoryId,
     pub worktree_id: WorktreeId,
     pub provider: ProviderKind,

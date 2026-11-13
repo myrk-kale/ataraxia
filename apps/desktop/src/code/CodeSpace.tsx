@@ -9,6 +9,7 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
+import { RepositorySelect } from "../app/RepositorySelect";
 import type { SpaceBridge } from "../app/spaceCommands";
 import {
   codeAddComment,
@@ -22,12 +23,13 @@ import {
   codeTree,
   codeWrite,
   type FileContent,
+  type RepoChanges,
   type ReviewState,
   type ReviewView,
   type Unit,
 } from "../lib/insights";
 import { errorCode, errorText, useInsightEvents } from "../lib/useInsightEvents";
-import { listenFilesChanged, type ChatSession, type Worktree } from "../lib/workspace";
+import { listenFilesChanged, type ChatSession, type Repository, type RepositoryId, type Worktree } from "../lib/workspace";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { Segmented, Tip } from "../ui/Overlay";
@@ -110,11 +112,22 @@ export function CodeSpace({
   bridge,
   openRequest,
   reference,
+  repositories = [],
+  changes = [],
+  onSelectRepository,
+  onReviewChanged,
   onBtw,
   onError,
 }: {
   session: ChatSession | null;
   worktree: Worktree | null;
+  /** The repositories of the workspace; a selector for the one shown appears when there are two or more. */
+  repositories?: readonly Repository[];
+  /** What the agent changed in each of them, for the selector. */
+  changes?: readonly RepoChanges[];
+  onSelectRepository?: (id: RepositoryId) => void;
+  /** A file was marked, so the counts in the repository selector are out of date. */
+  onReviewChanged?: () => void;
   bridge: MutableRefObject<SpaceBridge>;
   /** Another space asked to show a file here (a decision's code, a diagram node). */
   openRequest?: { path: string; line: number | null; n: number } | null;
@@ -157,6 +170,8 @@ export function CodeSpace({
 
   const sessionId = session?.id ?? null;
   const worktreeId = worktree?.id ?? null;
+  // The repository shown: the review, the comparison and the checkpoints are all of this one.
+  const repositoryId = worktree?.repository_id ?? null;
   const checkpoint = review?.checkpoint ?? null;
 
   function setMode(next: Mode) {
@@ -178,7 +193,7 @@ export function CodeSpace({
         return;
       }
       try {
-        const next = await codeReview(sessionId, checkpointId);
+        const next = await codeReview(sessionId, checkpointId, repositoryId);
         setReview((current) => (unchanged(current, next) ? current : next));
         reviewShown.current = true;
         setReviewState(READY);
@@ -194,7 +209,7 @@ export function CodeSpace({
         }
       }
     },
-    [sessionId, onError],
+    [sessionId, repositoryId, onError],
   );
 
   /**
@@ -206,7 +221,7 @@ export function CodeSpace({
     async (quiet = false) => {
       if (reference && sessionId) {
         try {
-          const compared = await codeCompare(sessionId, reference, null, true);
+          const compared = await codeCompare(sessionId, reference, null, true, repositoryId);
           setCompareProblem(null);
           await loadReview(compared.id, quiet);
           return;
@@ -225,7 +240,7 @@ export function CodeSpace({
       setCompareProblem(null);
       await loadReview(null, quiet);
     },
-    [reference, sessionId, loadReview],
+    [reference, sessionId, repositoryId, loadReview],
   );
 
   useEffect(() => {
@@ -628,6 +643,7 @@ export function CodeSpace({
       setReview((view) =>
         view ? { ...view, marks: [...view.marks.filter((item) => item.path !== saved.path), saved] } : view,
       );
+      onReviewChanged?.();
     } catch (err) {
       onError(errorText(err));
     }
@@ -642,7 +658,7 @@ export function CodeSpace({
         await openTarget();
         return;
       }
-      await codeRefreshCheckpoint(sessionId);
+      await codeRefreshCheckpoint(sessionId, repositoryId);
       await loadReview(null);
     } catch (err) {
       onError(errorText(err));
@@ -853,6 +869,15 @@ export function CodeSpace({
     <div className="flex h-full min-h-0">
       <aside aria-label="Code navigator" className="flex w-[20.5rem] flex-none flex-col border-r border-cg-line bg-cg-sidebar">
         <div className="flex flex-col gap-2 px-3 pt-3 pb-2">
+          {repositories.length > 1 && onSelectRepository ? (
+            <RepositorySelect
+              changes={changes}
+              className="max-w-full text-ui font-semibold text-cg-ink"
+              repositories={repositories}
+              value={repositoryId}
+              onChange={onSelectRepository}
+            />
+          ) : null}
           <Segmented<Mode> label="Navigator" options={MODES} value={mode} onChange={setMode} />
           {mode !== "tree" && session ? (
             <ShownRow

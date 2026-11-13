@@ -13,7 +13,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
-use crate::domain::ids::{CheckpointId, SessionId};
+use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, Artifact, ArtifactId, ArtifactKind, ArtifactStatus, ChatItem, ChatRole,
@@ -44,8 +44,16 @@ pub struct Engine {
 /// Version of the scoring model that wrote a stored review queue; an older one is recomputed.
 pub(crate) const PRIORITY_VERSION: u32 = 4;
 
-fn turn_base_key(session_id: SessionId) -> String {
-    format!("turn_base:{}", session_id.0)
+fn turn_base_key(session_id: SessionId, repository_id: RepositoryId) -> String {
+    format!("turn_base:{}:{}", session_id.0, repository_id.0)
+}
+
+/// One repository of a chat's workspace, as the chat sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct Target {
+    pub repository_id: RepositoryId,
+    pub worktree_id: WorktreeId,
+    pub path: std::path::PathBuf,
 }
 
 impl Engine {
@@ -85,6 +93,51 @@ impl Engine {
         self.db
             .get_session(id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))
+    }
+
+    /// The repositories a chat sees: its own first, then one worktree of every other member.
+    pub(crate) fn session_targets(&self, session: &ChatSession) -> Result<Vec<Target>> {
+        let mut ids = vec![session.worktree_id];
+        ids.extend(self.db.session_worktrees(session.id)?);
+        let mut targets: Vec<Target> = Vec::new();
+        for id in ids {
+            let Some(worktree) = self.db.get_worktree(id)? else {
+                continue;
+            };
+            if targets
+                .iter()
+                .any(|item| item.repository_id == worktree.repository_id)
+            {
+                continue;
+            }
+            targets.push(Target {
+                repository_id: worktree.repository_id,
+                worktree_id: worktree.id,
+                path: worktree.path,
+            });
+        }
+        if targets.is_empty() {
+            return Err(Error::new(ErrorCode::NotFound, "worktree not found"));
+        }
+        Ok(targets)
+    }
+
+    /// One repository of the chat: `None` is its own.
+    pub(crate) fn target_of(
+        &self,
+        session: &ChatSession,
+        repository: Option<RepositoryId>,
+    ) -> Result<Target> {
+        let wanted = repository.unwrap_or(session.repository_id);
+        self.session_targets(session)?
+            .into_iter()
+            .find(|item| item.repository_id == wanted)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    "this chat was started before that repository joined the workspace: start a new chat to include it",
+                )
+            })
     }
 
     pub(crate) fn worktree_path(&self, session: &ChatSession) -> Result<std::path::PathBuf> {
@@ -150,11 +203,22 @@ impl Engine {
             if session.kind != SessionKind::Chat {
                 return Ok(());
             }
-            let path = self.worktree_path(&session)?;
-            let rev = self
-                .git
-                .snapshot(&path, &format!("turn-base/{}", session_id.0))?;
-            self.db.set_preference(&turn_base_key(session_id), &rev)
+            // Every repository of the workspace: the agent may change any of them.
+            for target in self.session_targets(&session)? {
+                let rev = match self
+                    .git
+                    .snapshot(&target.path, &format!("turn-base/{}", session_id.0))
+                {
+                    Ok(rev) => rev,
+                    Err(error) => {
+                        eprintln!("ataraxia: could not mark the turn start: {error}");
+                        continue;
+                    }
+                };
+                self.db
+                    .set_preference(&turn_base_key(session_id, target.repository_id), &rev)?;
+            }
+            Ok(())
         })();
         if let Err(error) = result {
             eprintln!("ataraxia: could not mark the turn start: {error}");
@@ -180,56 +244,68 @@ impl Engine {
 
     // ---------------------------------------------------------------- checkpoints
 
+    /// One checkpoint for every repository of the workspace the turn changed.
     fn record_turn_checkpoint(
         self: &Arc<Self>,
         session: &ChatSession,
         turn_id: &str,
     ) -> Result<()> {
-        let Some(base) = self
-            .db
-            .get_preference(&turn_base_key(session.id))?
-            .filter(|value| !value.is_empty())
-        else {
-            return Ok(());
-        };
-        // A turn ends once: forget the base so a stray event cannot record it twice.
-        self.db.set_preference(&turn_base_key(session.id), "")?;
-        let path = self.worktree_path(session)?;
-        let head = self
-            .git
-            .snapshot(&path, &format!("turn-head/{}/{turn_id}", session.id.0))?;
-        if self.git.tree_id(&path, &base)? == self.git.tree_id(&path, &head)? {
-            return Ok(());
+        for target in self.session_targets(session)? {
+            let key = turn_base_key(session.id, target.repository_id);
+            let Some(base) = self
+                .db
+                .get_preference(&key)?
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            // A turn ends once: forget the base so a stray event cannot record it twice.
+            self.db.set_preference(&key, "")?;
+            let head = match self.git.snapshot(
+                &target.path,
+                &format!("turn-head/{}/{turn_id}", session.id.0),
+            ) {
+                Ok(head) => head,
+                Err(error) => {
+                    eprintln!("ataraxia: could not read a repository after the turn: {error}");
+                    continue;
+                }
+            };
+            if self.git.tree_id(&target.path, &base)? == self.git.tree_id(&target.path, &head)? {
+                continue;
+            }
+            let checkpoint = self.create_checkpoint(
+                session,
+                &target,
+                base,
+                head,
+                CheckpointSource::Turn,
+                Some(turn_id),
+            )?;
+            self.process_checkpoint(&checkpoint);
         }
-        let checkpoint = self.create_checkpoint(
-            session,
-            &path,
-            base,
-            head,
-            CheckpointSource::Turn,
-            Some(turn_id),
-        )?;
-        self.process_checkpoint(&checkpoint);
         Ok(())
     }
 
     pub(crate) fn create_checkpoint(
         &self,
         session: &ChatSession,
-        path: &std::path::Path,
+        target: &Target,
         base: String,
         head: String,
         source: CheckpointSource,
         turn_id: Option<&str>,
     ) -> Result<Checkpoint> {
-        self.create_checkpoint_labeled(session, path, base, head, source, turn_id, None, None, true)
+        self.create_checkpoint_labeled(
+            session, target, base, head, source, turn_id, None, None, true,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_checkpoint_labeled(
         &self,
         session: &ChatSession,
-        path: &std::path::Path,
+        target: &Target,
         base: String,
         head: String,
         source: CheckpointSource,
@@ -238,7 +314,7 @@ impl Engine {
         head_label: Option<String>,
         head_live: bool,
     ) -> Result<Checkpoint> {
-        let files = self.git.changed_files(path, &base, &head)?;
+        let files = self.git.changed_files(&target.path, &base, &head)?;
         let seq = self
             .db
             .latest_checkpoint(session.id)?
@@ -246,8 +322,8 @@ impl Engine {
         let checkpoint = Checkpoint {
             id: CheckpointId::new(),
             session_id: session.id,
-            repository_id: session.repository_id,
-            worktree_id: session.worktree_id,
+            repository_id: target.repository_id,
+            worktree_id: target.worktree_id,
             seq,
             base_rev: base,
             head_rev: head,
@@ -377,6 +453,7 @@ impl Engine {
         let now = self.now();
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: parent.workspace_id,
             repository_id: parent.repository_id,
             worktree_id: parent.worktree_id,
             provider: provider.unwrap_or(parent.provider),
@@ -392,6 +469,11 @@ impl Engine {
             last_opened_at: None,
         };
         self.db.create_session(&session)?;
+        // A hidden helper looks at the same repositories its chat does.
+        let others = self.db.session_worktrees(parent.id)?;
+        if !others.is_empty() {
+            self.db.set_session_worktrees(session.id, &others)?;
+        }
         Ok(session)
     }
 

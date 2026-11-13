@@ -21,7 +21,7 @@ inventing them. Call `GET /v1/decisions` first so you do not repeat one that exi
 - `context`: what led to it. `rationale`: why this over the alternatives.
 - `type`: `api-contract`, `data-integrity`, `behavior`, `security`, `dependencies`,
   `performance`, `code-organization`, `ux` or `other`.
-- `files`: the code it is about, as objects with a `path` and, where you know them,
+- `files`: the code it is about (in a workspace of several repositories, `<repository>/<path>` outside the first one), as objects with a `path` and, where you know them,
   `start_line` and `end_line`.
 
 Call it once per decision. Do not bundle several choices in one thread. The response is the

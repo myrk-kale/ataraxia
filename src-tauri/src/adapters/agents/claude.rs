@@ -61,6 +61,7 @@ impl ClaudeBackend {
         effort: Option<&str>,
         agent: Option<&str>,
         read_only: bool,
+        extra_dirs: &[PathBuf],
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
@@ -72,7 +73,14 @@ impl ClaudeBackend {
                     } else {
                         permission_mode()
                     };
-                    (program, launch_args(mode.as_deref(), model, effort, agent))
+                    let mut args = launch_args(mode.as_deref(), model, effort, agent);
+                    // Other repositories of the workspace. The flag takes a list, so it goes
+                    // last, after every other option.
+                    for dir in extra_dirs {
+                        args.push("--add-dir".into());
+                        args.push(dir.to_string_lossy().into_owned());
+                    }
+                    (program, args)
                 })
                 .ok_or_else(|| {
                     format!(
@@ -151,7 +159,7 @@ impl Default for ClaudeBackend {
 
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command(None, None, None, false).map(|_| ())
+        self.command(None, None, None, false, &[]).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
@@ -161,6 +169,7 @@ impl AgentBackend for ClaudeBackend {
                 ctx.effort.as_deref(),
                 ctx.agent.as_deref(),
                 ctx.read_only,
+                &ctx.extra_dirs,
             )
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(ClaudeShared {
@@ -1123,6 +1132,7 @@ mod tests {
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
                 model: None,
                 effort: None,
                 agent: None,

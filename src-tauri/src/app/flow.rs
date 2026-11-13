@@ -212,14 +212,15 @@ impl Engine {
         &self,
         session: &crate::domain::ChatSession,
     ) -> Result<crate::domain::Checkpoint> {
-        let root = self.worktree_path(session)?;
+        let target = self.target_of(session, None)?;
+        let root = target.path.clone();
         let head = self.git.snapshot(
             &root,
             &format!("manual/{}/{}", session.id.0, Uuid::new_v4().simple()),
         )?;
         let base = self.git.head_rev(&root).unwrap_or_else(|_| head.clone());
         let checkpoint =
-            self.create_checkpoint(session, &root, base, head, CheckpointSource::Manual, None)?;
+            self.create_checkpoint(session, &target, base, head, CheckpointSource::Manual, None)?;
         let _ = self
             .db
             .update_checkpoint_status(checkpoint.id, ArtifactStatus::Ready);
@@ -249,7 +250,8 @@ impl Engine {
                 .to_string()
         };
         let files = self.git.list_files(&root)?;
-        let known: HashSet<String> = files.iter().cloned().collect();
+        let known: HashSet<String> =
+            super::workspace::known_files(self.db.as_ref(), self.git.as_ref(), &session)?;
         let structure = structure_summary(&files, &|path| {
             self.fs
                 .read_text(&root, path)
@@ -257,6 +259,19 @@ impl Engine {
                 .filter(|file| !file.binary && !file.too_large)
                 .map(|file| file.text)
         });
+        let others: Vec<String> = super::workspace::session_roots(self.db.as_ref(), &session)?
+            .into_iter()
+            .skip(1)
+            .map(|(name, path)| format!("{name} ({})", path.display()))
+            .collect();
+        let structure = if others.is_empty() {
+            structure
+        } else {
+            format!(
+                "{structure}\n\nThis workspace has more repositories: {}. Name a file of any of them as <repository>/<path>.",
+                others.join(", ")
+            )
+        };
         let prompt = flow_prompt(&text("prompt"), &text("extra"), &structure);
         let hidden = self.hidden_session(&session, SessionKind::Analysis, "Flow generation")?;
         let answer = self.ask_and_wait(&hidden, &prompt)?;

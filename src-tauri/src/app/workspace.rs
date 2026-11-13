@@ -6,21 +6,40 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::ProviderKind;
-use crate::domain::ids::{RepositoryId, SessionId, WorktreeId};
+use crate::domain::ids::{RepositoryId, SessionId, WorkspaceId, WorktreeId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
-    ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus, Worktree,
+    ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus, Workspace,
+    Worktree,
 };
 use crate::ports::{FilesProbe, Git, Store};
 
 const PREF_SELECTED_REPO: &str = "selected_repository_id";
 const PREF_SELECTED_WORKTREE: &str = "selected_worktree_id";
 const PREF_SELECTED_SESSION: &str = "selected_session_id";
+const PREF_SELECTED_WORKSPACE: &str = "selected_workspace_id";
+
+/// The repository a workspace was last looking at.
+fn focus_key(workspace_id: WorkspaceId) -> String {
+    format!("focus_repository:{}", workspace_id.0)
+}
+
+/// The worktree of a repository the user last had selected.
+fn worktree_key(repository_id: RepositoryId) -> String {
+    format!("worktree_of:{}", repository_id.0)
+}
+
+const MAX_WORKSPACE_NAME: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     pub repositories: Vec<Repository>,
+    pub workspaces: Vec<Workspace>,
+    pub selected_workspace_id: Option<WorkspaceId>,
+    /// The repository in focus: the one Code, the terminal and the branch selector show. It is
+    /// always a member of the selected workspace.
     pub selected_repository_id: Option<RepositoryId>,
+    /// The worktrees of every repository of the selected workspace, the one in focus first.
     pub worktrees: Vec<Worktree>,
     pub selected_worktree_id: Option<WorktreeId>,
     pub sessions: Vec<ChatSession>,
@@ -51,6 +70,61 @@ pub struct FilesSeen {
     status: String,
 }
 
+/// The repositories a chat sees as (name, folder): its own first, then one worktree of every
+/// other member of its workspace.
+pub fn session_roots(
+    store: &dyn Store,
+    session: &ChatSession,
+) -> Result<Vec<(String, std::path::PathBuf)>> {
+    let mut ids = vec![session.worktree_id];
+    ids.extend(store.session_worktrees(session.id)?);
+    let mut roots: Vec<(RepositoryId, String, std::path::PathBuf)> = Vec::new();
+    for id in ids {
+        let Some(worktree) = store.get_worktree(id)? else {
+            continue;
+        };
+        if roots
+            .iter()
+            .any(|(repo, _, _)| *repo == worktree.repository_id)
+        {
+            continue;
+        }
+        let name = store
+            .get_repository(worktree.repository_id)?
+            .map(|repository| repository.name)
+            .unwrap_or_default();
+        roots.push((worktree.repository_id, name, worktree.path));
+    }
+    Ok(roots
+        .into_iter()
+        .map(|(_, name, path)| (name, path))
+        .collect())
+}
+
+/// The files a chat can name to Ataraxia: those of its own repository as they are, and those of
+/// every other repository of the workspace as `<repository>/<path>`.
+pub fn known_files(
+    store: &dyn Store,
+    git: &dyn Git,
+    session: &ChatSession,
+) -> Result<std::collections::HashSet<String>> {
+    let mut known = std::collections::HashSet::new();
+    for (index, (name, path)) in session_roots(store, session)?.into_iter().enumerate() {
+        let files = match git.list_files(&path) {
+            Ok(files) => files,
+            // The first one is the chat's own and has to be readable; another may be gone.
+            Err(error) if index == 0 => return Err(error),
+            Err(_) => continue,
+        };
+        if index == 0 {
+            known.extend(files);
+        } else {
+            known.extend(files.into_iter().map(|file| format!("{name}/{file}")));
+        }
+    }
+    Ok(known)
+}
+
 pub struct WorkspaceService<'a> {
     pub git: &'a dyn Git,
     pub store: &'a dyn Store,
@@ -59,28 +133,41 @@ pub struct WorkspaceService<'a> {
 impl<'a> WorkspaceService<'a> {
     pub fn bootstrap(&self) -> Result<WorkspaceSnapshot> {
         let repositories = self.store.list_repositories()?;
-        let selected_repository_id = self.preference_id(PREF_SELECTED_REPO)?.and_then(|id| {
-            repositories
-                .iter()
-                .find(|repo| repo.id.0.to_string() == id)
-                .map(|repo| repo.id)
-        });
-        let selected_repository_id =
-            selected_repository_id.or_else(|| repositories.first().map(|repo| repo.id));
+        let workspaces = self.store.list_workspaces()?;
+        let selected = self.resolve_workspace(&workspaces)?;
+        let selected_workspace_id = selected.map(|workspace| workspace.id);
+        let selected_repository_id = match selected {
+            Some(workspace) => self.resolve_focus(workspace, &repositories)?,
+            None => None,
+        };
 
         let (worktrees, sessions, selected_worktree_id, selected_session_id) =
-            if let Some(repository_id) = selected_repository_id {
-                let worktrees = self.store.list_worktrees(repository_id)?;
-                let sessions = self.store.list_sessions(repository_id)?;
-                let selected_worktree_id = self
-                    .preference_id(PREF_SELECTED_WORKTREE)?
-                    .and_then(|id| {
-                        worktrees
+            if let (Some(workspace), Some(repository_id)) = (selected, selected_repository_id) {
+                let focus_worktrees = self.store.list_worktrees(repository_id)?;
+                let sessions = self.store.list_workspace_sessions(workspace.id)?;
+                let remembered = |key: &str| -> Result<Option<WorktreeId>> {
+                    Ok(self.preference_id(key)?.and_then(|id| {
+                        focus_worktrees
                             .iter()
                             .find(|item| item.id.0.to_string() == id)
                             .map(|item| item.id)
-                    })
-                    .or_else(|| worktrees.first().map(|item| item.id));
+                    }))
+                };
+                let selected_worktree_id = match remembered(PREF_SELECTED_WORKTREE)? {
+                    Some(id) => Some(id),
+                    None => match remembered(&worktree_key(repository_id))? {
+                        Some(id) => Some(id),
+                        None => focus_worktrees.first().map(|item| item.id),
+                    },
+                };
+                // The worktrees of every member, the one in focus first: the sessions list names the
+                // worktree each chat runs in, and that may be in another member.
+                let mut worktrees = focus_worktrees.clone();
+                for member in &workspace.repository_ids {
+                    if *member != repository_id {
+                        worktrees.extend(self.store.list_worktrees(*member)?);
+                    }
+                }
                 let selected_session_id =
                     self.preference_id(PREF_SELECTED_SESSION)?.and_then(|id| {
                         sessions
@@ -100,6 +187,8 @@ impl<'a> WorkspaceService<'a> {
 
         Ok(WorkspaceSnapshot {
             repositories,
+            workspaces,
+            selected_workspace_id,
             selected_repository_id,
             worktrees,
             selected_worktree_id,
@@ -108,9 +197,121 @@ impl<'a> WorkspaceService<'a> {
         })
     }
 
-    pub fn open_repository(&self, path: impl AsRef<Path>) -> Result<WorkspaceSnapshot> {
-        let path = path.as_ref();
-        let info = self.git.discover(path).map_err(|error| {
+    /// The workspace on screen: the one chosen last, else the one that holds the repository that
+    /// was selected before workspaces existed, else the first.
+    fn resolve_workspace<'w>(&self, workspaces: &'w [Workspace]) -> Result<Option<&'w Workspace>> {
+        if let Some(id) = self.preference_id(PREF_SELECTED_WORKSPACE)? {
+            if let Some(found) = workspaces.iter().find(|item| item.id.0.to_string() == id) {
+                return Ok(Some(found));
+            }
+        }
+        if let Some(id) = self.preference_id(PREF_SELECTED_REPO)? {
+            let holding =
+                |item: &&Workspace| item.repository_ids.iter().any(|r| r.0.to_string() == id);
+            let alone = |item: &&Workspace| item.repository_ids.len() == 1;
+            if let Some(found) = workspaces
+                .iter()
+                .find(|item| holding(item) && alone(item))
+                .or_else(|| workspaces.iter().find(holding))
+            {
+                return Ok(Some(found));
+            }
+        }
+        Ok(workspaces.first())
+    }
+
+    /// The member of `workspace` that is in focus: the one it looked at last, else the repository
+    /// that was selected, else its first member.
+    fn resolve_focus(
+        &self,
+        workspace: &Workspace,
+        repositories: &[Repository],
+    ) -> Result<Option<RepositoryId>> {
+        let member = |id: &str| {
+            workspace
+                .repository_ids
+                .iter()
+                .copied()
+                .find(|item| item.0.to_string() == id)
+                .filter(|item| repositories.iter().any(|repo| repo.id == *item))
+        };
+        for key in [focus_key(workspace.id), PREF_SELECTED_REPO.to_string()] {
+            if let Some(found) = self.preference_id(&key)?.and_then(|id| member(&id)) {
+                return Ok(Some(found));
+            }
+        }
+        Ok(workspace
+            .repository_ids
+            .iter()
+            .copied()
+            .find(|item| repositories.iter().any(|repo| repo.id == *item)))
+    }
+
+    /// Makes `workspace` the one on screen. Another workspace has other chats, so the chat that
+    /// was open is left.
+    fn show_workspace(&self, workspace_id: WorkspaceId) -> Result<()> {
+        let changed = self.preference_id(PREF_SELECTED_WORKSPACE)?.as_deref()
+            != Some(workspace_id.0.to_string().as_str());
+        self.store
+            .set_preference(PREF_SELECTED_WORKSPACE, &workspace_id.0.to_string())?;
+        if changed {
+            self.store.set_preference(PREF_SELECTED_SESSION, "")?;
+        }
+        Ok(())
+    }
+
+    /// Puts `repository_id` in focus inside `workspace_id`.
+    fn focus(&self, workspace_id: WorkspaceId, repository_id: RepositoryId) -> Result<()> {
+        let id = repository_id.0.to_string();
+        self.store.set_preference(&focus_key(workspace_id), &id)?;
+        self.store.set_preference(PREF_SELECTED_REPO, &id)
+    }
+
+    fn remember_worktree(&self, worktree: &Worktree) -> Result<()> {
+        let id = worktree.id.0.to_string();
+        self.store
+            .set_preference(&worktree_key(worktree.repository_id), &id)?;
+        self.store.set_preference(PREF_SELECTED_WORKTREE, &id)
+    }
+
+    /// The worktree of a repository the user last had selected there, else its main checkout.
+    fn default_worktree(&self, repository: &Repository) -> Result<Option<Worktree>> {
+        let worktrees = self.store.list_worktrees(repository.id)?;
+        if let Some(id) = self.preference_id(&worktree_key(repository.id))? {
+            if let Some(found) = worktrees.iter().find(|item| item.id.0.to_string() == id) {
+                return Ok(Some(found.clone()));
+            }
+        }
+        Ok(worktrees
+            .iter()
+            .find(|item| item.path == repository.root)
+            .or_else(|| worktrees.first())
+            .cloned())
+    }
+
+    /// A workspace to show a repository in: the selected one when it is a member, else a
+    /// workspace of that repository alone, else any that holds it.
+    fn workspace_for(&self, repository_id: RepositoryId) -> Result<Option<Workspace>> {
+        let workspaces = self.store.list_workspaces()?;
+        if let Some(selected) = self.resolve_workspace(&workspaces)? {
+            if selected.repository_ids.contains(&repository_id) {
+                return Ok(Some(selected.clone()));
+            }
+        }
+        Ok(workspaces
+            .iter()
+            .find(|item| item.repository_ids == [repository_id])
+            .or_else(|| {
+                workspaces
+                    .iter()
+                    .find(|item| item.repository_ids.contains(&repository_id))
+            })
+            .cloned())
+    }
+
+    /// Finds or records the repository at `path` and reads its worktrees, selecting nothing.
+    pub fn register_repository(&self, path: impl AsRef<Path>) -> Result<Repository> {
+        let info = self.git.discover(path.as_ref()).map_err(|error| {
             if error.code == ErrorCode::Io || error.code == ErrorCode::NotARepo {
                 Error::new(ErrorCode::NotARepo, error.message)
             } else {
@@ -118,58 +319,101 @@ impl<'a> WorkspaceService<'a> {
             }
         })?;
         let now = now_rfc3339()?;
-        let existing = self.store.find_repository_by_root(&info.root)?;
-        let repository = if let Some(existing) = existing {
-            let mut updated = existing;
-            updated.name = info.name;
-            updated.updated_at = now.clone();
-            self.store.upsert_repository(&updated)?;
-            updated
-        } else {
-            let repository = Repository {
-                id: RepositoryId::new(),
-                root: info.root.clone(),
-                name: info.name,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            };
-            self.store.upsert_repository(&repository)?;
-            repository
+        let repository = match self.store.find_repository_by_root(&info.root)? {
+            Some(mut existing) => {
+                existing.name = info.name;
+                existing.updated_at = now.clone();
+                self.store.upsert_repository(&existing)?;
+                existing
+            }
+            None => {
+                let repository = Repository {
+                    id: RepositoryId::new(),
+                    root: info.root.clone(),
+                    name: info.name,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                };
+                self.store.upsert_repository(&repository)?;
+                repository
+            }
         };
-
         self.sync_worktrees(repository.id, &repository.root, &now)?;
-        self.store
-            .set_preference(PREF_SELECTED_REPO, &repository.id.0.to_string())?;
+        Ok(repository)
+    }
 
+    /// Opens a folder: its repository becomes a workspace of one (or that workspace is shown
+    /// again) with the repository in focus.
+    pub fn open_repository(&self, path: impl AsRef<Path>) -> Result<WorkspaceSnapshot> {
+        let repository = self.register_repository(path.as_ref())?;
+        let alone = self
+            .store
+            .list_workspaces()?
+            .into_iter()
+            .find(|item| item.repository_ids == [repository.id]);
+        let workspace = match alone {
+            Some(found) => found,
+            None => {
+                let now = now_rfc3339()?;
+                let workspace = Workspace {
+                    id: WorkspaceId::new(),
+                    name: self.free_workspace_name(&repository.name, None)?,
+                    repository_ids: vec![repository.id],
+                    created_at: now.clone(),
+                    updated_at: now,
+                };
+                self.store.upsert_workspace(&workspace)?;
+                workspace
+            }
+        };
+        self.show_workspace(workspace.id)?;
+        self.focus(workspace.id, repository.id)?;
+        // The folder that was opened is the checkout to show, even when the repository has more.
         let worktrees = self.store.list_worktrees(repository.id)?;
-        let selected_worktree_id = worktrees
+        let opened = worktrees
             .iter()
-            .find(|item| item.path == info.root)
-            .map(|item| item.id)
-            .or_else(|| worktrees.first().map(|item| item.id));
-        if let Some(worktree_id) = selected_worktree_id {
-            self.store
-                .set_preference(PREF_SELECTED_WORKTREE, &worktree_id.0.to_string())?;
+            .find(|item| item.path == repository.root)
+            .or_else(|| worktrees.first());
+        if let Some(worktree) = opened {
+            self.remember_worktree(worktree)?;
         }
-
         self.bootstrap()
     }
 
+    /// Shows a workspace, with the repository it was looking at last in focus.
+    pub fn select_workspace(&self, workspace_id: WorkspaceId) -> Result<WorkspaceSnapshot> {
+        let workspace = self
+            .store
+            .get_workspace(workspace_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace not found"))?;
+        self.show_workspace(workspace.id)?;
+        let repositories = self.store.list_repositories()?;
+        if let Some(repository_id) = self.resolve_focus(&workspace, &repositories)? {
+            self.focus(workspace.id, repository_id)?;
+            if let Some(repository) = repositories.iter().find(|item| item.id == repository_id) {
+                let _ = self.sync_worktrees(repository.id, &repository.root, &now_rfc3339()?);
+                self.store.set_preference(PREF_SELECTED_WORKTREE, "")?;
+            }
+        }
+        self.bootstrap()
+    }
+
+    /// Puts a repository in focus. Inside the workspace on screen the chat stays open, because
+    /// the chat belongs to the workspace and not to the repository being looked at.
     pub fn select_repository(&self, repository_id: RepositoryId) -> Result<WorkspaceSnapshot> {
         let repository = self
             .store
             .get_repository(repository_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "repository not found"))?;
-        let now = now_rfc3339()?;
-        let _ = self.sync_worktrees(repository.id, &repository.root, &now);
-        self.store
-            .set_preference(PREF_SELECTED_REPO, &repository.id.0.to_string())?;
-        let worktrees = self.store.list_worktrees(repository.id)?;
-        if let Some(worktree) = worktrees.first() {
-            self.store
-                .set_preference(PREF_SELECTED_WORKTREE, &worktree.id.0.to_string())?;
+        let workspace = self
+            .workspace_for(repository.id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "that repository is in no workspace"))?;
+        self.show_workspace(workspace.id)?;
+        self.focus(workspace.id, repository.id)?;
+        let _ = self.sync_worktrees(repository.id, &repository.root, &now_rfc3339()?);
+        if let Some(worktree) = self.default_worktree(&repository)? {
+            self.remember_worktree(&worktree)?;
         }
-        self.store.set_preference(PREF_SELECTED_SESSION, "")?;
         self.bootstrap()
     }
 
@@ -178,10 +422,141 @@ impl<'a> WorkspaceService<'a> {
             .store
             .get_worktree(worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
-        self.store
-            .set_preference(PREF_SELECTED_REPO, &worktree.repository_id.0.to_string())?;
-        self.store
-            .set_preference(PREF_SELECTED_WORKTREE, &worktree.id.0.to_string())?;
+        let workspace = self
+            .workspace_for(worktree.repository_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "that repository is in no workspace"))?;
+        self.show_workspace(workspace.id)?;
+        self.focus(workspace.id, worktree.repository_id)?;
+        self.remember_worktree(&worktree)?;
+        self.bootstrap()
+    }
+
+    fn clean_workspace_input(
+        &self,
+        id: Option<WorkspaceId>,
+        name: &str,
+        repository_ids: &[RepositoryId],
+    ) -> Result<(String, Vec<RepositoryId>)> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::new(ErrorCode::Invalid, "a workspace needs a name"));
+        }
+        if name.chars().count() > MAX_WORKSPACE_NAME {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("a workspace name has at most {MAX_WORKSPACE_NAME} characters"),
+            ));
+        }
+        let taken =
+            self.store.list_workspaces()?.into_iter().any(|other| {
+                Some(other.id) != id && other.name.to_lowercase() == name.to_lowercase()
+            });
+        if taken {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("a workspace named `{name}` already exists"),
+            ));
+        }
+        let mut members: Vec<RepositoryId> = Vec::new();
+        for repository_id in repository_ids {
+            if members.contains(repository_id) {
+                continue;
+            }
+            if self.store.get_repository(*repository_id)?.is_none() {
+                return Err(Error::new(ErrorCode::NotFound, "repository not found"));
+            }
+            members.push(*repository_id);
+        }
+        if members.is_empty() {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "a workspace needs at least one repository",
+            ));
+        }
+        Ok((name.to_string(), members))
+    }
+
+    /// A name no other workspace has, for the one made when a folder is opened.
+    fn free_workspace_name(&self, wanted: &str, id: Option<WorkspaceId>) -> Result<String> {
+        let names: Vec<String> = self
+            .store
+            .list_workspaces()?
+            .into_iter()
+            .filter(|item| Some(item.id) != id)
+            .map(|item| item.name.to_lowercase())
+            .collect();
+        let mut name = wanted.to_string();
+        let mut n = 2;
+        while names.contains(&name.to_lowercase()) {
+            name = format!("{wanted} {n}");
+            n += 1;
+        }
+        Ok(name)
+    }
+
+    pub fn create_workspace(
+        &self,
+        name: &str,
+        repository_ids: &[RepositoryId],
+    ) -> Result<WorkspaceSnapshot> {
+        let (name, members) = self.clean_workspace_input(None, name, repository_ids)?;
+        let now = now_rfc3339()?;
+        let workspace = Workspace {
+            id: WorkspaceId::new(),
+            name,
+            repository_ids: members,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.store.upsert_workspace(&workspace)?;
+        // A new workspace starts on its first member.
+        self.store.set_preference(
+            &focus_key(workspace.id),
+            &workspace.repository_ids[0].0.to_string(),
+        )?;
+        self.select_workspace(workspace.id)
+    }
+
+    pub fn update_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        name: &str,
+        repository_ids: &[RepositoryId],
+    ) -> Result<WorkspaceSnapshot> {
+        let existing = self
+            .store
+            .get_workspace(workspace_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace not found"))?;
+        let (name, members) =
+            self.clean_workspace_input(Some(workspace_id), name, repository_ids)?;
+        self.store.upsert_workspace(&Workspace {
+            name,
+            repository_ids: members,
+            updated_at: now_rfc3339()?,
+            ..existing
+        })?;
+        self.bootstrap()
+    }
+
+    /// Removes a workspace that has no chats. Its repositories stay known.
+    pub fn delete_workspace(&self, workspace_id: WorkspaceId) -> Result<WorkspaceSnapshot> {
+        let chats = self.store.list_workspace_sessions(workspace_id)?.len();
+        if chats > 0 {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!(
+                    "this workspace still has {chats} chat{}: delete them first",
+                    if chats == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        self.store.delete_workspace(workspace_id)?;
+        if self.preference_id(PREF_SELECTED_WORKSPACE)?.as_deref()
+            == Some(workspace_id.0.to_string().as_str())
+        {
+            self.store.set_preference(PREF_SELECTED_WORKSPACE, "")?;
+            self.store.set_preference(PREF_SELECTED_SESSION, "")?;
+        }
         self.bootstrap()
     }
 
@@ -247,13 +622,7 @@ impl<'a> WorkspaceService<'a> {
                 return self.select_worktree(open.id);
             }
         }
-        let busy = self
-            .store
-            .list_sessions(repository.id)?
-            .into_iter()
-            .any(|session| {
-                session.worktree_id == worktree_id && session.status == SessionStatus::Working
-            });
+        let busy = self.agent_working_in(&repository, worktree_id)?;
         if busy {
             return Err(Error::new(
                 ErrorCode::Invalid,
@@ -367,6 +736,29 @@ impl<'a> WorkspaceService<'a> {
         Ok(changed.then_some(worktree.id))
     }
 
+    /// Whether an agent is working in a worktree, as the chat's own or as one it also sees.
+    fn agent_working_in(&self, repository: &Repository, worktree_id: WorktreeId) -> Result<bool> {
+        for workspace in self.store.list_workspaces()? {
+            if !workspace.repository_ids.contains(&repository.id) {
+                continue;
+            }
+            for session in self.store.list_workspace_sessions(workspace.id)? {
+                if session.status != SessionStatus::Working {
+                    continue;
+                }
+                if session.worktree_id == worktree_id
+                    || self
+                        .store
+                        .session_worktrees(session.id)?
+                        .contains(&worktree_id)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub fn create_session(
         &self,
         repository_id: RepositoryId,
@@ -388,11 +780,31 @@ impl<'a> WorkspaceService<'a> {
                 "worktree does not belong to repository",
             ));
         }
+        let workspace = self
+            .workspace_for(repository.id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "that repository is in no workspace"))?;
+
+        // The chat sees one worktree of every other member, fixed now: the one selected there,
+        // else its main checkout.
+        let mut others = Vec::new();
+        for member in &workspace.repository_ids {
+            if *member == repository.id {
+                continue;
+            }
+            let Some(member) = self.store.get_repository(*member)? else {
+                continue;
+            };
+            let _ = self.sync_worktrees(member.id, &member.root, &now_rfc3339()?);
+            if let Some(found) = self.default_worktree(&member)? {
+                others.push(found.id);
+            }
+        }
 
         let now = now_rfc3339()?;
-        let count = self.store.list_sessions(repository.id)?.len() + 1;
+        let count = self.store.list_workspace_sessions(workspace.id)?.len() + 1;
         let session = ChatSession {
             id: SessionId::new(),
+            workspace_id: Some(workspace.id),
             repository_id: repository.id,
             worktree_id: worktree.id,
             provider,
@@ -410,10 +822,10 @@ impl<'a> WorkspaceService<'a> {
             last_opened_at: Some(now.clone()),
         };
         self.store.create_session(&session)?;
-        self.store
-            .set_preference(PREF_SELECTED_REPO, &repository.id.0.to_string())?;
-        self.store
-            .set_preference(PREF_SELECTED_WORKTREE, &worktree.id.0.to_string())?;
+        self.store.set_session_worktrees(session.id, &others)?;
+        self.show_workspace(workspace.id)?;
+        self.focus(workspace.id, repository.id)?;
+        self.remember_worktree(&worktree)?;
         self.store
             .set_preference(PREF_SELECTED_SESSION, &session.id.0.to_string())?;
         self.bootstrap()
@@ -424,12 +836,25 @@ impl<'a> WorkspaceService<'a> {
             .store
             .get_session(session_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let worktree = self
+            .store
+            .get_worktree(session.worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
         let now = now_rfc3339()?;
         self.store.touch_session(session.id, &now)?;
-        self.store
-            .set_preference(PREF_SELECTED_REPO, &session.repository_id.0.to_string())?;
-        self.store
-            .set_preference(PREF_SELECTED_WORKTREE, &session.worktree_id.0.to_string())?;
+        let workspace = match session.workspace_id {
+            Some(id) => self.store.get_workspace(id)?,
+            None => None,
+        };
+        let workspace = match workspace {
+            Some(found) => found,
+            None => self
+                .workspace_for(session.repository_id)?
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "that chat's workspace is gone"))?,
+        };
+        self.show_workspace(workspace.id)?;
+        self.focus(workspace.id, session.repository_id)?;
+        self.remember_worktree(&worktree)?;
         self.store
             .set_preference(PREF_SELECTED_SESSION, &session.id.0.to_string())?;
         self.bootstrap()
@@ -517,6 +942,252 @@ mod tests {
         let snapshot = service.open_repository(&root).expect("reopen");
         assert_eq!(snapshot.repositories.len(), 1);
         assert_eq!(store.list_repositories().unwrap().len(), 1);
+    }
+
+    /// A fake git with several repositories, one checkout each, named after their folders.
+    fn git_with(roots: &[&str]) -> FakeGit {
+        let git = FakeGit::default();
+        for root in roots {
+            let root = PathBuf::from(root);
+            let name = root.file_name().unwrap().to_string_lossy().into_owned();
+            git.repos.lock().unwrap().insert(
+                root.clone(),
+                crate::domain::RepoInfo {
+                    root: root.clone(),
+                    name,
+                },
+            );
+            git.worktrees.lock().unwrap().insert(
+                root.clone(),
+                vec![WorktreeInfo {
+                    path: root,
+                    branch: Some("main".into()),
+                    head: Some("abc".into()),
+                }],
+            );
+        }
+        git
+    }
+
+    fn repo_named(snapshot: &WorkspaceSnapshot, name: &str) -> RepositoryId {
+        snapshot
+            .repositories
+            .iter()
+            .find(|item| item.name == name)
+            .unwrap_or_else(|| panic!("no repository {name}"))
+            .id
+    }
+
+    #[test]
+    fn opening_folders_makes_a_workspace_of_one_each_and_reopening_reuses_it() {
+        let git = git_with(&["/w/api", "/w/web"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+
+        let first = service.open_repository("/w/api").unwrap();
+        assert_eq!(first.workspaces.len(), 1);
+        assert_eq!(first.workspaces[0].name, "api");
+        let second = service.open_repository("/w/web").unwrap();
+        assert_eq!(second.workspaces.len(), 2);
+        assert_eq!(
+            second.selected_repository_id,
+            Some(repo_named(&second, "web"))
+        );
+        let again = service.open_repository("/w/api").unwrap();
+        assert_eq!(again.workspaces.len(), 2);
+        let selected = again.selected_workspace_id.unwrap();
+        let workspace = again
+            .workspaces
+            .iter()
+            .find(|item| item.id == selected)
+            .unwrap();
+        assert_eq!(workspace.name, "api");
+    }
+
+    #[test]
+    fn a_workspace_groups_repositories_and_rejects_bad_input() {
+        let git = git_with(&["/w/api", "/w/web"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        service.open_repository("/w/api").unwrap();
+        let snapshot = service.open_repository("/w/web").unwrap();
+        let (api, web) = (repo_named(&snapshot, "api"), repo_named(&snapshot, "web"));
+
+        let made = service
+            .create_workspace("  acme  ", &[api, web, api])
+            .unwrap();
+        let acme = made
+            .workspaces
+            .iter()
+            .find(|item| item.name == "acme")
+            .unwrap();
+        assert_eq!(
+            acme.repository_ids,
+            vec![api, web],
+            "no duplicates, order kept"
+        );
+        assert_eq!(made.selected_workspace_id, Some(acme.id));
+        assert_eq!(
+            made.selected_repository_id,
+            Some(api),
+            "the first member is in focus"
+        );
+
+        let empty = service.create_workspace("none", &[]).unwrap_err();
+        assert!(empty.message.contains("at least one"), "{}", empty.message);
+        let blank = service.create_workspace("   ", &[api]).unwrap_err();
+        assert!(blank.message.contains("needs a name"));
+        let taken = service.create_workspace("ACME", &[api]).unwrap_err();
+        assert!(taken.message.contains("already exists"));
+        let missing = service
+            .create_workspace("ghost", &[RepositoryId::new()])
+            .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+
+        let renamed = service
+            .update_workspace(acme.id, "acme web", &[web])
+            .unwrap();
+        let acme = renamed
+            .workspaces
+            .iter()
+            .find(|item| item.id == acme.id)
+            .unwrap();
+        assert_eq!(
+            (acme.name.as_str(), acme.repository_ids.clone()),
+            ("acme web", vec![web])
+        );
+        assert_eq!(
+            renamed.selected_repository_id,
+            Some(web),
+            "a focus that left the workspace falls back to a member"
+        );
+    }
+
+    #[test]
+    fn looking_at_another_repository_keeps_the_chat_and_another_workspace_leaves_it() {
+        let git = git_with(&["/w/api", "/w/web", "/w/solo"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        service.open_repository("/w/api").unwrap();
+        service.open_repository("/w/web").unwrap();
+        let snapshot = service.open_repository("/w/solo").unwrap();
+        let (api, web, solo) = (
+            repo_named(&snapshot, "api"),
+            repo_named(&snapshot, "web"),
+            repo_named(&snapshot, "solo"),
+        );
+        let snapshot = service.create_workspace("acme", &[api, web]).unwrap();
+        let acme = snapshot.selected_workspace_id.unwrap();
+        let worktree = snapshot.selected_worktree_id.unwrap();
+        let snapshot = service
+            .create_session(api, worktree, None, ProviderKind::Fake)
+            .unwrap();
+        let chat = snapshot.selected_session_id.unwrap();
+        assert_eq!(snapshot.sessions[0].workspace_id, Some(acme));
+
+        let looking = service.select_repository(web).unwrap();
+        assert_eq!(looking.selected_repository_id, Some(web));
+        assert_eq!(looking.selected_workspace_id, Some(acme));
+        assert_eq!(
+            looking.selected_session_id,
+            Some(chat),
+            "the chat stays open"
+        );
+        assert_eq!(
+            looking.sessions.len(),
+            1,
+            "the chat belongs to the workspace"
+        );
+        assert_eq!(looking.worktrees[0].repository_id, web);
+
+        let back = service.select_workspace(acme).unwrap();
+        assert_eq!(
+            back.selected_repository_id,
+            Some(web),
+            "the workspace remembers its focus"
+        );
+
+        let other = service.select_repository(solo).unwrap();
+        assert_ne!(other.selected_workspace_id, Some(acme));
+        assert!(other.sessions.is_empty());
+        assert_eq!(
+            other.selected_session_id, None,
+            "another workspace has other chats"
+        );
+    }
+
+    #[test]
+    fn a_chat_remembers_one_worktree_of_every_other_member() {
+        let git = git_with(&["/w/api", "/w/web"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        service.open_repository("/w/api").unwrap();
+        let snapshot = service.open_repository("/w/web").unwrap();
+        let (api, web) = (repo_named(&snapshot, "api"), repo_named(&snapshot, "web"));
+        let snapshot = service.create_workspace("acme", &[api, web]).unwrap();
+        let worktree = snapshot.selected_worktree_id.unwrap();
+        let snapshot = service
+            .create_session(api, worktree, None, ProviderKind::Fake)
+            .unwrap();
+        let session = snapshot.selected_session_id.unwrap();
+        let others = store.session_worktrees(session).unwrap();
+        assert_eq!(others.len(), 1);
+        assert_eq!(
+            store
+                .get_worktree(others[0])
+                .unwrap()
+                .unwrap()
+                .repository_id,
+            web
+        );
+
+        let roots = session_roots(&store, &snapshot.sessions[0]).unwrap();
+        let names: Vec<&str> = roots.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["api", "web"],
+            "the chat's own repository comes first"
+        );
+    }
+
+    #[test]
+    fn a_workspace_with_chats_is_not_deleted_and_an_empty_one_is() {
+        let git = git_with(&["/w/api", "/w/web"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        service.open_repository("/w/api").unwrap();
+        let snapshot = service.open_repository("/w/web").unwrap();
+        let (api, web) = (repo_named(&snapshot, "api"), repo_named(&snapshot, "web"));
+        let snapshot = service.create_workspace("acme", &[api, web]).unwrap();
+        let acme = snapshot.selected_workspace_id.unwrap();
+        let worktree = snapshot.selected_worktree_id.unwrap();
+        service
+            .create_session(api, worktree, None, ProviderKind::Fake)
+            .unwrap();
+        let refused = service.delete_workspace(acme).unwrap_err();
+        assert!(refused.message.contains("1 chat"), "{}", refused.message);
+
+        let empty = service.create_workspace("temp", &[web]).unwrap();
+        let temp = empty.selected_workspace_id.unwrap();
+        let after = service.delete_workspace(temp).unwrap();
+        assert!(after.workspaces.iter().all(|item| item.id != temp));
+        assert_ne!(after.selected_workspace_id, Some(temp));
+        assert_eq!(after.repositories.len(), 2, "the repositories stay known");
     }
 
     fn probe(head: &str, index: &str) -> FilesProbe {

@@ -333,10 +333,15 @@ export const codeWrite = (
 ) => invoke<number>("code_write", { worktreeId, path, text, expectedMtimeMs });
 export const codeFileAt = (checkpointId: CheckpointId, path: string, side: "base" | "head") =>
   invoke<string | null>("code_file_at", { checkpointId, path, side });
-export const codeReview = (sessionId: SessionId, checkpointId: CheckpointId | null) =>
-  invoke<ReviewView>("code_review", { sessionId, checkpointId });
-export const codeRefreshCheckpoint = (sessionId: SessionId) =>
-  invoke<Checkpoint | null>("code_refresh_checkpoint", { sessionId });
+/** Review of one repository of the chat's workspace; `null` is the chat's own. */
+export const codeReview = (sessionId: SessionId, checkpointId: CheckpointId | null, repositoryId: RepositoryId | null = null) =>
+  invoke<ReviewView>("code_review", { sessionId, checkpointId, repositoryId });
+export const codeRefreshCheckpoint = (sessionId: SessionId, repositoryId: RepositoryId | null = null) =>
+  invoke<Checkpoint | null>("code_refresh_checkpoint", { sessionId, repositoryId });
+
+/** What the agent changed in one repository of a workspace, and how much of it nobody has marked. */
+export type RepoChanges = { repositoryId: RepositoryId; files: number; unreviewed: number };
+export const codeRepoChanges = (sessionId: SessionId) => invoke<RepoChanges[]>("code_repo_changes", { sessionId });
 export const codeSetReviewMark = (checkpointId: CheckpointId, path: string, reviewState: ReviewState) =>
   invoke<ReviewMark>("code_set_review_mark", { checkpointId, path, reviewState });
 export const codeAddComment = (
@@ -418,10 +423,16 @@ export const flowGenerate = (sessionId: SessionId, presetId: FlowPresetId, extra
 export const flowList = (sessionId: SessionId) => invoke<Artifact[]>("flow_list", { sessionId });
 
 // diff target
-export const codeRefs = (sessionId: SessionId) => invoke<GitRefs>("code_refs", { sessionId });
+export const codeRefs = (sessionId: SessionId, repositoryId: RepositoryId | null = null) =>
+  invoke<GitRefs>("code_refs", { sessionId, repositoryId });
 /** Diffs two revisions; `head: null` is the working tree as it is now. */
-export const codeCompare = (sessionId: SessionId, base: string, head: string | null, mergeBase: boolean) =>
-  invoke<Checkpoint>("code_compare", { sessionId, base, head, mergeBase });
+export const codeCompare = (
+  sessionId: SessionId,
+  base: string,
+  head: string | null,
+  mergeBase: boolean,
+  repositoryId: RepositoryId | null = null,
+) => invoke<Checkpoint>("code_compare", { sessionId, base, head, mergeBase, repositoryId });
 
 /** Takes a priority that was set on a unit away: it goes back to what the code says. */
 export const reviewResetPriority = (checkpointId: CheckpointId, path: string, name: string) =>

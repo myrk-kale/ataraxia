@@ -10,7 +10,7 @@ use super::analysis::{decisions_prompt, parse_decisions};
 use super::engine::Engine;
 use super::review::{ReviewPriority, prioritize};
 use crate::domain::agent::ProviderKind;
-use crate::domain::ids::{CheckpointId, SessionId, WorktreeId};
+use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     Artifact, ArtifactId, ArtifactKind, ArtifactStatus, Checkpoint, CheckpointSource, Decision,
     DecisionId, DecisionMessage, DecisionState, Error, ErrorCode, InsightEvent, Result,
@@ -27,6 +27,17 @@ pub struct ReviewView {
     pub marks: Vec<ReviewMark>,
     pub comments: Vec<ReviewComment>,
     pub artifacts: Vec<Artifact>,
+}
+
+/// What the agent changed in one repository of a workspace, and how much of it is still unseen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoChanges {
+    pub repository_id: RepositoryId,
+    /// Files of the repository's latest checkpoint.
+    pub files: usize,
+    /// Of those, the ones nobody has marked yet.
+    pub unreviewed: usize,
 }
 
 /// What a deletion of a chat's artifacts removed.
@@ -176,7 +187,11 @@ impl Engine {
             .get_checkpoint(artifact.checkpoint_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "checkpoint not found"))?;
         let session = self.session(artifact.session_id)?;
-        let root = self.worktree_path(&session)?;
+        let root = self
+            .db
+            .get_worktree(checkpoint.worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?
+            .path;
         let provider = artifact.provenance["provider"]
             .as_str()
             .and_then(ProviderKind::parse)
@@ -430,13 +445,20 @@ impl Engine {
     /// The checkpoint Code shows when no comparison is chosen: the latest one of the agent's turns
     /// or of an explicit check. A comparison is only ever shown while it is chosen, so it never
     /// stands in for this one.
-    pub(crate) fn latest_turn_view(&self, session_id: SessionId) -> Result<Option<Checkpoint>> {
+    pub(crate) fn latest_turn_view(
+        &self,
+        session_id: SessionId,
+        repository_id: RepositoryId,
+    ) -> Result<Option<Checkpoint>> {
         Ok(self
             .db
             .list_checkpoints(session_id)?
             .into_iter()
             .rev()
-            .find(|checkpoint| checkpoint.source != CheckpointSource::Compare))
+            .find(|checkpoint| {
+                checkpoint.repository_id == repository_id
+                    && checkpoint.source != CheckpointSource::Compare
+            }))
     }
 
     /// Records the current working tree as a manual checkpoint, unless nothing changed since
@@ -445,9 +467,20 @@ impl Engine {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> Result<Option<Checkpoint>> {
+        self.refresh_checkpoint_in(session_id, None)
+    }
+
+    /// [`Self::refresh_checkpoint`] for one repository of the chat's workspace (`None` is the
+    /// chat's own).
+    pub fn refresh_checkpoint_in(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        repository: Option<RepositoryId>,
+    ) -> Result<Option<Checkpoint>> {
         let session = self.session(session_id)?;
-        let root = self.worktree_path(&session)?;
-        let latest = self.latest_turn_view(session_id)?;
+        let target = self.target_of(&session, repository)?;
+        let root = target.path.clone();
+        let latest = self.latest_turn_view(session_id, target.repository_id)?;
         let head = self.git.snapshot(
             &root,
             &format!("manual/{}/{}", session_id.0, Uuid::new_v4().simple()),
@@ -467,16 +500,31 @@ impl Engine {
                 base
             }
         };
-        let checkpoint =
-            self.create_checkpoint(&session, &root, base, head, CheckpointSource::Manual, None)?;
+        let checkpoint = self.create_checkpoint(
+            &session,
+            &target,
+            base,
+            head,
+            CheckpointSource::Manual,
+            None,
+        )?;
         self.process_checkpoint(&checkpoint);
         Ok(Some(checkpoint))
     }
 
     /// Branches, tags and recent commits a diff can be taken against.
     pub fn code_refs(&self, session_id: SessionId) -> Result<crate::domain::GitRefs> {
+        self.code_refs_in(session_id, None)
+    }
+
+    pub fn code_refs_in(
+        &self,
+        session_id: SessionId,
+        repository: Option<RepositoryId>,
+    ) -> Result<crate::domain::GitRefs> {
         let session = self.session(session_id)?;
-        self.git.list_refs(&self.worktree_path(&session)?)
+        self.git
+            .list_refs(&self.target_of(&session, repository)?.path)
     }
 
     /// Diffs any two revisions: `base` is a branch, tag or commit, `head` is another one or, when
@@ -489,8 +537,21 @@ impl Engine {
         head: Option<&str>,
         merge_base: bool,
     ) -> Result<Checkpoint> {
+        self.compare_in(session_id, base, head, merge_base, None)
+    }
+
+    /// [`Self::compare`] in one repository of the chat's workspace (`None` is the chat's own).
+    pub fn compare_in(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        base: &str,
+        head: Option<&str>,
+        merge_base: bool,
+        repository: Option<RepositoryId>,
+    ) -> Result<Checkpoint> {
         let session = self.session(session_id)?;
-        let root = self.worktree_path(&session)?;
+        let target = self.target_of(&session, repository)?;
+        let root = target.path.clone();
         let base_rev = self.git.resolve_rev(&root, base)?;
         let (head_rev, head_label, live) = match head {
             Some(spec) => (self.git.resolve_rev(&root, spec)?, spec.to_string(), false),
@@ -517,6 +578,7 @@ impl Engine {
         let head_tree = self.git.tree_id(&root, &head_rev)?;
         for existing in self.db.list_checkpoints(session_id)? {
             if existing.source == CheckpointSource::Compare
+                && existing.repository_id == target.repository_id
                 && existing.base_rev == base_rev
                 && existing.head_live == live
                 && self.git.tree_id(&root, &existing.head_rev).ok().as_deref()
@@ -533,7 +595,7 @@ impl Engine {
         }
         let checkpoint = self.create_checkpoint_labeled(
             &session,
-            &root,
+            &target,
             base_rev,
             head_rev,
             CheckpointSource::Compare,
@@ -589,13 +651,67 @@ impl Engine {
         Ok(())
     }
 
+    /// For each repository of the chat's workspace, how many files its latest checkpoint
+    /// changed and how many of those are still unmarked. Repositories the agent left alone are
+    /// listed with zeros, so the selector can show every member.
+    pub fn repo_changes(&self, session_id: SessionId) -> Result<Vec<RepoChanges>> {
+        let session = self.session(session_id)?;
+        let mut out = Vec::new();
+        for target in self.session_targets(&session)? {
+            let latest = self.latest_turn_view(session_id, target.repository_id)?;
+            let (files, unreviewed) = match latest {
+                Some(checkpoint) => {
+                    let marks = self.db.list_review_marks(checkpoint.id)?;
+                    let unreviewed = checkpoint
+                        .files
+                        .iter()
+                        .filter(|file| {
+                            marks
+                                .iter()
+                                .find(|mark| mark.path == file.path)
+                                .is_none_or(|mark| mark.state == ReviewState::Unreviewed)
+                        })
+                        .count();
+                    (checkpoint.files.len(), unreviewed)
+                }
+                None => (0, 0),
+            };
+            out.push(RepoChanges {
+                repository_id: target.repository_id,
+                files,
+                unreviewed,
+            });
+        }
+        Ok(out)
+    }
+
     /// Everything the review surface needs for one checkpoint (the latest by default).
     pub fn review(
         self: &Arc<Self>,
         session_id: SessionId,
         checkpoint_id: Option<CheckpointId>,
     ) -> Result<ReviewView> {
-        let checkpoints = self.db.list_checkpoints(session_id)?;
+        self.review_in(session_id, checkpoint_id, None)
+    }
+
+    /// The review of one repository of the chat's workspace (`None` is the chat's own): its
+    /// checkpoints, and the latest turn of that repository unless one is asked for.
+    pub fn review_in(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        checkpoint_id: Option<CheckpointId>,
+        repository: Option<RepositoryId>,
+    ) -> Result<ReviewView> {
+        let all = self.db.list_checkpoints(session_id)?;
+        let session = self.session(session_id)?;
+        let repository = match checkpoint_id.and_then(|id| all.iter().find(|item| item.id == id)) {
+            Some(asked) => asked.repository_id,
+            None => repository.unwrap_or(session.repository_id),
+        };
+        let checkpoints: Vec<Checkpoint> = all
+            .into_iter()
+            .filter(|item| item.repository_id == repository)
+            .collect();
         // With none asked for, the agent's last turn (or last explicit check). Never a diff
         // nobody asked for: nothing is recorded here, and a comparison is shown only by id.
         let checkpoint = match checkpoint_id {

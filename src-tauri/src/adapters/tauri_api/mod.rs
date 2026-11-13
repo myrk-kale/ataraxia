@@ -8,7 +8,7 @@ use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
 use crate::domain::agent::{ProviderDescriptor, ProviderKind, SessionOptions};
-use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId};
 use crate::domain::{
     ChatSession, ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
 };
@@ -50,6 +50,55 @@ pub fn workspace_open_repository(
     path: String,
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| workspace.open_repository(path))
+}
+
+/// Records the repository at a folder and reads its worktrees, selecting nothing: the workspace
+/// dialog uses it to add a folder before the workspace is saved.
+#[tauri::command(async)]
+pub fn workspace_register_repository(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> std::result::Result<crate::domain::Repository, String> {
+    with_workspace(&state, |workspace| workspace.register_repository(path))
+}
+
+#[tauri::command]
+pub fn workspace_select_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id: WorkspaceId,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| workspace.select_workspace(workspace_id))
+}
+
+#[tauri::command]
+pub fn workspace_create_workspace(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    repository_ids: Vec<RepositoryId>,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.create_workspace(&name, &repository_ids)
+    })
+}
+
+#[tauri::command]
+pub fn workspace_update_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id: WorkspaceId,
+    name: String,
+    repository_ids: Vec<RepositoryId>,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.update_workspace(workspace_id, &name, &repository_ids)
+    })
+}
+
+#[tauri::command]
+pub fn workspace_delete_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id: WorkspaceId,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| workspace.delete_workspace(workspace_id))
 }
 
 #[tauri::command]

@@ -10,6 +10,7 @@ const worktrees = [
   // `?branch=` previews a long branch name; `?branch=none` a worktree with no branch.
   { id: "w1", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: (() => { const given = new URLSearchParams(window.location.search).get("branch"); return given === "none" ? null : (given ?? "feature/course-mask"); })(), head: "d76d97b4", created_at: now, updated_at: now },
   { id: "w2", repository_id: "r1", path: "/Users/dev/archipelago-backend", branch: "main", head: "a1b2c3d4", created_at: now, updated_at: now },
+  { id: "w3", repository_id: "r2", path: "/Users/dev/ataraxia-ui", branch: "main", head: "9f8e7d6c", created_at: now, updated_at: now },
 ];
 const session = { id: "s1", repository_id: "r1", worktree_id: "w1", provider: "codex", title: "Refactor document generation", status: "ready", model: null as string | null, effort: null as string | null, agent: null as string | null, created_at: now, updated_at: now, last_opened_at: now };
 
@@ -22,8 +23,17 @@ const sessions = [
 // `?state=empty|permission|working|fresh` previews other UI states in the browser.
 const mode = new URLSearchParams(window.location.search).get("state");
 
-const snapshot = {
-  repositories: [repo, { ...repo, id: "r2", name: "ataraxia-ui" }],
+// `?workspace=multi` opens a workspace of two repositories; by default each repository is its own.
+const multi = new URLSearchParams(window.location.search).get("workspace") === "multi";
+const workspaces = [
+  { id: "ws1", name: "archipelago-backend", repository_ids: ["r1"], created_at: now, updated_at: now },
+  { id: "ws2", name: "ataraxia-ui", repository_ids: ["r2"], created_at: now, updated_at: now },
+  ...(multi ? [{ id: "ws3", name: "acme", repository_ids: ["r1", "r2"], created_at: now, updated_at: now }] : []),
+];
+const snapshot: { selected_worktree_id: string | null; [key: string]: unknown; sessions: typeof sessions; repositories: Array<typeof repo>; selected_workspace_id: string | null; selected_repository_id: string | null; workspaces: typeof workspaces; worktrees: typeof worktrees; selected_session_id: string | null } = {
+  repositories: [repo, { ...repo, id: "r2", root: "/Users/dev/ataraxia-ui", name: "ataraxia-ui" }],
+  workspaces,
+  selected_workspace_id: multi ? "ws3" : "ws1",
   selected_repository_id: "r1",
   worktrees,
   selected_worktree_id: "w1",
@@ -33,6 +43,9 @@ const snapshot = {
 if (mode === "empty") {
   snapshot.sessions = [];
 }
+
+// Every answer is a fresh copy, as it is over IPC: React must see a new object to redraw.
+const view = () => JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
 
 const chat: { items: unknown[]; subagents: unknown[]; restoredCount: number; status: string; pendingPermission: unknown } = {
   subagents: [],
@@ -135,12 +148,68 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) };
     }
+    case "workspace_select_repository": {
+      const target = snapshot.repositories.find((item) => item.id === args?.repositoryId);
+      if (target) {
+        snapshot.selected_repository_id = target.id;
+        snapshot.selected_worktree_id = worktrees.find((item) => item.repository_id === target.id)?.id ?? null;
+      }
+      return view();
+    }
+    case "workspace_select_workspace": {
+      const target = workspaces.find((item) => item.id === args?.workspaceId);
+      if (target) {
+        snapshot.selected_workspace_id = target.id;
+        snapshot.selected_repository_id = target.repository_ids[0];
+        snapshot.selected_worktree_id = worktrees.find((item) => item.repository_id === target.repository_ids[0])?.id ?? null;
+      }
+      return view();
+    }
+    case "workspace_register_repository": {
+      const path = String(args?.path);
+      const name = path.split("/").filter(Boolean).pop() ?? path;
+      const added = { ...repo, id: `r${snapshot.repositories.length + 1}`, root: path, name };
+      snapshot.repositories.push(added);
+      return added;
+    }
+    case "workspace_create_workspace": {
+      const name = String(args?.name).trim();
+      if (workspaces.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+        throw new Error(`a workspace named \`${name}\` already exists`);
+      }
+      const created = { id: `ws${workspaces.length + 1}`, name, repository_ids: args?.repositoryIds as string[], created_at: now, updated_at: now };
+      workspaces.push(created);
+      snapshot.selected_workspace_id = created.id;
+      snapshot.selected_repository_id = created.repository_ids[0];
+      return view();
+    }
+    case "workspace_update_workspace": {
+      const target = workspaces.find((item) => item.id === args?.workspaceId)!;
+      target.name = String(args?.name).trim();
+      target.repository_ids = args?.repositoryIds as string[];
+      if (!target.repository_ids.includes(snapshot.selected_repository_id!)) {
+        snapshot.selected_repository_id = target.repository_ids[0];
+      }
+      return view();
+    }
+    case "workspace_delete_workspace": {
+      const at = workspaces.findIndex((item) => item.id === args?.workspaceId);
+      if (snapshot.sessions.length > 0 && snapshot.selected_workspace_id === args?.workspaceId) {
+        throw new Error(`this workspace still has ${snapshot.sessions.length} chats: delete them first`);
+      }
+      workspaces.splice(at, 1);
+      snapshot.selected_workspace_id = workspaces[0]?.id ?? null;
+      return view();
+    }
+    case "code_repo_changes": return [
+      { repositoryId: "r1", files: 2, unreviewed: 2 },
+      { repositoryId: "r2", files: 3, unreviewed: 3 },
+    ];
     case "workspace_bootstrap":
-    case "workspace_select_repository":
     case "workspace_select_worktree":
     case "workspace_create_session":
     case "workspace_open_session":
-    case "workspace_open_repository": return snapshot;
+    case "workspace_open_repository": return view();
     case "plugin:event|listen": {
       const target = args as { event: string; handler: number } | undefined;
       if (target) {

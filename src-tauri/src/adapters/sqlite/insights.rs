@@ -981,7 +981,7 @@ impl InsightStore for SqliteStore {
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
                             created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id
+                            kind, parent_session_id, workspace_id
                      FROM chat_sessions WHERE parent_session_id = ?1
                      ORDER BY created_at DESC",
                 )

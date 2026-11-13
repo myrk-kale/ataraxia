@@ -34,6 +34,14 @@ commit it.
   what the server said. `jq` is optional; the scripts below do not need it.
 - Bodies are limited to 1 MiB.
 
+## Several repositories
+
+When the preamble of the chat lists more than one repository, the chat belongs to a workspace and
+you can read and change all of them. Write a file you name to Ataraxia (the `files` of a decision,
+the `refs` of a flow node) as the path inside the first repository, the one you started in, and as
+`<repository>/<path>` for any other, with the repository name the preamble gives. Ataraxia opens
+the file in the right repository. A path outside every repository is shown as unverified.
+
 ## Endpoints
 
 Paths start with `/v1`. A body field marked (required) must be present; the others can be left

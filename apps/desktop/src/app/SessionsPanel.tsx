@@ -1,28 +1,30 @@
 import { Check, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
-import type { ChatSession, SessionId, Worktree } from "../lib/workspace";
+import type { ChatSession, RepositoryId, SessionId, Worktree } from "../lib/workspace";
 
-function worktreeLabel(worktree: Worktree | undefined): string {
+function worktreeLabel(worktree: Worktree | undefined, repositoryNames: Record<RepositoryId, string> | undefined): string {
   if (!worktree) {
     return "unknown worktree";
   }
-  if (worktree.branch) {
-    return worktree.branch;
-  }
   const parts = worktree.path.split(/[/\\]/).filter(Boolean);
-  return parts.slice(-2).join("/");
+  const place = worktree.branch ?? parts.slice(-2).join("/");
+  const repository = repositoryNames?.[worktree.repository_id];
+  return repository ? `${repository} · ${place}` : place;
 }
 
 export function SessionsPanel({
   sessions,
   worktrees,
+  repositoryNames,
   selectedId,
   onSelect,
   onClose,
 }: {
   sessions: ChatSession[];
   worktrees: Worktree[];
+  /** Names of the repositories, given when the workspace has more than one: each group then says which. */
+  repositoryNames?: Record<RepositoryId, string>;
   selectedId: SessionId | null;
   onSelect: (id: SessionId) => void;
   onClose: () => void;
@@ -76,13 +78,13 @@ export function SessionsPanel({
       <div className="overflow-auto px-2.5 pt-3.5 pb-5">
         {sessions.length === 0 ? (
           <p className="px-4 py-7 text-center text-ui text-cg-muted">
-            No sessions in this repository yet.
+            {repositoryNames ? "No sessions in this workspace yet." : "No sessions in this repository yet."}
           </p>
         ) : (
           groups.map((worktreeId) => (
             <div key={worktreeId} className="mb-4">
               <div className="mx-3 mt-2 mb-2.5 font-mono text-small text-cg-muted">
-                {worktreeLabel(worktrees.find((item) => item.id === worktreeId))}
+                {worktreeLabel(worktrees.find((item) => item.id === worktreeId), repositoryNames)}
               </div>
               {sessions
                 .filter((session) => session.worktree_id === worktreeId)

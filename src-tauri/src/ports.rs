@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
-use crate::domain::ids::{CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorktreeId};
+use crate::domain::ids::{
+    CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId,
+};
 use crate::domain::{
     AgentEvent, ChatItem, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository,
-    Result, SessionStatus, Worktree, WorktreeInfo,
+    Result, SessionStatus, Workspace, Worktree, WorktreeInfo,
 };
 
 /// What an agent process needs to reach Ataraxia's local API: the address and its own token.
@@ -296,6 +298,19 @@ pub trait Store: Send + Sync {
         repository_id: RepositoryId,
         path: &Path,
     ) -> Result<Option<Worktree>>;
+
+    fn upsert_workspace(&self, workspace: &Workspace) -> Result<()>;
+    /// Every workspace, most recently changed first, each with its members in order.
+    fn list_workspaces(&self) -> Result<Vec<Workspace>>;
+    fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>>;
+    /// Removes the workspace and its membership. Chats are never deleted with it: the caller
+    /// refuses to delete a workspace that still has some.
+    fn delete_workspace(&self, id: WorkspaceId) -> Result<()>;
+    /// The user's chats of a workspace, most recently opened first.
+    fn list_workspace_sessions(&self, workspace_id: WorkspaceId) -> Result<Vec<ChatSession>>;
+    /// Remembers the worktrees a chat sees besides its own.
+    fn set_session_worktrees(&self, id: SessionId, worktrees: &[WorktreeId]) -> Result<()>;
+    fn session_worktrees(&self, id: SessionId) -> Result<Vec<WorktreeId>>;
 
     fn create_session(&self, session: &ChatSession) -> Result<()>;
     fn list_sessions(&self, repository_id: RepositoryId) -> Result<Vec<ChatSession>>;
