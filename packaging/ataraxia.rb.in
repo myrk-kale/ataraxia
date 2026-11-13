@@ -1,23 +1,18 @@
 class Ataraxia < Formula
   desc "Desktop environment for agent-assisted software development"
   homepage "https://github.com/myrk-kale/ataraxia"
-  version "@VERSION@"
   license "MIT"
 
-  on_macos do
+  # Release archives: a universal binary on macOS, one binary per architecture on Linux.
+  if OS.mac?
     url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-universal-apple-darwin.tar.gz"
     sha256 "@SHA_MACOS@"
-  end
-
-  on_linux do
-    on_intel do
-      url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "@SHA_LINUX_X86_64@"
-    end
-    on_arm do
-      url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "@SHA_LINUX_AARCH64@"
-    end
+  elsif Hardware::CPU.arm?
+    url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz"
+    sha256 "@SHA_LINUX_AARCH64@"
+  else
+    url "https://github.com/myrk-kale/ataraxia/releases/download/v@VERSION@/ataraxia-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "@SHA_LINUX_X86_64@"
   end
 
   def install
@@ -44,7 +39,7 @@ class Ataraxia < Formula
   test do
     reply = pipe_output(
       "#{bin}/ataraxia mcp --db #{testpath}/test.sqlite3",
-      %({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n),
+      %Q({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n),
       0,
     )
     assert_match "ataraxia", reply
