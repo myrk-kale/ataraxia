@@ -112,14 +112,31 @@ impl AppState {
 /// of worktrees (which costs a process).
 const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
 const REDISCOVER_EVERY: u32 = 6;
+/// How many looks go by between two reads of `git status` when nothing moved in `HEAD` or the
+/// index (a file made or deleted by a program that does not touch git, say): about 3 seconds.
+const STATUS_EVERY: u32 = 4;
 
-/// Keeps the app 1:1 with git: when a branch is switched outside the app, the app switches too.
+/// Whether the window is on screen. A hidden or minimized window has nobody to show changes to,
+/// and the files are read again as soon as it is back.
+fn window_shown(app: &AppHandle) -> bool {
+    match app.get_webview_window("main") {
+        Some(window) => {
+            window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false)
+        }
+        None => true,
+    }
+}
+
+/// Keeps the app 1:1 with git: when a branch is switched outside the app, the app switches too,
+/// and when the files of the worktree on screen change (git or not), the views over them reload.
 pub fn follow_git(app: &AppHandle) {
     use tauri::Emitter;
     let app = app.clone();
     std::thread::spawn(move || {
         let mut seen = std::collections::HashMap::new();
+        let mut files = std::collections::HashMap::new();
         let mut tick = 0u32;
+        let mut was_hidden = false;
         loop {
             std::thread::sleep(FOLLOW_EVERY);
             tick = tick.wrapping_add(1);
@@ -136,6 +153,23 @@ pub fn follow_git(app: &AppHandle) {
                 }
                 Ok(false) => {}
                 Err(error) => eprintln!("ataraxia: could not follow git: {error}"),
+            }
+            if !window_shown(&app) {
+                was_hidden = true;
+                continue;
+            }
+            // The first look after being hidden reads the status whatever the tick.
+            let check_status = was_hidden || tick % STATUS_EVERY == 0;
+            was_hidden = false;
+            match service.follow_files(&mut files, check_status) {
+                Ok(Some(worktree)) => {
+                    let payload = serde_json::json!({ "worktreeId": worktree });
+                    if let Err(error) = app.emit(super::events::FILES_EVENT, payload) {
+                        eprintln!("ataraxia: failed to emit the files event: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("ataraxia: could not follow the files: {error}"),
             }
         }
     });

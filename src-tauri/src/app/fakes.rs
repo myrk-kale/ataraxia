@@ -8,13 +8,27 @@ use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     ChatItem, ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, Worktree, WorktreeInfo,
 };
-use crate::ports::{Fs, Git, PtyHost, Store};
+use crate::ports::{FilesProbe, Fs, Git, PtyHost, Store};
 
 #[derive(Debug, Default)]
 pub struct FakeGit {
     pub calls: Mutex<Vec<String>>,
     pub repos: Mutex<HashMap<PathBuf, RepoInfo>>,
     pub worktrees: Mutex<HashMap<PathBuf, Vec<WorktreeInfo>>>,
+    /// What the files of any worktree look like: the probe and the status stamp.
+    pub files: Mutex<(FilesProbe, String)>,
+}
+
+impl FakeGit {
+    /// How many times the status (the costly look) was read.
+    pub fn status_reads(&self) -> usize {
+        self.calls
+            .lock()
+            .expect("fake git lock")
+            .iter()
+            .filter(|call| call.as_str() == "status_stamp")
+            .count()
+    }
 }
 
 impl FakeGit {
@@ -69,6 +83,18 @@ impl Git for FakeGit {
             .get(repo_root)
             .cloned()
             .ok_or_else(|| Error::new(ErrorCode::NotARepo, "unknown repository"))
+    }
+
+    fn files_probe(&self, _worktree: &Path) -> Result<FilesProbe> {
+        Ok(self.files.lock().expect("files").0.clone())
+    }
+
+    fn status_stamp(&self, _worktree: &Path) -> Result<String> {
+        self.calls
+            .lock()
+            .expect("fake git lock")
+            .push("status_stamp".into());
+        Ok(self.files.lock().expect("files").1.clone())
     }
 }
 

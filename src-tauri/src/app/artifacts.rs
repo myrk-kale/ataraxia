@@ -427,15 +427,27 @@ impl Engine {
         self.git.file_at(&root, rev, &lookup)
     }
 
+    /// The checkpoint Code shows when no comparison is chosen: the latest one of the agent's turns
+    /// or of an explicit check. A comparison is only ever shown while it is chosen, so it never
+    /// stands in for this one.
+    pub(crate) fn latest_turn_view(&self, session_id: SessionId) -> Result<Option<Checkpoint>> {
+        Ok(self
+            .db
+            .list_checkpoints(session_id)?
+            .into_iter()
+            .rev()
+            .find(|checkpoint| checkpoint.source != CheckpointSource::Compare))
+    }
+
     /// Records the current working tree as a manual checkpoint, unless nothing changed since
-    /// the latest one.
+    /// the latest one (a comparison does not count: it is a different question).
     pub fn refresh_checkpoint(
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> Result<Option<Checkpoint>> {
         let session = self.session(session_id)?;
         let root = self.worktree_path(&session)?;
-        let latest = self.db.latest_checkpoint(session_id)?;
+        let latest = self.latest_turn_view(session_id)?;
         let head = self.git.snapshot(
             &root,
             &format!("manual/{}/{}", session_id.0, Uuid::new_v4().simple()),
@@ -583,13 +595,16 @@ impl Engine {
         session_id: SessionId,
         checkpoint_id: Option<CheckpointId>,
     ) -> Result<ReviewView> {
-        if checkpoint_id.is_none() && self.db.latest_checkpoint(session_id)?.is_none() {
-            self.refresh_checkpoint(session_id)?;
-        }
         let checkpoints = self.db.list_checkpoints(session_id)?;
+        // With none asked for, the agent's last turn (or last explicit check). Never a diff
+        // nobody asked for: nothing is recorded here, and a comparison is shown only by id.
         let checkpoint = match checkpoint_id {
             Some(id) => checkpoints.iter().find(|item| item.id == id).cloned(),
-            None => checkpoints.last().cloned(),
+            None => checkpoints
+                .iter()
+                .rev()
+                .find(|item| item.source != CheckpointSource::Compare)
+                .cloned(),
         };
         let Some(current) = checkpoint else {
             return Ok(ReviewView {
