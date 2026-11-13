@@ -31,10 +31,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      # The scripts come from main, so a fix there applies to a release that already exists.
+      # The scripts come from the commit this workflow runs at: run by hand on main, a fix there
+      # applies to a release that already exists.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
       - name: Render from the release checksums
         run: |
           version="${TAG#v}"

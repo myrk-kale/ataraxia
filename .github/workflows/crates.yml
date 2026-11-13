@@ -83,5 +83,13 @@ jobs:
             exit 0
           fi
           # The interface (src-tauri/web) is built here and ignored by git, and cargo counts an
-          # ignored file that goes into the package as a change. Nothing else differs from the tag.
-          cargo publish --locked --allow-dirty
+          # ignored file that goes into the package as a change; nothing else differs from the tag.
+          #
+          # cargo's own check builds the package and then fails when Tauri's build script writes its
+          # schemas (gen/) next to the sources. So the package is made without that check and
+          # checked the same way, by unpacking it and building it as a user of the crate would.
+          cargo package --locked --allow-dirty --no-verify
+          mkdir -p "$RUNNER_TEMP/crate"
+          tar -xzf "target/package/${name}-${version}.crate" -C "$RUNNER_TEMP/crate"
+          (cd "$RUNNER_TEMP/crate/${name}-${version}" && cargo check --locked)
+          cargo publish --locked --allow-dirty --no-verify
