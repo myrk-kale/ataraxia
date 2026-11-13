@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { resolveShortcut, type KeyLike, type ShortcutContext } from "./shortcuts";
+import { isTerminalToggle, resolveShortcut, SHORTCUT_LEGEND, type KeyLike, type ShortcutContext } from "./shortcuts";
 
 const idle: ShortcutContext = { space: "chat", overlay: false };
 
@@ -121,10 +121,31 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("?", { shiftKey: true }), idle)).toEqual({ type: "legend" });
   });
 
-  it("toggles the terminal from anywhere, even while typing", () => {
-    expect(resolveShortcut(press("j", { ctrlKey: true }), idle)).toEqual({ type: "terminal" });
+  it("toggles the terminal with Ctrl/Cmd+backtick from anywhere, even while typing", () => {
+    expect(resolveShortcut(press("`", { ctrlKey: true }), idle)).toEqual({ type: "terminal" });
     expect(resolveShortcut(press("`", { metaKey: true }, el("<input />")), idle)).toEqual({ type: "terminal" });
-    expect(resolveShortcut(press("j", { ctrlKey: true }), { space: "chat", overlay: true })).toEqual({ type: "terminal" });
+    expect(resolveShortcut(press("`", { metaKey: true }, el("<div class='xterm'><span tabindex='0'></span></div>")), idle)).toEqual({
+      type: "terminal",
+    });
+    expect(resolveShortcut(press("`", { ctrlKey: true }), { space: "chat", overlay: true })).toEqual({ type: "terminal" });
+  });
+
+  it("no longer toggles the terminal with Ctrl/Cmd+J", () => {
+    expect(resolveShortcut(press("j", { ctrlKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("j", { metaKey: true }), { space: "code", overlay: false })).toBeNull();
+    expect(resolveShortcut(press("j", { ctrlKey: true }), { space: "chat", overlay: true })).toBeNull();
+    expect(isTerminalToggle(press("j", { ctrlKey: true }))).toBe(false);
+    expect(SHORTCUT_LEGEND.some((entry) => entry.keys.includes("Ctrl/⌘") && entry.keys.includes("J"))).toBe(false);
+    expect(SHORTCUT_LEGEND.some((entry) => entry.keys.includes("`") && entry.label.includes("terminal"))).toBe(true);
+  });
+
+  it("needs a modifier for the terminal and ignores Shift and Alt", () => {
+    expect(resolveShortcut(press("`"), idle)).toBeNull();
+    expect(resolveShortcut(press("~", { metaKey: true, shiftKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("`", { ctrlKey: true, shiftKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("`", { ctrlKey: true, altKey: true }), idle)).toBeNull();
+    expect(isTerminalToggle(press("`", { metaKey: true }))).toBe(true);
+    expect(isTerminalToggle(press("`", { metaKey: true, shiftKey: true }))).toBe(false);
   });
 
   it("leaves the keyboard to an open overlay", () => {
