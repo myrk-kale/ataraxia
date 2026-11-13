@@ -1,11 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import {
-  settingsMcpInfo,
-  type McpInfo,
-} from "../lib/insights";
+import { useRef, useState, type KeyboardEvent } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
-import type { Repository, ProviderKind } from "../lib/workspace";
-import { Button } from "../ui/Button";
+import type { ProviderKind } from "../lib/workspace";
 import { Dialog, Toggle } from "../ui/Overlay";
 import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
@@ -14,47 +9,19 @@ const TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "sound", label: "Sound" },
   { id: "privacy", label: "Privacy" },
-  { id: "mcp", label: "MCP server" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
-/** The configuration as indented JSON; text that is not valid JSON is shown as it came. */
-function prettyJson(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
-  }
-}
-
 export function SettingsDialog({
   isOpen,
-  repository,
   provider,
   onClose,
-  onError,
 }: {
   isOpen: boolean;
-  repository: Repository | null;
   provider: ProviderKind | null;
   onClose: () => void;
-  onError: (message: string) => void;
 }) {
-  const [mcp, setMcp] = useState<McpInfo | null>(null);
-  const [copied, setCopied] = useState(false);
-  const repositoryId = repository?.id ?? null;
-
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    setCopied(false);
-    settingsMcpInfo()
-      .then(setMcp)
-      .catch(() => setMcp(null));
-  }, [isOpen, repositoryId, onError]);
-
   const [tab, setTab] = useState<TabId>("appearance");
   const sound = useSound();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -167,45 +134,6 @@ export function SettingsDialog({
                 title="Nothing is sent by itself"
               >
                 {null}
-              </SettingRow>
-            ) : null}
-
-            {tab === "mcp" ? (
-              <SettingRow
-                below={
-                  mcp ? (
-                    <pre
-                      aria-label="MCP configuration"
-                      className="max-h-56 overflow-auto rounded-cg-md bg-cg-tint p-3 font-mono text-small leading-5 whitespace-pre-wrap text-cg-muted-strong"
-                    >
-                      {prettyJson(mcp.configJson)}
-                    </pre>
-                  ) : (
-                    <p className="text-small text-cg-muted-strong">Available in the desktop app.</p>
-                  )
-                }
-                hint={
-                  <>
-                    Claude Code gets it automatically, scoped to its own chat. For other agents, register this command. It is
-                    read-only unless you add <code className="font-mono text-small">--allow-write</code>, and every call is
-                    logged.
-                  </>
-                }
-                title="Ataraxia MCP server"
-              >
-                {mcp ? (
-                  <Button
-                    variant="quiet"
-                    onClick={() => {
-                      void navigator.clipboard
-                        ?.writeText(mcp.configJson)
-                        .then(() => setCopied(true))
-                        .catch(() => undefined);
-                    }}
-                  >
-                    {copied ? "Copied" : "Copy"}
-                  </Button>
-                ) : null}
               </SettingRow>
             ) : null}
           </div>

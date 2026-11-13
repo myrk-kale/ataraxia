@@ -12,6 +12,20 @@ are the section of this file for its version.
   Applications. The release now carries the app as `….app.tar.gz`; the formula still installs the bare
   binary for the command line.
 
+### Changed
+
+- Agents now act on Ataraxia through a local HTTP API instead of an MCP server. While the app runs it
+  serves the API on `127.0.0.1`, each agent process of a chat gets `ATARAXIA_API_URL`,
+  `ATARAXIA_API_TOKEN` and `ATARAXIA_SESSION_ID`, and the guide each agent reads on demand (now with an
+  `api.md` page in place of `tools.md`) explains how to call it from bash with curl. The token belongs
+  to one chat, and is read-only in hidden investigation sessions.
+- The release smoke test and the Homebrew formula test run `ataraxia --version` instead of starting the
+  MCP server.
+
+### Removed
+
+- The MCP server (`ataraxia mcp`) and the MCP server screen in Settings.
+
 ## [0.1.0] - 2026-11-13
 
 First release.

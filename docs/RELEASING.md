@@ -8,7 +8,7 @@ git tag vX.Y.Z  ──►  Release workflow
                       ├─ ci                CI workflow: lint, typecheck, tests, build, cargo fmt/test/check
                       ├─ version           Cargo.toml, tauri.conf.json, the tag and the CHANGELOG agree
                       ├─ build  (x4)       macOS universal · Linux x86_64 · Linux aarch64 · Windows x64
-                      │                    each smoke-tests the binary and attests its files
+                      │                    each smoke-tests the binary (`--version`) and attests its files
                       ├─ release           checks the twelve files and their checksums, creates the GitHub release
                       ├─ homebrew          installs the formula on macOS and Linux, then pushes it to the tap
                       └─ crates            dispatches crates.yml, which publishes the crate
@@ -25,7 +25,7 @@ git tag vX.Y.Z  ──►  Release workflow
 Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, the binary on macOS and
 Linux) and the cask (`brew install --cask myrk-kale/tap/ataraxia`, `Ataraxia.app` in Applications on
 macOS) are generated from those checksums by `packaging/render.sh`. The Homebrew workflow installs the
-cask on a macOS runner and runs the installed app's binary before it pushes anything. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
+cask on a macOS runner and runs `ataraxia --version` from the installed app before it pushes anything. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
 another project); its binary is still `ataraxia`.
 
 ## Cutting a release

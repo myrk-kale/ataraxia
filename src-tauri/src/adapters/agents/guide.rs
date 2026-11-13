@@ -14,7 +14,7 @@ const FILES: &[(&str, &str)] = &[
     ("decisions.md", include_str!("../../../guide/decisions.md")),
     ("flow.md", include_str!("../../../guide/flow.md")),
     ("review.md", include_str!("../../../guide/review.md")),
-    ("tools.md", include_str!("../../../guide/tools.md")),
+    ("api.md", include_str!("../../../guide/api.md")),
 ];
 
 /// Writes the guide into `dir` (replacing an older copy) and returns the page to start from.
@@ -33,7 +33,8 @@ pub fn preamble(index: &Path) -> String {
         "[Context from Ataraxia] This chat runs inside Ataraxia, an app where the developer reviews the code you write: a review queue of changed components ranked by priority, Decisions (choices that deserve their verdict) and Flow diagrams.\n\
          - Never generate or record any of these on your own.\n\
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
-         - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to use the ataraxia_* tools), then do what they chose. Do not read it before.\n\
+         - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
+         - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          The developer's message follows.\n\n",
         index.display()
     )
@@ -58,6 +59,7 @@ mod tests {
         assert!(prompt.contains(&index.display().to_string()));
         assert!(prompt.contains("Never generate"));
         assert!(prompt.contains("one short question"));
+        assert!(prompt.contains("ATARAXIA_API_URL"));
         // The pages the index names all exist.
         let readme = std::fs::read_to_string(&index).expect("index");
         for (name, _) in FILES.iter().filter(|(name, _)| *name != "README.md") {

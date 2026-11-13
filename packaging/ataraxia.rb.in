@@ -22,8 +22,8 @@ class Ataraxia < Formula
 
   def caveats
     s = <<~EOS
-      `ataraxia` opens the app. Agents start its MCP server with `ataraxia mcp --db <file>`;
-      Settings > MCP server shows the exact command to register.
+      `ataraxia` opens the app. While it runs, the agent of each chat reaches it through a local
+      HTTP API, and is told how, so there is nothing to register.
     EOS
     if OS.linux?
       s += <<~EOS
@@ -37,11 +37,6 @@ class Ataraxia < Formula
   end
 
   test do
-    reply = pipe_output(
-      "#{bin}/ataraxia mcp --db #{testpath}/test.sqlite3",
-      %Q({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n),
-      0,
-    )
-    assert_match "ataraxia", reply
+    assert_match version.to_s, shell_output("#{bin}/ataraxia --version")
   end
 end

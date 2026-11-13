@@ -104,8 +104,9 @@ so it can read what was said before.
   <img alt="The chat with Codex: a reply with a code block and two tool calls, and the composer below" src="docs/images/chat-light.png" width="900">
 </picture>
 
-Every agent is also told what Ataraxia is. It reads its guide to decisions, flows and review comments only
-after you agree to them.
+Every agent is also told what Ataraxia is. Only after you agree to decisions, flows or review comments does
+it read its guide, which explains a small HTTP API that Ataraxia serves on localhost while it runs. The
+agent calls it from bash with curl, and its token belongs to that one chat.
 
 ## Make it yours
 
@@ -145,7 +146,7 @@ They are built by the release pipeline, never by hand.
 
 ```bash
 brew install --cask myrk-kale/tap/ataraxia   # Ataraxia.app, in Applications and in Launchpad
-brew install myrk-kale/tap/ataraxia          # or only the `ataraxia` binary, with `ataraxia mcp` for agents
+brew install myrk-kale/tap/ataraxia          # or only the `ataraxia` binary
 ```
 
 The app is not signed with an Apple Developer ID. The cask removes the quarantine mark from it, which is
@@ -203,7 +204,7 @@ To build what the release builds (the installers land in `src-tauri/target/relea
 ```bash
 pnpm tauri build                    # the packages for this system
 pnpm tauri build --bundles deb,rpm  # or choose them: app, dmg, deb, rpm, appimage, nsis, msi
-src-tauri/target/release/ataraxia   # the release binary; `ataraxia mcp --db <file>` is the MCP server
+src-tauri/target/release/ataraxia   # the release binary; `ataraxia --version` prints its version
 ```
 
 Frontend only (the browser gets a built-in Tauri mock, dev builds only, so the UI renders with sample data):
