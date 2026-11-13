@@ -3,15 +3,10 @@ name: crates.io
 # Publishes the crate (ataraxia-ide; its binary is `ataraxia`) for a released tag. The built
 # interface goes inside the crate (src-tauri/web), so `cargo install` needs no Node.
 #
-# Today it signs in with the CARGO_REGISTRY_TOKEN secret. To move to Trusted Publishing, with no
-# long-lived secret:
-#   1. On crates.io, open the crate's Settings > Trusted Publishing and add this repository and
-#      this workflow file (crates.yml).
-#   2. In this file, uncomment the "Authenticate with crates.io (OIDC)" step, and in the publish
-#      step use `steps.auth.outputs.token` instead of the secret.
-#   3. Delete the CARGO_REGISTRY_TOKEN secret, and revoke the token on crates.io.
-# It has to be its own workflow, not a reusable one, for crates.io to trust it, which is why the
-# release workflow dispatches it.
+# It signs in with Trusted Publishing: GitHub's OIDC token is exchanged for a short-lived crates.io
+# token limited to this crate, so no long-lived secret is stored. crates.io trusts this repository
+# (myrk-kale/ataraxia) and this workflow file (crates.yml). It has to be its own workflow, not a
+# reusable one, for crates.io to trust it, which is why the release workflow dispatches it.
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +17,7 @@ on:
 permissions:
   contents: read
   # Trusted Publishing needs the OIDC token.
-  # id-token: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,15 +60,16 @@ jobs:
           pnpm build
           test -f src-tauri/web/index.html
 
-      # - name: Authenticate with crates.io (OIDC)
-      #   id: auth
-      #   uses: rust-lang/crates-io-auth-action@v1
+      # Authenticate first, even when the version is already published, so a manual run against an
+      # existing tag verifies the Trusted Publishing setup.
+      - name: Authenticate with crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish (skips if this version is already on crates.io)
         working-directory: src-tauri
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          # CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           name="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')"
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"

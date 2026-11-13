@@ -55,21 +55,24 @@ These live in the repository settings (Settings > Secrets and variables > Action
 | Name | Kind | What it is |
 | --- | --- | --- |
 | `HOMEBREW_TAP_DEPLOY_KEY` | secret | The private half of an SSH key whose public half is a deploy key, with write access, on `myrk-kale/homebrew-tap` |
-| `CARGO_REGISTRY_TOKEN` | secret | A crates.io token limited to the `ataraxia-ide` crate (temporary: see below) |
 | `PUBLISH_CRATE` | variable | `true` to publish the crate in a release; anything else skips it |
 
-The tap is shared with other projects; this one adds `Formula/ataraxia.rb`.
+The tap is shared with other projects; this one adds `Formula/ataraxia.rb`. The crate needs no secret: it
+is published with Trusted Publishing (below).
 
-## Moving crates.io to Trusted Publishing
+## Trusted Publishing on crates.io
 
-The token is a long-lived secret, so it is a stopgap. To get rid of it:
+`crates.yml` publishes without any stored token. On each run GitHub gives the job an OIDC token, and
+`rust-lang/crates-io-auth-action` exchanges it for a short-lived crates.io token limited to the crate.
+The setting that makes crates.io accept this is on the crate's page, Settings > Trusted Publishing:
+repository `myrk-kale/ataraxia`, workflow `crates.yml`, no environment. If the repository or the
+workflow file is renamed, that entry has to be changed too.
 
-1. On crates.io, open `ataraxia-ide` > Settings > Trusted Publishing, and add repository
-   `myrk-kale/ataraxia` with workflow `crates.yml`.
-2. In `.github/workflows/crates.yml`, enable `id-token: write`, uncomment the "Authenticate with
-   crates.io (OIDC)" step and switch the publish step to `steps.auth.outputs.token` (the comments in the
-   file show where).
-3. Delete the `CARGO_REGISTRY_TOKEN` secret and revoke the token on crates.io.
+The same page has a switch that requires Trusted Publishing for every new version, which turns off
+publishing with an API token altogether.
+
+To check the setup without publishing, run **Actions > crates.io > Run workflow** with a tag that is
+already published: the sign-in runs first, and the publish is skipped.
 
 ## Re-running a part
 
