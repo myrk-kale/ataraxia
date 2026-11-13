@@ -20,6 +20,45 @@ All four spaces exist. Product direction: [`Ataraxia_SPEC_v1.1.md`](./Ataraxia_S
 - **Branch and comparison:** the header has two selectors. The app follows git: a branch switched in a terminal, or a worktree added there, shows up in the app within a second, and the other way round. The branch selector lists every local branch of the repository (searchable, read from git each time it opens). Choosing one switches to it: a branch another worktree already has open selects that worktree, any other is checked out in the current one, never forced and never while an agent is working in it, and when git refuses (local edits in the way, for example) the notice carries git's own reason and nothing changes. Next to it, "Compare with" picks a reference, any other branch, remote branch, tag or recent commit, and that is all it does: Code then shows the current branch against it, as a pull request would (from the merge base, with the working tree as the head). The comparison is a checkpoint like any other, so marks, comments, decisions and the queue all work on it; with the working tree as the head you can edit, and "Compare again" re-reads it. The choice is remembered per chat, and "No comparison" goes back to the agent's turns.
 - **Terminal:** retractable real PTY per worktree.
 
+## Install
+
+Every release is on the [releases page](https://github.com/myrk-kale/ataraxia/releases). Each file has a
+`.sha256` beside it and a build attestation: `gh attestation verify <file> --repo myrk-kale/ataraxia`.
+They are built by the release pipeline, never by hand.
+
+**macOS** (Apple silicon and Intel; there is no installer, it comes through Homebrew)
+
+```bash
+brew install myrk-kale/tap/ataraxia   # the `ataraxia` binary: it opens the app, and `ataraxia mcp` is the MCP server
+```
+
+**Linux** (`x86_64` and `aarch64`; built on Ubuntu 22.04, so it runs on Ubuntu 22.04 and newer, Debian 12,
+Fedora 36 and newer, Arch and the like)
+
+```bash
+brew install myrk-kale/tap/ataraxia                      # Homebrew on Linux
+sudo apt install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.deb   # Debian, Ubuntu
+sudo dnf install ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.rpm   # Fedora, openSUSE
+chmod +x ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage && ./ataraxia-v0.1.0-x86_64-unknown-linux-gnu.AppImage
+```
+
+The `.tar.gz` holds the bare binary. Whatever the route, the window needs GTK 3 and WebKitGTK 4.1 from
+the distribution (`sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0`, or `sudo dnf install webkit2gtk4.1
+gtk3`); the `.deb` and `.rpm` ask for them by themselves.
+
+**Windows** (x64): run `ataraxia-v0.1.0-x86_64-pc-windows-msvc-setup.exe` (for you, or for every user),
+or use the `.msi` for managed installs. The installer is not signed, so SmartScreen shows "More info
+> Run anyway". WebView2 is installed along with it when the machine lacks it.
+
+**With Cargo** (the crate is `ataraxia-ide`; the binary it installs is `ataraxia`)
+
+```bash
+cargo binstall ataraxia-ide                                  # the prebuilt binary of this release
+cargo install ataraxia-ide --locked --features custom-protocol   # or build it (needs the system libraries below)
+```
+
+You also need a coding agent: Claude Code, Codex or OpenCode. With none installed, the app says what to install.
+
 ## Artifacts, privacy and MCP
 
 - Review priority is computed locally from the syntax tree and git. Nothing is sent to a model by itself: decisions are generated only when you press Generate, with the provider and model you pick, and diagrams and BTW questions only when you start them, from a hidden, read-only session.
@@ -54,18 +93,32 @@ apps/desktop/   # React UI (HeroUI)
 src-tauri/      # Rust core + Tauri (one crate)
 ```
 
-## Development
+## Run it from the source code
 
 Prerequisites:
 
-- Node.js 22+
-- pnpm 11+
+- Node.js 22+ and pnpm 11+ (`corepack enable` gives you pnpm)
 - Rust 1.85+ (`cargo` / `rustc` on `PATH`; Homebrew Rust works if rustup cannot reach `static.rust-lang.org`)
-- Tauri system dependencies for your OS
+- The Tauri system libraries for your OS:
+  - **macOS:** `xcode-select --install`
+  - **Debian, Ubuntu:** `sudo apt install build-essential curl wget file patchelf pkg-config libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`
+  - **Fedora:** `sudo dnf install @development-tools gcc-c++ openssl-devel gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel libxdo-devel patchelf`
+  - **Arch:** `sudo pacman -S --needed base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg xdotool openssl patchelf`
+  - **Windows:** the Visual Studio Build Tools with the "Desktop development with C++" workload, Rust with the MSVC toolchain, and WebView2 (already there on Windows 11)
 
 ```bash
+git clone https://github.com/myrk-kale/ataraxia.git
+cd ataraxia
 pnpm install
-pnpm tauri:dev
+pnpm tauri dev      # the app, with hot reload (needs a coding agent installed to chat)
+```
+
+To build what the release builds (the installers land in `src-tauri/target/release/bundle/`):
+
+```bash
+pnpm tauri build                    # the packages for this system
+pnpm tauri build --bundles deb,rpm  # or choose them: app, dmg, deb, rpm, appimage, nsis, msi
+src-tauri/target/release/ataraxia   # the release binary; `ataraxia mcp --db <file>` is the MCP server
 ```
 
 Frontend only (the browser gets a built-in Tauri mock, dev builds only, so the UI renders with sample data):
@@ -75,14 +128,21 @@ pnpm dev
 # http://localhost:1420/?state=empty|fresh|permission|working|restored previews other chat states
 ```
 
-Rust checks:
+The checks the CI runs:
 
 ```bash
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
 cd src-tauri && cargo fmt --check && cargo test && cargo check
-pnpm typecheck && pnpm test && pnpm build
 ```
 
+`pnpm build` writes the interface to `src-tauri/web/`, which the Rust binary embeds and the published crate carries.
 Connector tests use scripted stand-ins for the provider CLIs (`src-tauri/tests/fixtures/*.py`, needs `python3`); no real CLI is executed.
+
+## Releasing
+
+A tag `vX.Y.Z` builds and publishes everything in the GitHub release pipeline: the macOS, Linux and
+Windows packages, the GitHub release, the Homebrew tap and the crate. How to cut one, rehearse one and
+set up the secrets is in [`docs/RELEASING.md`](./docs/RELEASING.md).
 
 ## Opening
 

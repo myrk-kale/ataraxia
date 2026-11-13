@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release runs the same checks before it builds anything.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -71,3 +73,31 @@ jobs:
           cargo fmt --check
           cargo test
           cargo check
+
+  # The app is released for Windows and macOS as well, so a change that only breaks there is found
+  # in the pull request and not on the day of a release.
+  platforms:
+    name: Compile on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check
+        run: cargo check --locked
+
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked

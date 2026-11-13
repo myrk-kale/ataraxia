@@ -1,0 +1,120 @@
+name: Homebrew
+
+# Publishes Formula/ataraxia.rb (macOS and Linux, from the prebuilt binaries) to
+# myrk-kale/homebrew-tap for a released version, after installing it on both systems. Called by the release workflow (a release made with
+# GITHUB_TOKEN does not trigger `release` events), and can be run by hand for any existing tag.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  render:
+    name: Render the formula
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The scripts come from main, so a fix there applies to a release that already exists.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Render from the release checksums
+        run: |
+          version="${TAG#v}"
+          sha() {
+            file="ataraxia-${TAG}-$1"
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "${file}.sha256" -D checksums --clobber
+            cut -d' ' -f1 "checksums/${file}.sha256"
+          }
+          mkdir -p tap/Formula
+          packaging/render.sh formula "$version" \
+            "$(sha universal-apple-darwin.tar.gz)" \
+            "$(sha x86_64-unknown-linux-gnu.tar.gz)" \
+            "$(sha aarch64-unknown-linux-gnu.tar.gz)" > tap/Formula/ataraxia.rb
+          cat tap/Formula/ataraxia.rb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tap-files
+          path: tap
+          if-no-files-found: error
+
+  verify-macos:
+    name: Install on macOS
+    needs: render
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tap-files
+          path: tap
+      - name: Audit, install and test the formula
+        run: |
+          brew tap-new --no-git local/verify >/dev/null
+          cp tap/Formula/ataraxia.rb "$(brew --repository local/verify)/Formula/"
+          brew audit --strict --online local/verify/ataraxia
+          brew install local/verify/ataraxia
+          brew test local/verify/ataraxia
+
+  verify-linux:
+    name: Install on Linux
+    needs: render
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tap-files
+          path: tap
+      - name: The libraries the window needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 libgtk-3-0
+      - name: Install and test the formula
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap-new --no-git local/verify >/dev/null
+          cp tap/Formula/ataraxia.rb "$(brew --repository local/verify)/Formula/"
+          brew install local/verify/ataraxia
+          brew test local/verify/ataraxia
+
+  publish:
+    name: Push to the tap
+    needs: [verify-macos, verify-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tap-files
+          path: rendered
+      - uses: actions/checkout@v4
+        with:
+          repository: myrk-kale/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - name: Commit the formula
+        run: |
+          mkdir -p tap/Formula
+          cp rendered/Formula/ataraxia.rb tap/Formula/ataraxia.rb
+          cd tap
+          git config user.name "ataraxia release bot"
+          git config user.email "ataraxia-release@users.noreply.github.com"
+          git add Formula/ataraxia.rb
+          if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
+          git commit -m "ataraxia ${TAG#v}"
+          git push

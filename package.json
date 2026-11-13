@@ -9,7 +9,7 @@
     "build": "pnpm --filter @ataraxia/desktop build",
     "lint": "pnpm --filter @ataraxia/desktop lint",
     "typecheck": "pnpm --filter @ataraxia/desktop typecheck",
-    "tauri": "cd src-tauri && ../apps/desktop/node_modules/.bin/tauri",
+    "tauri": "node scripts/tauri.mjs",
     "tauri:dev": "pnpm tauri dev",
     "tauri:build": "pnpm tauri build",
     "test": "pnpm --filter @ataraxia/desktop test"
