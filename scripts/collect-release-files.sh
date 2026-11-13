@@ -4,7 +4,7 @@
 #
 #   scripts/collect-release-files.sh TAG TARGET OUTDIR KIND...
 #
-# KIND is any of: tarball deb rpm appimage nsis msi. Each asked for must exist exactly once.
+# KIND is any of: tarball app deb rpm appimage nsis msi. Each asked for must exist exactly once.
 set -euo pipefail
 
 tag="${1:?tag, like v0.1.0}"
@@ -51,6 +51,15 @@ for kind in "${kinds[@]}"; do
       cp "${release}/ataraxia" README.md CHANGELOG.md LICENSE "$stage/"
       archive="$out/ataraxia-${tag}-${target}.tar.gz"
       tar -C "$stage" -czf "$archive" .
+      sum "$archive"
+      echo "  $(basename "$archive")"
+      ;;
+    app)
+      # The macOS app, as a tar.gz for the Homebrew cask. COPYFILE_DISABLE keeps macOS from adding
+      # its ._ files, and tar keeps the executable bits.
+      app_dir="$(only "${bundle}/macos/*.app")"
+      archive="$out/ataraxia-${tag}-${target}.app.tar.gz"
+      COPYFILE_DISABLE=1 tar -C "$(dirname "$app_dir")" -czf "$archive" "$(basename "$app_dir")"
       sum "$archive"
       echo "  $(basename "$archive")"
       ;;

@@ -62,13 +62,14 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # macOS: one universal binary, for Homebrew. There is no installer: it is installed with brew.
+          # macOS: one universal app and its bare binary, both for Homebrew (the cask puts the app in
+          # Applications, the formula puts the binary on the path). There is no installer.
           - name: macOS (universal)
             os: macos-15
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundle-args: --no-bundle
-            kinds: tarball
+            bundle-args: --bundles app
+            kinds: tarball app
           # Linux is built on Ubuntu 22.04, the oldest release that has WebKitGTK 4.1, so the
           # binaries run on it and on everything newer: Ubuntu 22.04 and 24.04, Debian 12,
           # Fedora, Arch. Each architecture on a native runner.
@@ -205,6 +206,7 @@ jobs:
           ls -l
           expected=(
             "ataraxia-${TAG}-universal-apple-darwin.tar.gz"
+            "ataraxia-${TAG}-universal-apple-darwin.app.tar.gz"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.deb"
             "ataraxia-${TAG}-x86_64-unknown-linux-gnu.rpm"
@@ -219,9 +221,9 @@ jobs:
           for file in "${expected[@]}"; do
             sha256sum -c "${file}.sha256"
           done
-          # Nothing else may be attached: eleven files, each with its checksum.
+          # Nothing else may be attached: twelve files, each with its checksum.
           files=(./*)
-          test "${#files[@]}" = 22 || { echo "expected 22 files, found ${#files[@]}"; exit 1; }
+          test "${#files[@]}" = 24 || { echo "expected 24 files, found ${#files[@]}"; exit 1; }
 
       - name: Publish the GitHub release
         env:
