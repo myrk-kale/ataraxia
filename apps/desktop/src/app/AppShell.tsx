@@ -622,7 +622,7 @@ export function AppShell() {
               ) : null}
             </Button>
           </Tip>
-          <Tip label="Terminal (Ctrl/⌘ J)">
+          <Tip label="Terminal (Ctrl/⌘ `)">
             <Button
               aria-label="Toggle terminal"
               aria-pressed={terminalOpen}

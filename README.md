@@ -124,7 +124,7 @@ the terminal. Settings has the rest, including a switch for the few sounds the a
   </tr>
 </table>
 
-Everything has a shortcut: `Shift+↑/↓` changes screen, `Ctrl/Cmd+J` opens a terminal in the current worktree,
+Everything has a shortcut: `Shift+↑/↓` changes screen, `` Ctrl/Cmd+` `` opens a terminal in the current worktree,
 `J` and `K` step through the queue, `C` comments, and `?` lists them all.
 
 ## What stays on your machine

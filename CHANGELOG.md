@@ -12,6 +12,11 @@ are the section of this file for its version.
   Applications. The release now carries the app as `….app.tar.gz`; the formula still installs the bare
   binary for the command line.
 
+### Changed
+
+- The terminal shortcut is now `` Ctrl/Cmd+` `` only; `Ctrl/Cmd+J` no longer opens it. The terminal takes
+  keyboard focus when it opens, and focus goes back to where it was when it closes.
+
 ## [0.1.0] - 2026-11-13
 
 First release.

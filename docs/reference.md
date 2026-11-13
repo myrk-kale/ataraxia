@@ -56,7 +56,7 @@ src-tauri/      # Rust core + Tauri (one crate)
 - `Shift + ↑/↓`: previous/next space (the dots on the right edge also follow the mouse wheel while the pointer is over them)
 - `Ctrl/Cmd + K`: BTW, a side question about what you have open, in any space, run on the model you pick and listed among the chat's subagents (it can also comment, re-prioritise or generate when you ask)
 - `Shift + A`: artifacts of the chat (also the layers button in the header, which shows a count when something failed)
-- `Ctrl/Cmd + J` or `Ctrl/Cmd + \``: toggle terminal panel (its top edge also resizes with the arrow keys)
+- `` Ctrl/Cmd + ` ``: toggle terminal panel (it takes keyboard focus when it opens and gives it back when it closes; its top edge also resizes with the arrow keys)
 - Code: `Alt + V` current/previous version, `Alt + Z` wrap lines, `Ctrl/Cmd + S` save, `J/K` next/previous file, `C` comment
 - Decisions: `J/K` next/previous decision (in the list they move between rows), `C` jump to the discussion
 - Chat: `Enter` send, `Shift + Enter` new line, `Esc` stop the running turn

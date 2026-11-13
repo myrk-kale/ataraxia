@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } fr
 import "@xterm/xterm/css/xterm.css";
 import { familyFor } from "../app/appearance/fonts";
 import { useAppearance } from "../app/appearance/store";
+import { isTerminalToggle } from "../app/shortcuts";
 import {
   decodeTerminalBytes,
   encodeTerminalBytes,
@@ -15,6 +16,7 @@ import {
   terminalWrite,
   type PtySessionId,
 } from "../lib/terminal";
+import { currentFocus, restoreFocus } from "./focus";
 
 type TerminalPanelProps = {
   worktreeId: string;
@@ -58,6 +60,13 @@ export function TerminalPanel({
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<PtySessionId | null>(null);
 
+  // Remember what had focus when the panel opened and give it back when the panel closes.
+  // The panel is unmounted on hide (the PTY lives on), so mount and unmount are open and close.
+  useEffect(() => {
+    const previous = currentFocus();
+    return () => restoreFocus(previous);
+  }, []);
+
   // xterm measures its cell size when it opens, so the web font has to be loaded first.
   const [fontReady, setFontReady] = useState(false);
   useEffect(() => {
@@ -95,15 +104,10 @@ export function TerminalPanel({
     termRef.current = term;
     fitRef.current = fit;
 
-    term.attachCustomKeyEventHandler((event) => {
-      if (
-        (event.ctrlKey || event.metaKey) &&
-        (event.key === "j" || event.key === "`")
-      ) {
-        return false;
-      }
-      return true;
-    });
+    // The terminal shortcut goes to the app, not into the shell.
+    term.attachCustomKeyEventHandler((event) => !isTerminalToggle(event));
+    // Typing works with no click. Opened after the font is ready and fitted.
+    term.focus();
 
     let disposed = false;
     let unlistenOutput: (() => void) | undefined;
