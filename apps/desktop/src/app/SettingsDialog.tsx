@@ -4,9 +4,11 @@ import type { ProviderKind } from "../lib/workspace";
 import { Dialog, Toggle } from "../ui/Overlay";
 import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
+import { ProfileSettings } from "./ProfileSettings";
 
 const TABS = [
   { id: "appearance", label: "Appearance" },
+  { id: "profiles", label: "Agent profiles" },
   { id: "sound", label: "Sound" },
   { id: "privacy", label: "Privacy" },
 ] as const;
@@ -83,6 +85,8 @@ export function SettingsDialog({
             role="tabpanel"
           >
             {tab === "appearance" ? <AppearanceSettings /> : null}
+
+            {tab === "profiles" ? <ProfileSettings /> : null}
 
             {tab === "sound" ? (
               <>

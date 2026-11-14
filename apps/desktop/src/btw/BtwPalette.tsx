@@ -1,4 +1,4 @@
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, TextSelect } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "../chat/ChatPanel";
 import { Markdown } from "../chat/Markdown";
@@ -15,6 +15,7 @@ import type { ChatSession } from "../lib/workspace";
 import { Dialog } from "../ui/Overlay";
 import { QuietSelect } from "../ui/QuietSelect";
 import { doneInAtaraxia, lastAnswer, withoutActions } from "./answer";
+import { contextChip } from "./contextChip";
 import { decodePick, modelChoices, startingChoice } from "./models";
 
 type Phase = "ask" | "running" | "done" | "failed";
@@ -59,6 +60,9 @@ export function BtwPalette({
   resume: BtwTask | null;
   onError: (message: string) => void;
 }) {
+  // What the question is about is fixed when the bar opens: a click in the editor behind it, or a
+  // selection that clears, must not change it.
+  const [asked, setAsked] = useState<{ item: BtwContextItem | null; others: BtwContextItem[] }>({ item, others });
   const [question, setQuestion] = useState("");
   const [phase, setPhase] = useState<Phase>("ask");
   const [answer, setAnswer] = useState("");
@@ -80,6 +84,7 @@ export function BtwPalette({
     if (!isOpen) {
       return;
     }
+    setAsked({ item, others });
     setQuestion("");
     setPhase("ask");
     setAnswer("");
@@ -98,6 +103,8 @@ export function BtwPalette({
         .catch(() => setLive([]));
     }
     requestAnimationFrame(() => input.current?.focus());
+    // `item` and `others` are read once, as the bar opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, resume, sessionId, onError]);
 
   // What runs it: the user's own pick if it is still on offer, else the model the chat uses now.
@@ -133,7 +140,7 @@ export function BtwPalette({
       }
     };
     void listenAgentEvents((event) => {
-      if (event.sessionId !== taskSession) {
+      if (event.type === "usage" || event.sessionId !== taskSession) {
         return;
       }
       if (event.type === "delta" && event.role === "assistant") {
@@ -196,7 +203,7 @@ export function BtwPalette({
     const pick = choice ? decodePick(choice) : null;
     try {
       setTask(
-        await btwStart(sessionId, "ask", text, { space, item, active: others }, "on-completion", false, pick?.provider ?? null, pick?.model ?? null),
+        await btwStart(sessionId, "ask", text, { space, item: asked.item, active: asked.others }, "on-completion", false, pick?.provider ?? null, pick?.model ?? null),
       );
       setQuestion("");
     } catch (err) {
@@ -231,10 +238,21 @@ export function BtwPalette({
   const done = doneInAtaraxia(task?.summary ?? null);
   const shown = withoutActions(answer);
   const hasResult = phase !== "ask" || Boolean(shown);
+  // The bar stays bare, except to say that the question is about text the person selected.
+  const chip = !resume && asked.item?.kind === "selection" ? contextChip(asked.item) : null;
 
   return (
     <Dialog isOpen={isOpen} label="BTW" placement="top" size="lg" wide onClose={onClose}>
       <div className="flex w-full flex-col">
+        {chip ? (
+          <p
+            className="flex items-center gap-1.5 truncate px-5 pt-3 text-small text-cg-muted-strong"
+            title="The question is asked with this attached"
+          >
+            <TextSelect aria-hidden="true" className="flex-none" size={13} />
+            <span className="truncate">{chip}</span>
+          </p>
+        ) : null}
         <form
           className="flex items-center gap-1 pr-2"
           onSubmit={(event) => {

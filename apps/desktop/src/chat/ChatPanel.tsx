@@ -1,43 +1,63 @@
-import { ArrowDown, Square } from "lucide-react";
+import { ArrowDown, ListPlus, Paperclip, Square } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
+  type ClipboardEvent,
   type KeyboardEvent,
 } from "react";
 import {
   agentCancel,
   agentConfigureSession,
+  agentEnqueue,
   agentGetOptions,
   agentGetSnapshot,
   agentMessageSubagent,
   agentPrompt,
+  agentQueueRemove,
+  agentQueueSendNow,
   agentResolvePermission,
   agentStartSession,
   chatReducer,
   initialChatState,
   listenAgentEvents,
   PROVIDER_LABELS,
-  type ChatItem,
+  waitingFor,
+  withLocal,
+  type ImageAttachment,
   type ProviderDescriptor,
+  type QueuedLocally,
   type SessionOptions,
 } from "../lib/agent";
 import type { ChatSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
-import { toBlocks } from "./blocks";
-import { parseBtwReport } from "./btwReport";
+import { toRows } from "./rows";
 import { AsciiMark } from "./AsciiMark";
+import {
+  type Attachment,
+  IMAGE_ACCEPT,
+  imagesFromClipboard,
+  MAX_IMAGES,
+  pickImages,
+  toUploads,
+} from "./attachments";
+import { AttachmentStrip } from "./AttachmentStrip";
 import { useBackground } from "./background";
 import { Hero } from "./Hero";
-import { ProviderMark } from "./ProviderMark";
+import { Loader } from "./Loader";
+import { seedPicture } from "./MessageImages";
+import { ProfileMark } from "./ProfileMark";
+import { QueuedMessages } from "./QueuedMessages";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
+import { UsageMeter } from "./UsageMeter";
 import { SubagentBar } from "./SubagentBar";
-import { Markdown } from "./Markdown";
 import { PermissionDialog } from "./PermissionDialog";
-import { ToolCard } from "./ToolCard";
+import { VirtualTranscript } from "./VirtualTranscript";
+import { useMessageQueue } from "./useMessageQueue";
 
 const STICK_THRESHOLD_PX = 80;
 const MAX_COMPOSER_PX = 160;
@@ -86,13 +106,41 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);
+  const latest = useRef(state);
+  latest.current = state;
+  // What was shown before the app took it in: the thumbnails to free, and the pictures' addresses.
+  const pendingSends = useRef(new Map<string, { previews: string[]; urls: string[] }>());
+  // The last message on its way to the agent, so the next one waits for it.
+  const inFlight = useRef<Promise<unknown>>(Promise.resolve());
+  const [queue, setQueue] = useMessageQueue(sessionId);
+  // What was sent to the queue and is not in the app's list yet.
+  const [queuedHere, setQueuedHere] = useState<QueuedLocally[]>([]);
+  const shownQueue = useMemo(() => withLocal(queue, queuedHere), [queue, queuedHere]);
+  // Pictures chosen for the next message (images only for now).
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Thumbnails are object URLs: let go of them when the chat is left.
+  useEffect(
+    () => () => {
+      attachmentsRef.current.forEach((item) => URL.revokeObjectURL(item.preview));
+      pendingSends.current.forEach((mine) => mine.previews.forEach((url) => URL.revokeObjectURL(url)));
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     async function connect() {
       unlisten = await listenAgentEvents((event) => {
-        if (event.sessionId === sessionId) {
+        if (event.type !== "usage" && event.sessionId === sessionId) {
+          if (event.type === "delta" && event.role === "user") {
+            takeIn(event.text, event.images);
+          }
           dispatch({ type: "event", event });
         }
       });
@@ -202,26 +250,187 @@ export function ChatPanel({
     const element = scrollRef.current;
     if (element) {
       stickRef.current = true;
-      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+      // A long way down is crossed at once: the rows in between were never measured, so a smooth
+      // scroll would aim at a height that is still a guess and stop short. The bottom is pinned
+      // as its rows are measured.
+      const far = element.scrollHeight - element.scrollTop > element.clientHeight * 4;
+      element.scrollTo({ top: element.scrollHeight, behavior: far ? "auto" : "smooth" });
     }
+  }
+
+  // While the agent works, the main conversation takes messages into a queue instead of refusing
+  // them; a subagent's conversation does not queue.
+  const queues = busy && activeSubagent === null;
+
+  function addFiles(files: File[]) {
+    const { accepted, problems } = pickImages(files, MAX_IMAGES - attachments.length);
+    setAttachNotice(problems.length > 0 ? problems.join(" ") : null);
+    if (accepted.length > 0) {
+      setAttachments((current) => [
+        ...current,
+        ...accepted.map((file) => ({
+          id: crypto.randomUUID(),
+          file,
+          preview: URL.createObjectURL(file),
+        })),
+      ]);
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => {
+      current.filter((item) => item.id === id).forEach((item) => URL.revokeObjectURL(item.preview));
+      return current.filter((item) => item.id !== id);
+    });
+    setAttachNotice(null);
+  }
+
+  function onPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (activeSubagent) {
+      return;
+    }
+    const files = imagesFromClipboard(event.clipboardData);
+    if (files.length > 0) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  }
+
+  /** Frees the thumbnails of a message that was shown before it was taken in. */
+  function release(pendingId: string) {
+    const mine = pendingSends.current.get(pendingId);
+    mine?.previews.forEach((url) => URL.revokeObjectURL(url));
+    pendingSends.current.delete(pendingId);
+  }
+
+  /**
+   * The app has reported the user's message: if one was shown ahead of it, its pictures are now
+   * known by their real ids, so they are given the pictures already in hand and do not have to
+   * be fetched again, and the thumbnails made for showing it can go.
+   */
+  function takeIn(text: string, images?: ImageAttachment[]) {
+    const waiting = waitingFor(latest.current.items, text);
+    if (!waiting) {
+      return;
+    }
+    const mine = pendingSends.current.get(waiting.id);
+    images?.forEach((image, i) => {
+      const url = mine?.urls[i];
+      if (url) {
+        seedPicture(sessionId, image.id, url);
+      }
+    });
+    window.setTimeout(() => release(waiting.id), 1000);
   }
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy) {
+    const sending = activeSubagent ? [] : attachments;
+    if ((!text && sending.length === 0) || (busy && !queues)) {
       return;
     }
     setDraft("");
+    setAttachments([]);
+    setAttachNotice(null);
     stickRef.current = true;
-    try {
+    // A message sent straight to the agent is shown, and the agent shown as working, at once;
+    // the app's own report of it replaces what is shown (see `reconcile`). What goes to the
+    // queue or to a subagent is shown by its own list, when the app says so.
+    const direct = !activeSubagent && !queues;
+    const pendingId = direct ? `pending:${crypto.randomUUID()}` : null;
+    const before = state.status;
+    if (pendingId) {
+      const shown = sending.map((item, i) => {
+        const id = `local:${pendingId}:${i}`;
+        seedPicture(sessionId, id, item.preview);
+        return { id, name: item.file.name || "image", mime: item.file.type };
+      });
+      pendingSends.current.set(pendingId, { previews: sending.map((item) => item.preview), urls: [] });
+      dispatch({ type: "optimistic", id: pendingId, text, images: shown });
+    }
+    // A message for the queue is listed as soon as it is sent, marked as on its way in.
+    const queuedId = !direct && !activeSubagent ? `pending:${crypto.randomUUID()}` : null;
+    if (queuedId) {
+      setQueuedHere((all) => [
+        ...all,
+        {
+          id: queuedId,
+          text,
+          images: sending.map((item) => item.file.name || "image"),
+          known: new Set(queue.items.map((item) => item.id)),
+        },
+      ]);
+    }
+    const work = (async () => {
       if (activeSubagent) {
         await agentMessageSubagent(sessionId, activeSubagent.id, text);
+        return;
+      }
+      const images = await toUploads(sending);
+      if (pendingId) {
+        const mine = pendingSends.current.get(pendingId);
+        if (mine) {
+          mine.urls = images.map((image) => `data:${image.mime};base64,${image.data}`);
+        }
+        await agentPrompt(sessionId, text, images);
       } else {
-        await agentPrompt(sessionId, text);
+        // The queue takes it after what is still on its way to the agent, in order.
+        await inFlight.current.catch(() => undefined);
+        setQueue(await agentEnqueue(sessionId, text, images));
+      }
+    })();
+    if (pendingId) {
+      inFlight.current = work;
+    }
+    try {
+      await work;
+      if (!pendingId) {
+        sending.forEach((item) => URL.revokeObjectURL(item.preview));
+      } else {
+        // The app's report of the message comes with the answer. If it somehow has not, show
+        // what the app has rather than leave a message that never settles.
+        window.setTimeout(() => {
+          const stuck = latest.current.items.some((item) => item.kind === "message" && item.id === pendingId && item.pending);
+          if (stuck) {
+            void agentGetSnapshot(sessionId).then((snapshot) => dispatch({ type: "loaded", snapshot }));
+          }
+          release(pendingId);
+        }, 3000);
       }
     } catch (err) {
+      const waiting =
+        pendingId !== null &&
+        latest.current.items.some((item) => item.kind === "message" && item.id === pendingId && item.pending);
+      if (pendingId) {
+        if (waiting) {
+          dispatch({ type: "rollback", id: pendingId, status: before });
+        }
+        release(pendingId);
+      }
+      // Nothing was sent: the message and its pictures are back where they were, ahead of
+      // anything typed since.
+      if (pendingId === null || waiting) {
+        setDraft((current) => (current.trim() === "" ? text : `${text}\n${current}`));
+        setAttachments(sending);
+      }
       dispatch({ type: "failed", message: errorText(err) });
+    } finally {
+      if (queuedId) {
+        setQueuedHere((all) => all.filter((message) => message.id !== queuedId));
+      }
     }
+  }
+
+  function sendQueuedNow(id: string) {
+    void agentQueueSendNow(sessionId, id).catch((err: unknown) =>
+      dispatch({ type: "failed", message: errorText(err) }),
+    );
+  }
+
+  function removeQueued(id: string) {
+    void agentQueueRemove(sessionId, id).catch((err: unknown) =>
+      dispatch({ type: "failed", message: errorText(err) }),
+    );
   }
 
   async function configure(model: string | null, effort: string | null, agent: string | null) {
@@ -273,75 +482,17 @@ export function ChatPanel({
     }
   }
 
-  const restoredNotice = (
-    <div
-      key="restored"
-      className="flex items-center gap-3 text-small text-cg-muted"
-      role="note"
-    >
-      <span className="h-px flex-1 bg-cg-line" />
-      <span>Earlier messages are shown for reference; the agent starts fresh.</span>
-      <span className="h-px flex-1 bg-cg-line" />
-    </div>
-  );
-
   const providerLabel = PROVIDER_LABELS[session.provider] ?? session.provider;
 
-  // The divider sits before the first item produced by the running agent process.
-  function renderItems(items: ChatItem[], restoredSplit: number) {
-    const blocks = toBlocks(items, restoredSplit);
-    let seen = 0;
-    return blocks.flatMap((block) => {
-      const count = block.kind === "agent" ? block.items.length : 1;
-      const startsAfterRestore = restoredSplit > 0 && seen === restoredSplit;
-      seen += count;
-
-      const report = block.kind === "user" ? parseBtwReport(block.item.text) : null;
-      const node =
-        block.kind === "user" && report ? (
-          <section
-            key={block.key}
-            aria-label="BTW report"
-            className="flex max-w-[680px] min-w-0 flex-col gap-3 rounded-cg-lg border border-cg-line px-5 py-4"
-          >
-            <h4 className="text-small font-semibold text-cg-muted-strong">BTW finished</h4>
-            {report.map((entry, index) => (
-              <div key={`${index}:${entry.asked}`} className="flex min-w-0 flex-col gap-1.5">
-                <p className="text-ui font-medium break-words text-cg-ink [overflow-wrap:anywhere]">{entry.asked}</p>
-                {entry.summary ? (
-                  <div className="min-w-0 text-body leading-[1.7] break-words [overflow-wrap:anywhere]">
-                    <Markdown text={entry.summary} />
-                  </div>
-                ) : null}
-              </div>
-            ))}
-          </section>
-        ) : block.kind === "user" ? (
-          <div
-            key={block.key}
-            className="max-w-[min(80%,600px)] min-w-0 self-end rounded-cg-lg bg-cg-bubble px-5.5 py-4.5 text-body leading-[1.7] break-words whitespace-pre-wrap [overflow-wrap:anywhere]"
-          >
-            {block.item.text}
-          </div>
-        ) : (
-          <div key={block.key} className="flex max-w-[680px] flex-col gap-3">
-            {block.items.map((item) =>
-              item.kind === "tool" ? (
-                <ToolCard key={item.callId} tool={item} />
-              ) : (
-                <div key={item.id} className="min-w-0 text-body leading-[1.7] break-words [overflow-wrap:anywhere]">
-                  <Markdown text={item.text} />
-                </div>
-              ),
-            )}
-          </div>
-        );
-      return startsAfterRestore ? [restoredNotice, node] : [node];
-    });
-  }
-
-  const rendered = renderItems(state.items, state.restoredCount > 0 ? state.restoredCount : -1);
-  const subagentRendered = activeSubagent ? renderItems(activeSubagent.items, -1) : [];
+  // The transcript is cut into rows, and only the rows on screen are put in the page.
+  const rows = useMemo(
+    () => toRows(state.items, state.restoredCount > 0 ? state.restoredCount : -1),
+    [state.items, state.restoredCount],
+  );
+  const subagentRows = useMemo(
+    () => (activeSubagent ? toRows(activeSubagent.items, -1) : []),
+    [activeSubagent],
+  );
 
   const background = useBackground();
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
@@ -369,20 +520,24 @@ export function ChatPanel({
                   <span aria-hidden="true">·</span>
                   <span>{activeSubagent.status === "running" ? "working" : activeSubagent.status}</span>
                 </div>
-                {subagentRendered.length === 0 ? (
+                {subagentRows.length === 0 ? (
                   <p className="text-small text-cg-muted">
                     {activeSubagent.status === "running"
                       ? "Waiting for this subagent to report…"
                       : "Nothing reported by this subagent."}
                   </p>
                 ) : null}
-                {subagentRendered}
+                {subagentRows.length > 0 ? (
+                  <VirtualTranscript
+                    key={activeSubagent.id}
+                    rows={subagentRows}
+                    scrollRef={scrollRef}
+                    sessionId={sessionId}
+                    stick={stickRef}
+                  />
+                ) : null}
                 {activeSubagent.status === "running" ? (
-                  <span aria-label="Subagent working" className="-mt-5 flex gap-1" role="status">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
-                  </span>
+                  <Loader label="Subagent working" />
                 ) : null}
               </>
             ) : (
@@ -423,18 +578,18 @@ export function ChatPanel({
               </Hero>
             ) : null}
 
-            {rendered}
+            {rows.length > 0 ? (
+              <VirtualTranscript
+                key="main"
+                rows={rows}
+                scrollRef={scrollRef}
+                sessionId={sessionId}
+                stick={stickRef}
+              />
+            ) : null}
 
             {busy ? (
-              <span
-                aria-label={state.status === "waiting-permission" ? "Waiting for approval" : "Working"}
-                className="-mt-5 flex gap-1"
-                role="status"
-              >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60" />
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:150ms]" />
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cg-muted/60 [animation-delay:300ms]" />
-              </span>
+              <Loader label={state.status === "waiting-permission" ? "Waiting for approval" : "Working"} />
             ) : null}
               </>
             )}
@@ -490,7 +645,16 @@ export function ChatPanel({
           void send();
         }}
       >
+        {activeSubagent ? null : (
+          <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} />
+        )}
         <div className="cg-field rounded-cg-lg bg-cg-tint px-4 py-3.5">
+          {attachNotice ? (
+            <p className="mb-2 text-small text-cg-del-fg" role="status">
+              {attachNotice}
+            </p>
+          ) : null}
+          <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
           <textarea
             ref={composerRef}
             aria-label="Message"
@@ -501,22 +665,53 @@ export function ChatPanel({
                 ? canWrite
                   ? `Message ${activeSubagent.title}…`
                   : "This provider cannot message a subagent"
-                : `Ask ${MAIN_AGENT} to change something…`
+                : queues
+                  ? "Queue a message for when the agent finishes…"
+                  : `Ask ${MAIN_AGENT} to change something…`
             }
             rows={2}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onComposerKeyDown}
+            onPaste={onPaste}
           />
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
             <div className="flex min-w-0 items-center gap-2.5">
+              {activeSubagent ? null : (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    accept={IMAGE_ACCEPT}
+                    aria-hidden="true"
+                    className="hidden"
+                    multiple
+                    tabIndex={-1}
+                    type="file"
+                    onChange={(event) => {
+                      addFiles(Array.from(event.target.files ?? []));
+                      event.target.value = "";
+                    }}
+                  />
+                  <button
+                    aria-label="Attach images"
+                    className="grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!state.loaded || attachments.length >= MAX_IMAGES}
+                    title="Attach images (PNG, JPEG, GIF or WebP), or paste them"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Paperclip aria-hidden="true" size={15} />
+                  </button>
+                </>
+              )}
               {bare ? null : (
                 <>
-                  <ProviderMark provider={session.provider} size={24} />
+                  <ProfileMark provider={session.provider} size={24} />
                   <span className="truncate text-ui font-semibold text-cg-ink">{MAIN_AGENT}</span>
                 </>
               )}
               <StatusDot status={state.status} />
+              {bare ? null : <UsageMeter label={providerLabel} provider={session.provider} />}
             </div>
             {activeSubagent ? (
               <button
@@ -540,6 +735,17 @@ export function ChatPanel({
                   void configure(model, effort, agent);
                 }}
               />
+              {queues ? (
+                <button
+                  className="flex h-[29px] items-center gap-1.5 rounded-cg-md border border-cg-line-strong px-2.5 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={draft.trim() === "" && attachments.length === 0}
+                  title="Add to the queue (Enter)"
+                  type="submit"
+                >
+                  <ListPlus aria-hidden="true" size={13} />
+                  Queue
+                </button>
+              ) : null}
               {busy ? (
                 <button
                   aria-label="Stop"

@@ -61,6 +61,26 @@ pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
     pub turn_id: Option<TurnId>,
+    /// Images the user attached to this message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageAttachment>,
+}
+
+/// An image attached to a message. The picture itself is a file the app keeps, read by `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+}
+
+/// An image as it arrives from the window, before it is checked and stored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageUpload {
+    pub name: String,
+    pub mime: String,
+    /// The file's bytes, base64.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,12 +189,18 @@ pub enum AgentEvent {
         session_id: SessionId,
         status: SessionStatus,
     },
+    /// A provider reported where its limits stand. Not about one chat: every chat on that
+    /// provider shows it.
+    Usage { usage: super::usage::ProviderUsage },
     #[serde(rename_all = "camelCase")]
     Delta {
         session_id: SessionId,
         turn_id: TurnId,
         role: ChatRole,
         text: String,
+        /// Only on the user's own message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
     },
     #[serde(rename_all = "camelCase")]
     Tool {

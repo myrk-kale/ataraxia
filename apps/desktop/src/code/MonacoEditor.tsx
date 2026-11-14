@@ -1,8 +1,14 @@
 import type * as MonacoApi from "monaco-editor";
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { useAppearance } from "../app/appearance/store";
 import { familyFor } from "../app/appearance/fonts";
+import { placeMenu } from "./menuPlacement";
 import { defineAppTheme, loadMonaco, type Monaco } from "./monacoSetup";
+
+/** Pause after the last change of the selection before the menu shows: it waits for the hand to stop. */
+const MENU_DELAY_MS = 300;
+/** What the menu measures about itself until it has been drawn once. */
+const MENU_GUESS = { width: 230, height: 34 };
 
 export type EditorSelection = {
   /** Line of the cursor. */
@@ -46,6 +52,7 @@ export function MonacoEditor({
   onToggleVersion,
   onToggleWrap,
   onSelection,
+  selectionMenu,
 }: {
   /** Identifies the document; each key keeps its own buffer and undo history. */
   docKey: string;
@@ -64,6 +71,11 @@ export function MonacoEditor({
   /** Wrap or unwrap long lines (Alt+Z, as in VS Code). */
   onToggleWrap?: () => void;
   onSelection?: (selection: EditorSelection) => void;
+  /**
+   * A small bar shown next to selected text, once the selection has settled. `dismiss` takes it
+   * away (the selection itself stays).
+   */
+  selectionMenu?: (selection: EditorSelection, dismiss: () => void) => ReactNode;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -78,6 +90,12 @@ export function MonacoEditor({
   const wrapRef = useRef(wrap);
   wrapRef.current = wrap;
   const [ready, setReady] = useState(false);
+  const [menu, setMenu] = useState<{ selection: EditorSelection; top: number; left: number } | null>(null);
+  const menuBox = useRef<HTMLDivElement>(null);
+  const menuShown = useRef(false);
+  menuShown.current = menu !== null;
+  const menuEnabled = useRef(Boolean(selectionMenu));
+  menuEnabled.current = Boolean(selectionMenu);
 
   useImperativeHandle(
     handleRef,
@@ -154,7 +172,95 @@ export function MonacoEditor({
           text: range.isEmpty() ? "" : model.getValueInRange(range),
         });
       });
+      // The menu: placed from where Monaco says the selection is, and kept there while the editor
+      // scrolls. It waits for the pointer to be released and the selection to settle.
+      let timer: number | null = null;
+      let pointerDown = false;
+      const place = () => {
+        const range = editor.getSelection();
+        const model = editor.getModel();
+        const node = host.current;
+        if (!menuEnabled.current || !range || range.isEmpty() || !model || !node) {
+          setMenu(null);
+          return;
+        }
+        const spot = (position: MonacoApi.IPosition) => {
+          const found = editor.getScrolledVisiblePosition(position);
+          return found ? { top: found.top, left: found.left, height: found.height } : null;
+        };
+        const box = menuBox.current?.getBoundingClientRect();
+        const placed = placeMenu(
+          spot(range.getStartPosition()),
+          spot(range.getEndPosition()),
+          { width: node.clientWidth, height: node.clientHeight },
+          box && box.width > 0 ? { width: box.width, height: box.height } : MENU_GUESS,
+        );
+        if (!placed) {
+          setMenu(null);
+          return;
+        }
+        setMenu({
+          selection: {
+            line: range.positionLineNumber,
+            startLine: range.startLineNumber,
+            endLine: range.endLineNumber,
+            text: model.getValueInRange(range),
+          },
+          ...placed,
+        });
+      };
+      const settle = () => {
+        if (timer !== null) {
+          window.clearTimeout(timer);
+        }
+        timer = window.setTimeout(() => {
+          timer = null;
+          if (!pointerDown) {
+            place();
+          }
+        }, MENU_DELAY_MS);
+      };
+      const selecting = editor.onDidChangeCursorSelection((event) => {
+        if (event.selection.isEmpty()) {
+          if (timer !== null) {
+            window.clearTimeout(timer);
+          }
+          setMenu(null);
+        } else {
+          settle();
+        }
+      });
+      const pressed = editor.onMouseDown(() => {
+        pointerDown = true;
+        setMenu(null);
+      });
+      const released = editor.onMouseUp(() => {
+        pointerDown = false;
+        settle();
+      });
+      const scrolled = editor.onDidScrollChange(() => {
+        if (menuShown.current) {
+          place();
+        }
+      });
+      const switched = editor.onDidChangeModel(() => setMenu(null));
+      const typed = editor.onDidChangeModelContent(() => setMenu(null));
+      const keys = editor.onKeyDown((event) => {
+        if (event.keyCode === monaco.KeyCode.Escape) {
+          setMenu(null);
+        }
+      });
       cleanup = () => {
+        if (timer !== null) {
+          window.clearTimeout(timer);
+        }
+        selecting.dispose();
+        pressed.dispose();
+        released.dispose();
+        scrolled.dispose();
+        switched.dispose();
+        typed.dispose();
+        keys.dispose();
         content.dispose();
         cursor.dispose();
         editor.getModel()?.dispose();
@@ -260,12 +366,25 @@ export function MonacoEditor({
   }, [ready, marks, docKey, value]);
 
   return (
-    <div
-      ref={host}
-      className="h-full min-h-0 w-full"
-      data-editor-readonly={readOnly ? "true" : "false"}
-      role="region"
-      aria-label="Code editor"
-    />
+    <div className="relative h-full min-h-0 w-full">
+      <div
+        ref={host}
+        className="h-full min-h-0 w-full"
+        data-editor-readonly={readOnly ? "true" : "false"}
+        role="region"
+        aria-label="Code editor"
+      />
+      {menu && selectionMenu ? (
+        <div
+          ref={menuBox}
+          className="absolute z-10"
+          style={{ top: menu.top, left: menu.left }}
+          // Choosing from the bar must not take focus, and with it the selection, from the editor.
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {selectionMenu(menu.selection, () => setMenu(null))}
+        </div>
+      ) : null}
+    </div>
   );
 }

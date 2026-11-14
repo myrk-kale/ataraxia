@@ -1,5 +1,6 @@
 //! Agent provider adapters (host, backends, registry).
 
+pub mod attachments;
 pub mod backend;
 pub mod claude;
 pub mod codex;

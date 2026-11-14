@@ -64,6 +64,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     let agents = Arc::new(
         host.with_insights(sqlite.clone())
             .with_handoff_dir(data_dir.join("handoffs"))
+            .with_attachment_dir(data_dir.join("attachments"))
             .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
             .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
             .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()))
@@ -77,9 +78,13 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         Arc::new(TreeSitterSyntax),
         database,
         runtime,
-        tauri_sink,
+        tauri_sink.clone(),
     );
     tee.attach(&engine);
+    if let Some(api) = &api {
+        api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
+        api.set_sink(tauri_sink.clone() as Arc<dyn crate::ports::InsightSink>);
+    }
     engine.ensure_builtin_presets()?;
     engine.recover();
     Ok(AppState {

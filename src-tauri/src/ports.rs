@@ -9,8 +9,9 @@ use crate::domain::ids::{
     CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId,
 };
 use crate::domain::{
-    AgentEvent, ChatItem, ChatSession, ChatSnapshot, PermissionDecision, RepoInfo, Repository,
-    Result, SessionStatus, Workspace, Worktree, WorktreeInfo,
+    AgentEvent, ChatItem, ChatSession, ChatSnapshot, Error, ErrorCode, ImageUpload,
+    PermissionDecision, ProviderUsage, RepoInfo, Repository, Result, SessionStatus, Workspace,
+    Worktree, WorktreeInfo,
 };
 
 /// What an agent process needs to reach Ataraxia's local API: the address and its own token.
@@ -45,6 +46,35 @@ pub trait AgentRuntime: Send + Sync {
 
     fn start_session(&self, session: &ChatSession) -> Result<()>;
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId>;
+    /// A message with pictures. Runtimes that cannot take them refuse.
+    fn prompt_with_images(
+        &self,
+        session_id: &SessionId,
+        text: &str,
+        images: Vec<ImageUpload>,
+    ) -> Result<TurnId> {
+        if images.is_empty() {
+            self.prompt(session_id, text)
+        } else {
+            Err(Error::new(
+                ErrorCode::Invalid,
+                "this agent cannot take images",
+            ))
+        }
+    }
+    /// An attached picture as a `data:` URL, for showing it.
+    fn attachment(&self, session_id: &SessionId, id: &str) -> Result<String> {
+        let _ = (session_id, id);
+        Err(Error::new(ErrorCode::NotFound, "image not found"))
+    }
+    /// Where each provider's limits stand, as far as the providers have said.
+    fn usage(&self) -> Vec<ProviderUsage> {
+        Vec::new()
+    }
+    /// A chat is being deleted: whatever the runtime keeps for it goes too.
+    fn forget_session(&self, session_id: &SessionId) {
+        let _ = session_id;
+    }
     fn cancel(&self, session_id: &SessionId, turn_id: Option<&TurnId>) -> Result<()>;
     fn resolve_permission(
         &self,
@@ -52,6 +82,10 @@ pub trait AgentRuntime: Send + Sync {
         decision: PermissionDecision,
     ) -> Result<()>;
     fn snapshot(&self, session_id: &SessionId) -> Result<ChatSnapshot>;
+    /// Whether the agent is at work. Cheaper than a snapshot where the runtime can tell.
+    fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {
+        Ok(self.snapshot(session_id)?.status)
+    }
     /// Stores a new model/effort for the chat and applies it. Providers that cannot switch on a
     /// live process restart the session (the transcript stays, the agent starts fresh).
     fn configure_session(
@@ -316,6 +350,9 @@ pub trait Store: Send + Sync {
     fn list_sessions(&self, repository_id: RepositoryId) -> Result<Vec<ChatSession>>;
     fn get_session(&self, id: SessionId) -> Result<Option<ChatSession>>;
     fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()>;
+    /// Removes a chat with its messages, subagents, checkpoints, decisions, diagrams and the
+    /// helper sessions under it. The code and git are untouched.
+    fn delete_session(&self, id: SessionId) -> Result<()>;
     fn update_session_status(
         &self,
         id: SessionId,

@@ -42,16 +42,36 @@ describe("Markdown", () => {
 describe("ToolCard", () => {
   it("shows the name and a one-line summary of the input", () => {
     const html = renderToStaticMarkup(
-      <ToolCard tool={tool({ input: '{"command":"git status"}' })} />,
+      <ToolCard defaultOpen tool={tool({ input: '{"command":"git status"}' })} />,
     );
     expect(html).toContain("Bash");
     expect(html).toContain("git status");
     expect(html).toContain("Waiting for the result");
   });
 
+  it("puts neither the input nor the output in the page while it is closed", () => {
+    const html = renderToStaticMarkup(
+      <ToolCard
+        tool={tool({
+          name: "Edit",
+          input: '{"file_path":"/w/a.rs","old_string":"a-long-old-text","new_string":"b"}',
+          output: "the-whole-output",
+          status: "done",
+        })}
+      />,
+    );
+    // What the closed card shows: the name and the one-line summary.
+    expect(html).toContain("Edit");
+    expect(html).not.toContain("the-whole-output");
+    expect(html).not.toContain("a-long-old-text");
+    expect(html).not.toContain("bg-cg-add-bg");
+    expect(html).not.toContain("<pre");
+  });
+
   it("renders output and a colored diff for edits", () => {
     const html = renderToStaticMarkup(
       <ToolCard
+        defaultOpen
         tool={tool({
           name: "Edit",
           input: '{"file_path":"/w/a.rs","old_string":"a","new_string":"b"}',

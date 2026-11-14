@@ -10,7 +10,8 @@ use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
 use crate::domain::agent::{ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId};
 use crate::domain::{
-    ChatSession, ChatSnapshot, Error, ErrorCode, PermissionDecision, PermissionRequestId, Result,
+    ChatSession, ChatSnapshot, Error, ErrorCode, ImageUpload, MessageQueue, PermissionDecision,
+    PermissionRequestId, Result,
 };
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
@@ -166,6 +167,17 @@ pub fn workspace_open_session(
     with_workspace(&state, |workspace| workspace.open_session(session_id))
 }
 
+/// Deletes a chat for good: its agent is stopped first (a running turn ends with it), then its
+/// messages, checkpoints, decisions and diagrams go. The code and git are untouched.
+#[tauri::command(async)]
+pub fn workspace_delete_session(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    state.engine.stop_session_for_delete(session_id);
+    with_workspace(&state, |workspace| workspace.delete_session(session_id))
+}
+
 #[tauri::command]
 pub fn terminal_ensure(
     state: tauri::State<'_, AppState>,
@@ -220,6 +232,122 @@ pub fn terminal_kill(
     session_id: PtySessionId,
 ) -> std::result::Result<(), String> {
     state.pty_host().kill(&session_id).map_err(map_error)
+}
+
+/// Where each provider's five-hour and weekly limits stand, as far as the providers have said.
+#[tauri::command]
+pub fn agent_usage(state: tauri::State<'_, AppState>) -> Vec<crate::domain::ProviderUsage> {
+    state.agent_runtime().usage()
+}
+
+/// Serialises the read-change-write of the stored profiles.
+static PROFILES_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn change_profiles(
+    state: &AppState,
+    change: impl FnOnce(&mut crate::domain::Profiles) -> Result<()>,
+) -> std::result::Result<crate::domain::Profiles, String> {
+    let _guard = PROFILES_LOCK.lock();
+    let stored = state
+        .store
+        .get_preference(crate::domain::PROFILES_KEY)
+        .map_err(map_error)?;
+    let mut profiles = crate::domain::Profiles::parse(stored.as_deref());
+    change(&mut profiles).map_err(map_error)?;
+    let json = profiles.to_json().map_err(map_error)?;
+    state
+        .store
+        .set_preference(crate::domain::PROFILES_KEY, &json)
+        .map_err(map_error)?;
+    Ok(profiles)
+}
+
+/// Every launch profile and which one each harness starts with.
+#[tauri::command]
+pub fn profiles_list(state: tauri::State<'_, AppState>) -> crate::domain::Profiles {
+    let stored = state
+        .store
+        .get_preference(crate::domain::PROFILES_KEY)
+        .ok()
+        .flatten();
+    crate::domain::Profiles::parse(stored.as_deref())
+}
+
+/// Adds a profile, or changes the one with the same id.
+#[tauri::command]
+pub fn profile_save(
+    state: tauri::State<'_, AppState>,
+    profile: crate::domain::HarnessProfile,
+) -> std::result::Result<crate::domain::Profiles, String> {
+    change_profiles(&state, |profiles| profiles.save(profile).map(|_| ()))
+}
+
+#[tauri::command]
+pub fn profile_delete(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<crate::domain::Profiles, String> {
+    change_profiles(&state, |profiles| {
+        profiles.delete(&id);
+        Ok(())
+    })
+}
+
+/// Chooses the profile a harness starts with from now on (`None`: the default way). Chats
+/// already running switch at their next message.
+#[tauri::command]
+pub fn profile_set_active(
+    state: tauri::State<'_, AppState>,
+    provider: ProviderKind,
+    id: Option<String>,
+) -> std::result::Result<crate::domain::Profiles, String> {
+    change_profiles(&state, |profiles| {
+        profiles.set_active(provider, id.as_deref())
+    })
+}
+
+/// What a profile's command would run, so the form can say so before anything is saved.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileCheck {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn profile_check(command: String) -> ProfileCheck {
+    use crate::adapters::agents::process::resolve_program;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let parsed = match crate::domain::parse_command(&command, home.as_deref()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return ProfileCheck {
+                ok: false,
+                message: error.message,
+            };
+        }
+    };
+    let settings = match parsed.env.len() {
+        0 => String::new(),
+        1 => " with 1 setting".to_string(),
+        n => format!(" with {n} settings"),
+    };
+    match parsed.program {
+        None => ProfileCheck {
+            ok: true,
+            message: format!("Starts the usual program{settings}."),
+        },
+        Some(word) => match resolve_program(&word) {
+            Some(path) => ProfileCheck {
+                ok: true,
+                message: format!("Runs {}{settings}.", path.display()),
+            },
+            None => ProfileCheck {
+                ok: false,
+                message: format!("{word} was not found."),
+            },
+        },
+    }
 }
 
 #[tauri::command]
@@ -299,12 +427,71 @@ pub fn agent_prompt(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
     text: String,
+    images: Option<Vec<ImageUpload>>,
 ) -> std::result::Result<TurnId, String> {
     // Marks where the working tree stands, so this turn's changes become a checkpoint.
     state.engine.turn_started(session_id);
     state
         .agent_runtime()
-        .prompt(&session_id, &text)
+        .prompt_with_images(&session_id, &text, images.unwrap_or_default())
+        .map_err(map_error)
+}
+
+/// A picture attached to a message, as a `data:` URL the window can show.
+#[tauri::command]
+pub fn agent_attachment(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    id: String,
+) -> std::result::Result<String, String> {
+    state
+        .agent_runtime()
+        .attachment(&session_id, &id)
+        .map_err(map_error)
+}
+
+/// What the chat has waiting for the agent to finish.
+#[tauri::command]
+pub fn agent_queue(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<MessageQueue, String> {
+    Ok(state.engine.queue(session_id))
+}
+
+/// Queues a message to go out when the agent is done, one after another.
+#[tauri::command(async)]
+pub fn agent_enqueue(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    text: String,
+    images: Option<Vec<ImageUpload>>,
+) -> std::result::Result<MessageQueue, String> {
+    state
+        .engine
+        .enqueue(session_id, &text, images.unwrap_or_default())
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_queue_remove(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    id: String,
+) -> std::result::Result<MessageQueue, String> {
+    Ok(state.engine.queue_remove(session_id, &id))
+}
+
+/// Stops the running turn and sends this queued message next, ahead of the others.
+#[tauri::command(async)]
+pub fn agent_queue_send_now(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    id: String,
+) -> std::result::Result<MessageQueue, String> {
+    state
+        .engine
+        .queue_send_now(session_id, &id)
         .map_err(map_error)
 }
 

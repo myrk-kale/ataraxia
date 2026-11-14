@@ -524,6 +524,12 @@ pub enum InsightEvent {
     /// Everything derived for a chat was deleted.
     #[serde(rename_all = "camelCase")]
     Cleared { session_id: SessionId },
+    /// The messages a chat has waiting changed.
+    #[serde(rename_all = "camelCase")]
+    Queue {
+        session_id: SessionId,
+        queue: crate::domain::MessageQueue,
+    },
 }
 
 /// A named piece of code found by a parser: the unit a change is attributed to.

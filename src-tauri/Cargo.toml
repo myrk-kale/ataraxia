@@ -1,6 +1,6 @@
 [package]
 name = "ataraxia-ide"
-version = "0.3.0"
+version = "0.4.0"
 description = "Desktop environment for agent-assisted software development: chat with coding agents, review what they wrote, keep decisions and flows"
 authors = ["Kale"]
 edition = "2024"

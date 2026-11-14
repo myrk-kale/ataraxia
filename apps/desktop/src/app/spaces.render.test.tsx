@@ -183,6 +183,31 @@ describe("spaces render with real data shapes", () => {
     expect(document.body.textContent).toContain("BTW");
   });
 
+  it("BTW says that the question is about the text that was selected, and where it is", async () => {
+    const { BtwPalette } = await import("../btw/BtwPalette");
+    const providers = [
+      { kind: "fake", display_name: "Demo", available: true, detail: null, settings: { models: [{ id: "quick", label: "Quick", efforts: [] }] } },
+    ] as never;
+    act(() =>
+      root.render(
+        <BtwPalette
+          isOpen
+          item={{ kind: "selection", label: "tokens.py", path: "src/studio/auth/tokens.py", startLine: 6, endLine: 9, text: "a\nb\nc\nd" }}
+          others={[]}
+          providers={providers}
+          resume={null}
+          session={session}
+          space="code"
+          onClose={() => undefined}
+          onError={(m) => { throw new Error(m); }}
+        />,
+      ),
+    );
+    await flush();
+    const dialog = document.body.querySelector("[role=dialog]")!;
+    expect(dialog.textContent).toContain("Selection · src/studio/auth/tokens.py:6-9 · 4 lines");
+  });
+
   it("BTW is one wide bar: a placeholder and the choice of model joined to it, and nothing else", async () => {
     const { BtwPalette } = await import("../btw/BtwPalette");
     const providers = [

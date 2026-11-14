@@ -1,5 +1,5 @@
-import { Check, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Check, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
 import type { ChatSession, RepositoryId, SessionId, Worktree } from "../lib/workspace";
 
@@ -19,6 +19,7 @@ export function SessionsPanel({
   repositoryNames,
   selectedId,
   onSelect,
+  onDelete,
   onClose,
 }: {
   sessions: ChatSession[];
@@ -27,14 +28,25 @@ export function SessionsPanel({
   repositoryNames?: Record<RepositoryId, string>;
   selectedId: SessionId | null;
   onSelect: (id: SessionId) => void;
+  /** Deletes the chat for good. Asked for twice here, so one slip never costs a conversation. */
+  onDelete: (id: SessionId) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  // The chat whose delete is waiting for a second, deliberate click.
+  const [confirming, setConfirming] = useState<SessionId | null>(null);
+  const confirmingRef = useRef(confirming);
+  confirmingRef.current = confirming;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        onClose();
+        // Escape backs out of one step at a time.
+        if (confirmingRef.current) {
+          setConfirming(null);
+        } else {
+          onClose();
+        }
       }
     }
     function onPointerDown(event: PointerEvent) {
@@ -88,31 +100,74 @@ export function SessionsPanel({
               </div>
               {sessions
                 .filter((session) => session.worktree_id === worktreeId)
-                .map((session) => (
-                  <button
-                    key={session.id}
-                    aria-current={session.id === selectedId ? "true" : undefined}
-                    className={`flex w-full items-start gap-3 rounded-cg-md px-3 py-3 text-left hover:bg-cg-tint ${
-                      session.id === selectedId ? "bg-cg-tint" : ""
-                    }`}
-                    type="button"
-                    onClick={() => onSelect(session.id)}
-                  >
-                    {session.id === selectedId ? (
-                      <Check aria-hidden="true" className="mt-0.5 flex-none text-cg-accent" size={14} />
-                    ) : (
-                      <span aria-hidden="true" className="mt-1 h-3.5 w-3.5 flex-none" />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <strong className="block truncate text-ui font-semibold">
-                        {session.title}
-                      </strong>
-                      <small className="mt-1.5 block text-small text-cg-muted">
-                        {PROVIDER_LABELS[session.provider]}
-                      </small>
-                    </span>
-                  </button>
-                ))}
+                .map((session) => {
+                  const selected = session.id === selectedId;
+                  const asking = confirming === session.id;
+                  return (
+                    <div
+                      key={session.id}
+                      className={`group flex items-start gap-1 rounded-cg-md hover:bg-cg-tint focus-within:bg-cg-tint ${
+                        selected ? "bg-cg-tint" : ""
+                      }`}
+                    >
+                      <button
+                        aria-current={selected ? "true" : undefined}
+                        className="flex min-w-0 flex-1 items-start gap-3 rounded-cg-md px-3 py-3 text-left"
+                        type="button"
+                        onClick={() => onSelect(session.id)}
+                      >
+                        {selected ? (
+                          <Check aria-hidden="true" className="mt-0.5 flex-none text-cg-accent" size={14} />
+                        ) : (
+                          <span aria-hidden="true" className="mt-1 h-3.5 w-3.5 flex-none" />
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <strong className="block truncate text-ui font-semibold">
+                            {session.title}
+                          </strong>
+                          <small className="mt-1.5 block text-small text-cg-muted">
+                            {asking
+                              ? "Its messages, decisions and diagrams are deleted. The code is not touched."
+                              : PROVIDER_LABELS[session.provider]}
+                          </small>
+                        </span>
+                      </button>
+                      {asking ? (
+                        <div className="flex flex-none items-center gap-1 py-2.5 pr-2">
+                          <button
+                            autoFocus
+                            aria-label={`Delete ${session.title} for good`}
+                            className="rounded-cg-sm bg-cg-del-bg px-2.5 py-1 text-small font-semibold text-cg-del-fg hover:underline"
+                            type="button"
+                            onClick={() => {
+                              setConfirming(null);
+                              onDelete(session.id);
+                            }}
+                          >
+                            Delete
+                          </button>
+                          <button
+                            className="rounded-cg-sm px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
+                            type="button"
+                            onClick={() => setConfirming(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          aria-label={`Delete ${session.title}`}
+                          className="mt-2.5 mr-2 grid h-7 w-7 flex-none place-items-center rounded-cg-sm text-cg-muted hover:bg-cg-line hover:text-cg-del-fg focus-visible:bg-cg-line"
+                          title="Delete this chat"
+                          type="button"
+                          onClick={() => setConfirming(session.id)}
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           ))
         )}

@@ -43,6 +43,7 @@ import {
   workspaceBootstrap,
   workspaceCreateSession,
   workspaceOpenRepository,
+  workspaceDeleteSession,
   workspaceOpenSession,
   workspaceSelectRepository,
   workspaceSelectWorkspace,
@@ -61,7 +62,7 @@ import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
 import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
-import { resolveShortcut } from "./shortcuts";
+import { isSpaceKey, resolveShortcut } from "./shortcuts";
 import { TRAFFIC_LIGHTS_INSET, useTitlebarInset } from "./titlebar";
 import { referenceKey, resolveFileRef, selectedWorkspace } from "./workspaceView";
 import { nextSpace, SPACES, type SpaceId } from "./spaces";
@@ -94,6 +95,23 @@ function sameBranches(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
       snapshot.worktrees.map((item) => [item.id, item.branch]),
     ]);
   return key(a) === key(b);
+}
+
+/** A deleted chat leaves no remembered comparisons behind. */
+function forgetComparisons(chatId: string) {
+  try {
+    const prefix = `ataraxia.compareWith.${chatId}`;
+    const keys: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(prefix)) {
+        keys.push(key);
+      }
+    }
+    keys.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Storage can be unavailable; a stale entry is harmless.
+  }
 }
 
 /**
@@ -204,11 +222,13 @@ export function AppShell() {
   }, [space]);
 
   const overlayOpen = sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen;
+  // A dialog a view opens by itself (a diagram full screen) owns the keyboard as well.
+  const anOverlay = () => overlayOpen || document.querySelector("dialog[open]") !== null;
   const hasChat = workspace.sessions.some((item) => item.id === workspace.selected_session_id);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      const action = resolveShortcut(event, { space, overlay: overlayOpen });
+      const action = resolveShortcut(event, { space, overlay: anOverlay() });
       if (!action) {
         return;
       }
@@ -248,6 +268,25 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, overlayOpen, hasChat]);
+
+  // Shift+Up/Down changes space whatever has focus. The editor and the terminal handle their keys
+  // before the page sees them, so this one listens first and keeps the key from reaching them.
+  useEffect(() => {
+    function onSpaceKey(event: KeyboardEvent) {
+      if (!isSpaceKey(event)) {
+        return;
+      }
+      const action = resolveShortcut(event, { space, overlay: anOverlay() });
+      if (action?.type !== "space") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setSpace((current) => nextSpace(current, action.delta));
+    }
+    window.addEventListener("keydown", onSpaceKey, true);
+    return () => window.removeEventListener("keydown", onSpaceKey, true);
+  }, [space, overlayOpen]);
 
   function openBtw(resume: BtwTask | null) {
     if (!hasChat && !resume) {
@@ -812,6 +851,10 @@ export function AppShell() {
             sessions={workspace.sessions}
             worktrees={workspace.worktrees}
             onClose={closeSessions}
+            onDelete={(id) => {
+              forgetComparisons(id);
+              void runWorkspace(() => workspaceDeleteSession(id));
+            }}
             onSelect={(id) => {
               setSessionsOpen(false);
               void runWorkspace(async () => {

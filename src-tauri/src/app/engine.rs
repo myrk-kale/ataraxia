@@ -38,6 +38,8 @@ pub struct Engine {
     waiters: Mutex<HashMap<SessionId, mpsc::Sender<bool>>>,
     /// Discussions currently waiting for the agent, so a second question cannot overlap.
     pub(crate) busy: Mutex<std::collections::HashSet<String>>,
+    /// Messages waiting for the agent of each chat to finish.
+    pub(crate) queues: Mutex<HashMap<SessionId, super::queue::QueueState>>,
     task_timeout: Duration,
 }
 
@@ -74,6 +76,7 @@ impl Engine {
             sink,
             waiters: Mutex::new(HashMap::new()),
             busy: Mutex::new(std::collections::HashSet::new()),
+            queues: Mutex::new(HashMap::new()),
             task_timeout: TASK_TIMEOUT,
         })
     }
@@ -146,6 +149,17 @@ impl Engine {
             .get_worktree(session.worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?
             .path)
+    }
+
+    /// Before a chat is deleted: its agent and those of the helper sessions under it end, and
+    /// what it had queued is dropped.
+    pub fn stop_session_for_delete(&self, session_id: SessionId) {
+        for helper in self.db.list_child_sessions(session_id).unwrap_or_default() {
+            self.runtime.stop_session(&helper.id);
+        }
+        self.runtime.stop_session(&session_id);
+        self.runtime.forget_session(&session_id);
+        self.queues.lock().remove(&session_id);
     }
 
     /// Called on startup: work a previous run left half done cannot continue.
@@ -236,6 +250,8 @@ impl Engine {
                 }
                 // A BTW that finished while this turn ran could not tell the agent then.
                 self.btw_deliver(session_id);
+                // The next message the user queued goes out now that the agent is free.
+                self.queue_advance(session_id, ok);
             }
             SessionKind::Btw | SessionKind::Delegate => self.btw_turn_finished(session_id, ok),
             _ => {}

@@ -14,8 +14,8 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
-    truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, ImageFile, Launch,
+    SubagentRoute, api_env, compose_env, profile_args, profile_program, truncate_output,
 };
 use super::definitions::codex_agents;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
@@ -24,6 +24,7 @@ use crate::domain::agent::{ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
+    UsageWindow, UsageWindowKind,
 };
 
 const BINARY_NAME: &str = "codex";
@@ -31,6 +32,8 @@ const OVERRIDE_ENV: &str = "ATARAXIA_CODEX_BIN";
 const APPROVALS_REVIEWER_ENV: &str = "ATARAXIA_CODEX_APPROVALS_REVIEWER";
 const DEFAULT_APPROVALS_REVIEWER: &str = "auto_review";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Asking for the limits goes to the account's server; it is not worth waiting long for.
+const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
@@ -59,14 +62,26 @@ impl CodexBackend {
         }
     }
 
-    fn command(&self) -> std::result::Result<(PathBuf, Vec<String>), String> {
+    fn command(
+        &self,
+        launch: Option<&Launch>,
+    ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
-            Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| (program, vec!["app-server".to_string()]))
-                .ok_or_else(|| {
-                    format!("codex CLI not found. Install it or set {OVERRIDE_ENV} to its path.")
-                }),
+            Launcher::Resolve => {
+                profile_program(launch, || resolve_binary(BINARY_NAME, OVERRIDE_ENV))
+                    .map(|program| {
+                        (
+                            program,
+                            profile_args(launch, vec!["app-server".to_string()]),
+                        )
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "codex CLI not found. Install it or set {OVERRIDE_ENV} to its path."
+                        )
+                    })
+            }
         }
     }
 }
@@ -119,12 +134,12 @@ impl Default for CodexBackend {
 
 impl AgentBackend for CodexBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command().map(|_| ())
+        self.command(None).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let (program, args) = self
-            .command()
+            .command(ctx.launch.as_ref())
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(CodexShared {
             me: OnceLock::new(),
@@ -146,7 +161,10 @@ impl AgentBackend for CodexBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: api_env(ctx.session_id, ctx.api.as_ref()),
+                env: compose_env(
+                    api_env(ctx.session_id, ctx.api.as_ref()),
+                    ctx.launch.as_ref(),
+                ),
                 env_remove: Vec::new(),
             },
             false,
@@ -187,6 +205,17 @@ impl AgentBackend for CodexBackend {
             let _ = shared.thread_id.set(thread_id.to_string());
             Ok(())
         })();
+        if handshake.is_ok() {
+            // Off the start-up path: the chat is usable before the account answers.
+            let (asker, reader) = (Arc::clone(&shared), Arc::clone(&client));
+            std::thread::spawn(move || {
+                if let Ok(answer) =
+                    reader.request("account/rateLimits/read", Value::Null, Some(USAGE_TIMEOUT))
+                {
+                    asker.report_usage(answer.get("rateLimits"));
+                }
+            });
+        }
         if let Err(error) = handshake {
             let message = shared.with_exit_info(error.message);
             client.kill();
@@ -276,7 +305,20 @@ impl CodexShared {
         }
     }
 
+    /// Tells the host where the account's limits stand, if the snapshot has any window.
+    fn report_usage(&self, snapshot: Option<&Value>) {
+        let Some((plan, windows)) = snapshot.and_then(usage_from_snapshot) else {
+            return;
+        };
+        (self.emit)(BackendEvent::Usage { plan, windows });
+    }
+
     fn on_notification(&self, method: &str, params: &Value) {
+        // The account's limits are not about any one thread or turn.
+        if method == "account/rateLimits/updated" {
+            self.report_usage(params.get("rateLimits"));
+            return;
+        }
         // A subagent's thread announces itself with its nickname and role.
         if method == "thread/started" {
             if let (Some(thread), Some(main)) = (params.get("thread"), self.thread_id.get()) {
@@ -853,7 +895,7 @@ impl CodexShared {
         );
     }
 
-    fn run_turn_start(&self, turn_id: TurnId, text: String) {
+    fn run_turn_start(&self, turn_id: TurnId, text: String, images: Vec<ImageFile>) {
         let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
             return;
         };
@@ -866,9 +908,17 @@ impl CodexShared {
             )
         };
         let text = prompt_text(agent.as_deref(), &text);
+        // The pictures are files on disk the app owns; Codex takes them by path.
+        let mut input: Vec<Value> = images
+            .iter()
+            .map(|image| json!({ "type": "localImage", "path": image.path }))
+            .collect();
+        if !text.trim().is_empty() || input.is_empty() {
+            input.push(json!({ "type": "text", "text": text, "text_elements": [] }));
+        }
         let mut params = json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": text, "text_elements": [] }]
+            "input": input
         });
         if let Some(model) = model {
             params["model"] = json!(model);
@@ -915,6 +965,28 @@ struct CodexSession {
     cwd: PathBuf,
     /// `model/list` answer, fetched on first use.
     models: OnceLock<(Vec<ModelChoice>, Option<String>)>,
+}
+
+impl CodexSession {
+    fn start_turn(&self, turn_id: TurnId, text: &str, images: Vec<ImageFile>) -> Result<()> {
+        if !self.is_alive() {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                self.shared.with_exit_info("codex is not running".into()),
+            ));
+        }
+        {
+            let mut state = self.shared.state.lock();
+            state.turn = Some(turn_id);
+            state.codex_turn = None;
+            state.cancel_requested = false;
+            state.last_error = None;
+        }
+        let shared = Arc::clone(&self.shared);
+        let text = text.to_string();
+        thread::spawn(move || shared.run_turn_start(turn_id, text, images));
+        Ok(())
+    }
 }
 
 impl BackendSession for CodexSession {
@@ -981,23 +1053,11 @@ impl BackendSession for CodexSession {
     }
 
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
-        if !self.is_alive() {
-            return Err(Error::new(
-                ErrorCode::Agent,
-                self.shared.with_exit_info("codex is not running".into()),
-            ));
-        }
-        {
-            let mut state = self.shared.state.lock();
-            state.turn = Some(turn_id);
-            state.codex_turn = None;
-            state.cancel_requested = false;
-            state.last_error = None;
-        }
-        let shared = Arc::clone(&self.shared);
-        let text = text.to_string();
-        thread::spawn(move || shared.run_turn_start(turn_id, text));
-        Ok(())
+        self.start_turn(turn_id, text, Vec::new())
+    }
+
+    fn prompt_with_images(&self, turn_id: TurnId, text: &str, images: &[ImageFile]) -> Result<()> {
+        self.start_turn(turn_id, text, images.to_vec())
     }
 
     fn cancel(&self) -> Result<()> {
@@ -1244,8 +1304,112 @@ fn item_result(item: &Value) -> (String, bool) {
     }
 }
 
+/// The windows of a rate-limit snapshot. A window says how long it lasts; that tells the
+/// five-hour limit from the weekly one (a plan may only have one of them). Without a length the
+/// first is the short one and the second the long one.
+fn usage_from_snapshot(snapshot: &Value) -> Option<(Option<String>, Vec<UsageWindow>)> {
+    let mut windows = Vec::new();
+    for (name, fallback) in [
+        ("primary", UsageWindowKind::FiveHour),
+        ("secondary", UsageWindowKind::Weekly),
+    ] {
+        let Some(node) = snapshot.get(name).filter(|node| node.is_object()) else {
+            continue;
+        };
+        let Some(used) = node.get("usedPercent").and_then(Value::as_f64) else {
+            continue;
+        };
+        let kind = node
+            .get("windowDurationMins")
+            .and_then(Value::as_i64)
+            .map_or(fallback, UsageWindowKind::from_minutes);
+        let resets_at = node.get("resetsAt").and_then(Value::as_i64);
+        windows.push(UsageWindow::new(kind, used, resets_at));
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    let plan = snapshot
+        .get("planType")
+        .and_then(Value::as_str)
+        .filter(|plan| *plan != "unknown")
+        .map(str::to_string);
+    Some((plan, windows))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_two_windows_of_a_snapshot_are_told_apart_by_their_length() {
+        let snapshot = json!({
+            "planType": "pro",
+            "primary": { "usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1000 },
+            "secondary": { "usedPercent": 64, "windowDurationMins": 10080, "resetsAt": 2000 }
+        });
+        let (plan, windows) = usage_from_snapshot(&snapshot).expect("windows");
+        assert_eq!(plan.as_deref(), Some("pro"));
+        assert_eq!(
+            windows,
+            vec![
+                UsageWindow::new(UsageWindowKind::FiveHour, 12.0, Some(1000)),
+                UsageWindow::new(UsageWindowKind::Weekly, 64.0, Some(2000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plan_with_only_a_weekly_window_does_not_show_a_five_hour_one() {
+        let snapshot = json!({
+            "primary": { "usedPercent": 30, "windowDurationMins": 10080 },
+            "secondary": null
+        });
+        let (_, windows) = usage_from_snapshot(&snapshot).expect("windows");
+        assert_eq!(
+            windows,
+            vec![UsageWindow::new(UsageWindowKind::Weekly, 30.0, None)]
+        );
+    }
+
+    #[test]
+    fn windows_without_a_length_are_the_short_one_then_the_long_one() {
+        let snapshot = json!({
+            "primary": { "usedPercent": 1 },
+            "secondary": { "usedPercent": 2 }
+        });
+        let (_, windows) = usage_from_snapshot(&snapshot).expect("windows");
+        assert_eq!(windows[0].kind, UsageWindowKind::FiveHour);
+        assert_eq!(windows[1].kind, UsageWindowKind::Weekly);
+    }
+
+    #[test]
+    fn a_snapshot_with_no_window_reports_nothing() {
+        assert!(usage_from_snapshot(&json!({ "primary": null, "secondary": null })).is_none());
+        assert!(usage_from_snapshot(&json!(null)).is_none());
+    }
+
+    #[test]
+    fn a_rate_limit_update_is_reported_without_a_running_turn() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let shared = CodexShared {
+            me: OnceLock::new(),
+            emit: Arc::new(move |event| sink.lock().push(event)),
+            client: OnceLock::new(),
+            thread_id: OnceLock::new(),
+            exit: Mutex::new(None),
+            state: Mutex::new(CodexState::default()),
+        };
+        shared.on_notification(
+            "account/rateLimits/updated",
+            &json!({ "rateLimits": { "primary": { "usedPercent": 7, "windowDurationMins": 300 } } }),
+        );
+        let seen = events.lock();
+        assert!(matches!(
+            seen.as_slice(),
+            [BackendEvent::Usage { windows, .. }] if windows[0].used_percent == 7
+        ));
+    }
+
     fn subagent_updates(events: &[BackendEvent]) -> Vec<(&str, &SubagentUpdate)> {
         events
             .iter()
@@ -1532,6 +1696,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = backend
             .start(BackendContext {
+                launch: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),

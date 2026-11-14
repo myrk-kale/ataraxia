@@ -28,7 +28,7 @@ export function useSessionActivity(sessionId: SessionId | null): SessionActivity
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listenAgentEvents((event) => {
-      if (event.sessionId !== sessionId) {
+      if (event.type === "usage" || event.sessionId !== sessionId) {
         return;
       }
       if (event.type === "status") {

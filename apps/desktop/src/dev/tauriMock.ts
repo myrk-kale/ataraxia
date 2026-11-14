@@ -54,6 +54,7 @@ const chat: { items: unknown[]; subagents: unknown[]; restoredCount: number; sta
     { kind: "message", id: "m2", role: "assistant", text: "I'll make generation asynchronous.\n\n- `POST /documents` now returns **202 Accepted**\n- a worker persists progress\n\n```python\nasync def dispatch(job_id: int) -> None:\n    await worker.enqueue(job_id)\n```", turnId: "t1" },
     { kind: "tool", callId: "c1", turnId: "t1", name: "Bash", input: JSON.stringify({ command: "pytest tests/documents -q" }), output: "18 passed in 2.41s", status: "done" },
     { kind: "tool", callId: "c2", turnId: "t1", name: "Edit", input: JSON.stringify({ file_path: "src/studio/documents/repositories.py", old_string: "return result.scalar()", new_string: "return result.scalar_one_or_none()" }), output: "ok", status: "done" },
+    { kind: "message", id: "m4", role: "assistant", text: "How the pieces fit:\n\n| Part | Role | Status |\n| --- | --- | --- |\n| API | accepts the request | done |\n| Worker | persists progress | done |\n| Poller | reads the status | todo |\n\n```mermaid\nflowchart LR\n  A[Client] -->|POST /documents| B(API)\n  B --> C{Queue}\n  C --> D[Worker]\n  D --> E[(Database)]\n```\n\nAnd one that is not a diagram:\n\n```mermaid\nthis is not mermaid\n```", turnId: "t1" },
     { kind: "message", id: "m3", role: "assistant", text: "Implemented asynchronous generation. The request now returns 202 Accepted and the worker persists progress. I updated the repository and added tests.", turnId: "t1" },
   ],
   restoredCount: mode === "restored" ? 2 : 0,
@@ -65,6 +66,58 @@ const chat: { items: unknown[]; subagents: unknown[]; restoredCount: number; sta
 };
 if (mode === "fresh") {
   chat.items = [];
+}
+// `?state=diagrams` is one reply with a diagram of each kind: flowcharts that are drawn as text,
+// and others that go to the Mermaid library.
+if (mode === "diagrams") {
+  const fence = (body: string) => "```mermaid\n" + body + "\n```";
+  chat.items = [
+    { kind: "message", id: "d0", role: "user", text: "Draw the architecture.", turnId: "t0" },
+    {
+      kind: "message",
+      id: "d1",
+      role: "assistant",
+      turnId: "t0",
+      text: [
+        "A pipeline:",
+        fence("flowchart LR\n  C[Client] --> G[API Gateway]\n  G --> Q[Queue]\n  Q --> W[Worker]\n  W --> D[(Database)]"),
+        "A decision with labelled links, top down:",
+        fence("flowchart TD\n  S([Start]) --> Q{Valid?}\n  Q -->|yes| P[Process]\n  Q -->|no| E[Reject]\n  P --> F([Done])\n  E --> F"),
+        "A fan-out with a link that skips a stage, and a retry that loops back:",
+        fence("flowchart LR\n  I[Incoming] --> V[Validate]\n  V --> R[Router]\n  R --> A[Service A]\n  R --> B[Service B]\n  A --> D[Storage]\n  B --> D\n  I --> D\n  D -.-> R"),
+        "A sequence diagram, which is not a flowchart:",
+        fence("sequenceDiagram\n  Alice->>Bob: Hello\n  Bob-->>Alice: Hi"),
+        "A flowchart with a subgraph, which the text drawing leaves to the library:",
+        fence("flowchart LR\n  subgraph one\n    A --> B\n  end\n  B --> C"),
+      ].join("\n\n"),
+    },
+  ];
+}
+// `?state=dgascii` and `?state=dgsvg` hold the same five-node chain; the second ends in a link the
+// text drawing does not draw, so the Mermaid library draws it. For comparing the two.
+if (mode === "dgascii" || mode === "dgsvg") {
+  const last = mode === "dgsvg" ? "W <--> D[(Database)]" : "W --> D[(Database)]";
+  chat.items = [
+    { kind: "message", id: "c0", role: "assistant", turnId: "t0", text: "```mermaid\nflowchart LR\n  C[Client] --> G[API Gateway]\n  G --> Q[Queue]\n  Q --> W[Worker]\n  " + last + "\n```" },
+  ];
+}
+// `?state=long` is a chat that has been going for a long time: 400 turns, each with a question,
+// some tool calls and a reply, now and then with a table or a diagram.
+if (mode === "long") {
+  const paragraph = "This part of the work changes how the request is validated before it reaches the worker, and keeps the old behaviour for callers that still send the previous shape. ";
+  chat.items = Array.from({ length: 400 }, (_, n) => {
+    const turnId = `lt${n}`;
+    const table = n % 7 === 3 ? "\n\n| Part | Role | Status |\n| --- | --- | --- |\n| API | accepts the request | done |\n| Worker | persists progress | todo |" : "";
+    const diagram = n % 50 === 10 ? "\n\n```mermaid\nflowchart LR\n  A[Client] --> B(API)\n  B --> C[Worker]\n```" : "";
+    const code = n % 5 === 0 ? "\n\n```ts\nexport function step" + n + "(input: string) {\n  return input.trim();\n}\n```" : "";
+    return [
+      { kind: "message", id: `lu${n}`, role: "user", text: `Question ${n}: how should step ${n} behave when the input is empty?`, turnId: null },
+      { kind: "message", id: `la${n}`, role: "assistant", text: `Answer ${n}. ` + paragraph.repeat(1 + (n % 4)) + table + code + diagram, turnId },
+      { kind: "tool", callId: `lc${n}a`, turnId, name: "Bash", input: JSON.stringify({ command: `pytest tests/step_${n} -q` }), output: `${n % 9} passed in 1.${n % 10}s\n`.repeat(20), status: "done" },
+      { kind: "tool", callId: `lc${n}b`, turnId, name: "Edit", input: JSON.stringify({ file_path: `src/step_${n}.py`, old_string: "return a", new_string: "return b" }), output: "ok", status: "done" },
+      { kind: "message", id: `lf${n}`, role: "assistant", text: `Done with step ${n}.`, turnId },
+    ];
+  }).flat();
 }
 // `?state=subagents` shows the subagent switcher with a finished and a running subagent.
 if (mode === "subagents") {
@@ -98,9 +151,125 @@ const optionsByProvider: Record<string, unknown> = {
 
 const callbacks = new Map<number, (event: unknown) => void>();
 const listeners: Record<string, number[]> = {};
+// A pretend agent for previewing the message queue: a turn lasts a few seconds (`?turn=ms`).
+const TURN_MS = Number(new URLSearchParams(window.location.search).get("turn") ?? 3000);
+const turns = new Map<string, ReturnType<typeof setTimeout>>();
+const queues = new Map<string, { items: { id: string; text: string; images: { name: string; mime: string; data: string }[] }[]; paused: boolean }>();
+const pictures = new Map<string, string>();
+const forced = new Set<string>();
+let queueCounter = 0;
+let pictureCounter = 0;
+let turnCounter = 0;
+
+function stateOf(sessionId: string) {
+  let queue = queues.get(sessionId);
+  if (!queue) {
+    queue = { items: [], paused: false };
+    queues.set(sessionId, queue);
+  }
+  return queue;
+}
+
+function queueOf(sessionId: string) {
+  const { items, paused } = stateOf(sessionId);
+  return { items: items.map((item) => ({ id: item.id, text: item.text, images: item.images.map((image) => image.name) })), paused };
+}
+
+function announceQueue(sessionId: string) {
+  emit("insight://event", { type: "queue", sessionId, queue: queueOf(sessionId) });
+}
+
+type Upload = { name: string; mime: string; data: string };
+
+function startTurn(sessionId: string, text: string, uploads: Upload[] = []) {
+  const turnId = `t${Date.now()}-${++turnCounter}`;
+  const images = uploads.map((upload) => {
+    const id = `img${++pictureCounter}`;
+    pictures.set(`${sessionId}:${id}`, `data:${upload.mime};base64,${upload.data}`);
+    return { id, name: upload.name, mime: upload.mime };
+  });
+  emit("agent://event", { type: "delta", sessionId, turnId, role: "user", text, ...(images.length > 0 ? { images } : {}) });
+  emit("agent://event", { type: "status", sessionId, status: "working" });
+  turns.set(sessionId, setTimeout(() => finishTurn(sessionId, true), TURN_MS));
+  return turnId;
+}
+
+function finishTurn(sessionId: string, ok: boolean) {
+  clearTimeout(turns.get(sessionId));
+  turns.delete(sessionId);
+  emit("agent://event", { type: "turnDone", sessionId, turnId: "t", ok });
+  emit("agent://event", { type: "status", sessionId, status: "ready" });
+  advanceQueue(sessionId, ok);
+}
+
+function advanceQueue(sessionId: string, ok: boolean) {
+  const queue = queues.get(sessionId);
+  if (!queue || queue.items.length === 0) {
+    return;
+  }
+  if (!ok && !forced.has(sessionId)) {
+    queue.paused = true;
+    announceQueue(sessionId);
+    return;
+  }
+  forced.delete(sessionId);
+  queue.paused = false;
+  const [next, ...rest] = queue.items;
+  queue.items = rest;
+  announceQueue(sessionId);
+  startTurn(sessionId, next!.text, next!.images);
+}
+
+// What the providers last said about their limits. Claude and Codex report them; OpenCode and
+// the demo provider say nothing, so they show no meter.
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+const usageReports: Record<string, unknown> = {
+  claude: {
+    provider: "claude",
+    profile: null,
+    plan: null,
+    updatedAt: nowSeconds() - 120,
+    windows: [
+      { kind: "five_hour", usedPercent: 6, resetsAt: nowSeconds() + 3 * 3600 + 12 * 60 },
+      { kind: "weekly", usedPercent: 76, resetsAt: nowSeconds() + 2 * 86400 + 4 * 3600 },
+    ],
+  },
+  codex: {
+    provider: "codex",
+    profile: null,
+    plan: "pro",
+    updatedAt: nowSeconds() - 600,
+    windows: [
+      { kind: "five_hour", usedPercent: 12, resetsAt: nowSeconds() + 4 * 3600 },
+      { kind: "weekly", usedPercent: 64, resetsAt: nowSeconds() + 5 * 86400 },
+    ],
+  },
+};
+
+let profileCounter = 0;
+let profileBook: { profiles: { id: string; provider: string; name: string; color: string; command: string }[]; active: Record<string, string> } =
+  mode === "profiles"
+    ? {
+        profiles: [
+          { id: "pw", provider: "claude", name: "Work", color: "#3b82f6", command: "CLAUDE_CONFIG_DIR=~/.claude-work claude" },
+          { id: "pp", provider: "claude", name: "Personal", color: "#ec4899", command: "CLAUDE_CONFIG_DIR=~/.claude-personal" },
+        ],
+        active: { claude: "pw" },
+      }
+    : { profiles: [], active: {} };
+
+// Like the app, each agent event goes out with its number. `?dup=1` delivers every event twice,
+// as a listener left over from a hot reload would; `?noseq=1` leaves the numbers off, as before.
+let agentSeq = 0;
 function emit(event: string, payload: unknown) {
-  for (const handler of listeners[event] ?? []) {
-    callbacks.get(handler)?.({ event, id: handler, payload });
+  const query = new URLSearchParams(window.location.search);
+  const body =
+    event === "agent://event" && !query.has("noseq") ? { ...(payload as object), seq: (agentSeq += 1) } : payload;
+  const times = query.has("dup") ? 2 : 1;
+  for (let round = 0; round < times; round += 1) {
+    for (const handler of listeners[event] ?? []) {
+      callbacks.get(handler)?.({ event, id: handler, payload: body });
+    }
   }
 }
 
@@ -108,6 +277,57 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "core_status": return "ready";
     case "agent_list_providers": return providers;
+    case "agent_usage": return Object.values(usageReports);
+    // Launch profiles: what the settings keep, with the checks the app would make.
+    case "profiles_list": return profileBook;
+    case "profile_save": {
+      const profile = args?.profile as { id: string; provider: string; name: string; color: string; command: string };
+      const name = profile.name.trim();
+      if (!name) throw "a profile needs a name";
+      if (!/^#[0-9a-fA-F]{6}$/.test(profile.color.trim())) throw "the colour is written as #rrggbb";
+      if (!profile.command.trim()) throw "a profile needs a command";
+      if (profileBook.profiles.some((other) => other.provider === profile.provider && other.id !== profile.id && other.name.toLowerCase() === name.toLowerCase())) throw `there is already a profile called ${name}`;
+      const kept = { ...profile, name, id: profile.id || `p${++profileCounter}` };
+      const at = profileBook.profiles.findIndex((other) => other.id === kept.id);
+      profileBook = { ...profileBook, profiles: at >= 0 ? profileBook.profiles.map((other, i) => (i === at ? kept : other)) : [...profileBook.profiles, kept] };
+      return profileBook;
+    }
+    case "profile_delete": {
+      const id = args?.id as string;
+      profileBook = { profiles: profileBook.profiles.filter((p) => p.id !== id), active: Object.fromEntries(Object.entries(profileBook.active).filter(([, v]) => v !== id)) };
+      return profileBook;
+    }
+    case "profile_set_active": {
+      const provider = args?.provider as string; const id = args?.id as string | null;
+      const active = { ...profileBook.active };
+      if (id) active[provider] = id; else delete active[provider];
+      profileBook = { ...profileBook, active };
+      return profileBook;
+    }
+    case "profile_check": {
+      const command = String(args?.command ?? "").trim();
+      const words = command.split(/\s+/).filter((w) => w && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      const settings = command.split(/\s+/).filter((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)).length;
+      const withSettings = settings === 0 ? "" : settings === 1 ? " with 1 setting" : ` with ${settings} settings`;
+      if (!command) return { ok: false, message: "a profile needs a command" };
+      if (words.length === 0) return { ok: true, message: `Starts the usual program${withSettings}.` };
+      if (/nowhere|missing/.test(words[0])) return { ok: false, message: `${words[0]} was not found.` };
+      return { ok: true, message: `Runs /usr/local/bin/${words[0].split("/").pop()}${withSettings}.` };
+    }
+    // Test hook: the agent streams text into its current message.
+    case "dev_agent_delta":
+      emit("agent://event", { type: "delta", sessionId: args?.sessionId, turnId: args?.turnId ?? "ts", role: "assistant", text: args?.text ?? "" });
+      return null;
+    // Test hook: a provider reports new limits (`windows` replaces the old ones).
+    case "dev_agent_usage": {
+      const provider = String(args?.provider);
+      const profile = (args?.profile as string | undefined) ?? null;
+      const slot = profile ? `${provider}:${profile}` : provider;
+      const report = { provider, profile, plan: null, ...(usageReports[slot] as object), ...(args?.report as object), updatedAt: nowSeconds() };
+      usageReports[slot] = report;
+      emit("agent://event", { type: "usage", usage: report });
+      return null;
+    }
     case "agent_get_snapshot": return chat;
     case "agent_get_options": {
       const target = snapshot.sessions.find((item) => item.id === args?.sessionId) ?? session;
@@ -210,19 +430,98 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "workspace_create_session":
     case "workspace_open_session":
     case "workspace_open_repository": return view();
+    case "workspace_delete_session": {
+      const index = snapshot.sessions.findIndex((item) => item.id === args?.sessionId);
+      if (index >= 0) {
+        snapshot.sessions.splice(index, 1);
+      }
+      if (snapshot.selected_session_id === args?.sessionId) {
+        snapshot.selected_session_id = null;
+      }
+      return view();
+    }
     case "plugin:event|listen": {
       const target = args as { event: string; handler: number } | undefined;
       if (target) {
         (listeners[target.event] ??= []).push(target.handler);
       }
-      return 1;
+      return target?.handler ?? 1;
+    }
+    case "plugin:event|unlisten": {
+      const target = args as { event: string; eventId: number } | undefined;
+      if (target && listeners[target.event]) {
+        listeners[target.event] = listeners[target.event]!.filter((handler) => handler !== target.eventId);
+      }
+      return null;
     }
     case "agent_prompt": {
       // A prompt starts the conversation: the user's message appears, as the real host reports it.
       const sessionId = (args?.sessionId as string) ?? "s1";
-      const turnId = `t${Date.now()}`;
-      emit("agent://event", { type: "delta", sessionId, turnId, role: "user", text: String(args?.text ?? "") });
-      return turnId;
+      const text = String(args?.text ?? "");
+      // `?latency=700` makes the app slow to take a message in, as it is when it has to look at
+      // git first; a message holding FAIL is refused after that time.
+      const wait = Number(new URLSearchParams(window.location.search).get("latency") ?? 0);
+      if (wait <= 0 && !text.includes("FAIL")) {
+        return startTurn(sessionId, text, (args?.images as Upload[] | undefined) ?? []);
+      }
+      return new Promise((resolve, reject) =>
+        setTimeout(() => {
+          if (text.includes("FAIL")) {
+            reject(new Error("the agent refused it"));
+          } else {
+            resolve(startTurn(sessionId, text, (args?.images as Upload[] | undefined) ?? []));
+          }
+        }, wait),
+      );
+    }
+    case "agent_attachment": {
+      const found = pictures.get(`${args?.sessionId}:${args?.id}`);
+      if (!found) {
+        throw new Error("image not found");
+      }
+      return found;
+    }
+    case "agent_cancel": {
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      if (turns.has(sessionId)) {
+        finishTurn(sessionId, false);
+      }
+      return null;
+    }
+    case "agent_queue": return queueOf((args?.sessionId as string) ?? "s1");
+    case "agent_enqueue": {
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      const queue = stateOf(sessionId);
+      queue.items.push({ id: `q${++queueCounter}`, text: String(args?.text ?? "").trim(), images: (args?.images as Upload[] | undefined) ?? [] });
+      announceQueue(sessionId);
+      if (!turns.has(sessionId) && !queue.paused) {
+        advanceQueue(sessionId, true);
+      }
+      return queueOf(sessionId);
+    }
+    case "agent_queue_remove": {
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      const queue = stateOf(sessionId);
+      queue.items = queue.items.filter((item) => item.id !== args?.id);
+      announceQueue(sessionId);
+      return queueOf(sessionId);
+    }
+    case "agent_queue_send_now": {
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      const queue = stateOf(sessionId);
+      const picked = queue.items.find((item) => item.id === args?.id);
+      if (picked) {
+        queue.items = [picked, ...queue.items.filter((item) => item !== picked)];
+        queue.paused = false;
+        forced.add(sessionId);
+        announceQueue(sessionId);
+        if (turns.has(sessionId)) {
+          finishTurn(sessionId, false);
+        } else {
+          advanceQueue(sessionId, true);
+        }
+      }
+      return queueOf(sessionId);
     }
     case "terminal_ensure": return { sessionId: "p1", created: true };
     default: {

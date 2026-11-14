@@ -10,16 +10,20 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use super::backend::{AgentBackend, BackendContext, BackendEvent, BackendSession, SubagentRoute};
+use super::backend::{
+    AgentBackend, BackendContext, BackendEvent, BackendSession, ImageFile, Launch, SubagentRoute,
+};
+use super::process::resolve_program;
 use super::registry::ProviderRegistry;
-use super::{guide, handoff};
+use super::{attachments, guide, handoff};
 use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSession, ChatSnapshot, Error, ErrorCode,
-    PendingPermission, PermissionDecision, Result, SessionStatus, SubagentRecord, SubagentStatus,
-    SubagentUpdate, ToolCallRecord, ToolStatus,
+    ImageAttachment, ImageUpload, PROFILES_KEY, PendingPermission, PermissionDecision, Profiles,
+    ProviderUsage, Result, SessionStatus, SubagentRecord, SubagentStatus, SubagentUpdate,
+    ToolCallRecord, ToolStatus, UsageWindow, parse_command,
 };
 use crate::ports::{AgentRuntime, ApiGateway, EventSink, InsightStore, Store};
 
@@ -40,6 +44,9 @@ struct Live {
     introduced: bool,
     /// The local API token this process runs with, revoked when the process is retired.
     api_token: Option<String>,
+    /// The launch profile this process was started with (`None`: the default way). When the
+    /// active profile changes, the next message restarts the process under the new one.
+    profile: Option<String>,
 }
 
 /// A conversation that is shown as a subagent of another chat.
@@ -58,12 +65,17 @@ struct Inner {
     links: Mutex<HashMap<SessionId, Link>>,
     /// Where the record of a chat is written when its harness is switched.
     handoff_dir: Mutex<Option<PathBuf>>,
+    /// Where the pictures attached to messages are kept.
+    attachment_dir: Mutex<Option<PathBuf>>,
     /// Chats whose next prompt must tell the new agent about the record (the file's path).
     handoffs: Mutex<HashMap<SessionId, PathBuf>>,
     /// The page of the guide that a chat's agent is pointed at, when there is one.
     guide: Mutex<Option<PathBuf>>,
     /// Issues the local API tokens that agent processes start with.
     api: Mutex<Option<Arc<dyn ApiGateway>>>,
+    /// The latest report of each provider's limits. Also kept in the preferences, so the last
+    /// known state is there when the app opens, before any agent has spoken.
+    usage: Mutex<HashMap<(ProviderKind, Option<String>), ProviderUsage>>,
 }
 
 pub struct AgentHost {
@@ -81,9 +93,11 @@ impl AgentHost {
                 sessions: Mutex::new(HashMap::new()),
                 links: Mutex::new(HashMap::new()),
                 handoff_dir: Mutex::new(None),
+                attachment_dir: Mutex::new(None),
                 handoffs: Mutex::new(HashMap::new()),
                 guide: Mutex::new(None),
                 api: Mutex::new(None),
+                usage: Mutex::new(HashMap::new()),
             }),
             backends: HashMap::new(),
         }
@@ -102,6 +116,11 @@ impl AgentHost {
     }
 
     /// Where to write the conversation when the user switches a chat to another harness.
+    pub fn with_attachment_dir(self, dir: PathBuf) -> Self {
+        *self.inner.attachment_dir.lock() = Some(dir);
+        self
+    }
+
     pub fn with_handoff_dir(self, dir: PathBuf) -> Self {
         *self.inner.handoff_dir.lock() = Some(dir);
         self
@@ -241,6 +260,148 @@ impl Inner {
         .then_some(child)
     }
 
+    /// The profiles as stored now.
+    fn profiles(&self) -> Profiles {
+        Profiles::parse(
+            self.store
+                .get_preference(PROFILES_KEY)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    }
+
+    /// How the active profile of `provider` starts it: its id and what it changes. Nothing
+    /// changes for the default. A profile whose program cannot be found is an error that says
+    /// which, so the chat shows why it did not start.
+    fn launch_for(&self, provider: ProviderKind) -> Result<(Option<String>, Option<Launch>)> {
+        let profiles = self.profiles();
+        let Some(profile) = profiles.active_for(provider) else {
+            return Ok((None, None));
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let command = parse_command(&profile.command, home.as_deref()).map_err(|error| {
+            Error::new(
+                ErrorCode::Invalid,
+                format!("profile {}: {}", profile.name, error.message),
+            )
+        })?;
+        let program = match command.program {
+            Some(word) => Some(resolve_program(&word).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unsupported,
+                    format!("profile {}: {word} was not found", profile.name),
+                )
+            })?),
+            None => None,
+        };
+        Ok((
+            Some(profile.id.clone()),
+            Some(Launch {
+                program,
+                args: command.args,
+                env: command.env,
+            }),
+        ))
+    }
+
+    /// The preference that keeps the last reported limits of a provider's account: the default
+    /// one, or the one a profile starts.
+    fn usage_key(provider: ProviderKind, profile: Option<&str>) -> String {
+        match profile {
+            Some(id) => format!("usage:{}:{id}", provider.as_str()),
+            None => format!("usage:{}", provider.as_str()),
+        }
+    }
+
+    /// A provider reported where its limits stand: remember it, keep it, tell the window. The
+    /// limits are the account's, so they are kept per profile.
+    fn record_usage(
+        &self,
+        provider: ProviderKind,
+        profile: Option<String>,
+        plan: Option<String>,
+        windows: Vec<UsageWindow>,
+    ) {
+        if windows.is_empty() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let slot = (provider, profile.clone());
+        let usage = {
+            let mut all = self.usage.lock();
+            let previous = all
+                .get(&slot)
+                .cloned()
+                .or_else(|| self.stored_usage(provider, profile.as_deref()));
+            let usage = ProviderUsage::merged(
+                provider,
+                profile.clone(),
+                previous.as_ref(),
+                plan,
+                windows,
+                now,
+            );
+            all.insert(slot, usage.clone());
+            usage
+        };
+        if let Ok(json) = serde_json::to_string(&usage) {
+            let key = Self::usage_key(provider, profile.as_deref());
+            if let Err(error) = self.store.set_preference(&key, &json) {
+                eprintln!(
+                    "ataraxia: could not keep the limits of {}: {error}",
+                    provider.as_str()
+                );
+            }
+        }
+        self.sink.emit_agent(AgentEvent::Usage { usage });
+    }
+
+    fn stored_usage(&self, provider: ProviderKind, profile: Option<&str>) -> Option<ProviderUsage> {
+        let json = self
+            .store
+            .get_preference(&Self::usage_key(provider, profile))
+            .ok()??;
+        serde_json::from_str::<ProviderUsage>(&json)
+            .ok()
+            .filter(|usage| usage.provider == provider && usage.profile.as_deref() == profile)
+    }
+
+    /// Every account that has reported its limits, now or in an earlier run: each provider's
+    /// default way of starting and each of its profiles.
+    fn usage_all(&self) -> Vec<ProviderUsage> {
+        let profiles = self.profiles();
+        let mut all = self.usage.lock();
+        let mut out = Vec::new();
+        for provider in [
+            ProviderKind::Claude,
+            ProviderKind::Codex,
+            ProviderKind::OpenCode,
+            ProviderKind::Fake,
+        ] {
+            let accounts = std::iter::once(None).chain(
+                profiles
+                    .profiles
+                    .iter()
+                    .filter(|profile| profile.provider == provider)
+                    .map(|profile| Some(profile.id.clone())),
+            );
+            for profile in accounts {
+                let slot = (provider, profile.clone());
+                if let Some(usage) = all.get(&slot).cloned().or_else(|| {
+                    let stored = self.stored_usage(provider, profile.as_deref())?;
+                    all.insert(slot.clone(), stored.clone());
+                    Some(stored)
+                }) {
+                    out.push(usage);
+                }
+            }
+        }
+        out
+    }
+
     fn handle(&self, session_id: SessionId, event: BackendEvent) {
         let mirrored = self.mirrored(session_id, &event);
         self.handle_event(session_id, event);
@@ -272,6 +433,7 @@ impl Inner {
                     turn_id,
                     role: ChatRole::Assistant,
                     text,
+                    images: Vec::new(),
                 });
             }
             BackendEvent::Tool {
@@ -401,6 +563,8 @@ impl Inner {
                 });
                 self.publish_status(session_id, SessionStatus::Ready);
             }
+            // Taken before a chat sees events (see `start_session`).
+            BackendEvent::Usage { .. } => {}
             BackendEvent::TurnStarted { turn_id } => {
                 if live.active_turn.is_none() {
                     live.active_turn = Some(turn_id);
@@ -447,6 +611,26 @@ impl Inner {
     }
 }
 
+/// The user's own message, with the pictures that went with it.
+fn append_user_message(
+    transcript: &mut Vec<ChatItem>,
+    turn_id: TurnId,
+    text: &str,
+    images: Vec<ImageAttachment>,
+) {
+    append_text(transcript, ChatRole::User, turn_id, text);
+    if let Some(ChatItem::Message(last)) = transcript.last_mut() {
+        last.images = images;
+    }
+}
+
+fn attachments_of(images: &[attachments::StoredImage]) -> Vec<ImageAttachment> {
+    images
+        .iter()
+        .map(|image| image.attachment.clone())
+        .collect()
+}
+
 fn append_text(transcript: &mut Vec<ChatItem>, role: ChatRole, turn_id: TurnId, text: &str) {
     if let Some(ChatItem::Message(last)) = transcript.last_mut() {
         if last.role == role && last.turn_id == Some(turn_id) {
@@ -459,6 +643,7 @@ fn append_text(transcript: &mut Vec<ChatItem>, role: ChatRole, turn_id: TurnId, 
         role,
         text: text.to_string(),
         turn_id: Some(turn_id),
+        images: Vec::new(),
     }));
 }
 
@@ -499,6 +684,7 @@ fn apply_subagent(
                 role: ChatRole::User,
                 text: text.clone(),
                 turn_id: None,
+                images: Vec::new(),
             }));
         }
         SubagentUpdate::Delta { text } => {
@@ -513,6 +699,7 @@ fn apply_subagent(
                 role: ChatRole::Assistant,
                 text: text.clone(),
                 turn_id: None,
+                images: Vec::new(),
             }));
         }
         SubagentUpdate::Tool {
@@ -670,6 +857,123 @@ fn clean_agent(agent: Option<String>) -> Result<Option<String>> {
 }
 
 impl AgentHost {
+    /// Checks and keeps the pictures of a message; with none, nothing is touched.
+    fn store_images(
+        &self,
+        session_id: &SessionId,
+        uploads: &[ImageUpload],
+    ) -> Result<Vec<attachments::StoredImage>> {
+        if uploads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dir = self
+            .inner
+            .attachment_dir
+            .lock()
+            .clone()
+            .ok_or_else(|| Error::new(ErrorCode::Invalid, "images cannot be attached here"))?;
+        attachments::store(&dir, session_id, uploads)
+    }
+
+    fn send_prompt(
+        &self,
+        session_id: &SessionId,
+        text: &str,
+        uploads: Vec<ImageUpload>,
+    ) -> Result<TurnId> {
+        let text = text.trim();
+        if text.is_empty() && uploads.is_empty() {
+            return Err(Error::new(ErrorCode::Invalid, "prompt is empty"));
+        }
+        let images = self.store_images(session_id, &uploads)?;
+        let turn_id = TurnId::new();
+        self.follow_profile(session_id)?;
+        self.revive_if_dead(session_id)?;
+        let guide_index = self.inner.guide.lock().clone();
+        let (backend, introduce) = {
+            let mut sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
+            if live.active_turn.is_some() {
+                return Err(Error::new(ErrorCode::Invalid, "a turn is already running"));
+            }
+            // The first message of each agent process says what Ataraxia is; later ones do not.
+            let introduce = live.chat && !live.introduced && guide_index.is_some();
+            if introduce {
+                live.introduced = true;
+            }
+            live.active_turn = Some(turn_id);
+            live.status = SessionStatus::Working;
+            append_user_message(&mut live.transcript, turn_id, text, attachments_of(&images));
+            self.inner.persist(*session_id, &live.transcript);
+            self.inner.sink.emit_agent(AgentEvent::Delta {
+                session_id: *session_id,
+                turn_id,
+                role: ChatRole::User,
+                text: text.to_string(),
+                images: attachments_of(&images),
+            });
+            self.inner
+                .publish_status(*session_id, SessionStatus::Working);
+            (Arc::clone(&live.backend), introduce)
+        };
+
+        // The first message after a switch also tells the new agent where the old conversation is.
+        let handoff = self.inner.handoffs.lock().remove(session_id);
+        let mut sent = String::new();
+        if let (true, Some(index)) = (introduce, &guide_index) {
+            sent.push_str(&guide::preamble(index));
+            sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
+        }
+        if let Some(path) = &handoff {
+            sent.push_str(&handoff::preamble(path));
+        }
+        sent.push_str(text);
+        let files: Vec<ImageFile> = images
+            .iter()
+            .map(|image| ImageFile {
+                path: image.path.clone(),
+                mime: image.attachment.mime.clone(),
+                name: image.attachment.name.clone(),
+            })
+            .collect();
+        let delivered = if files.is_empty() {
+            backend.prompt(turn_id, &sent)
+        } else {
+            backend.prompt_with_images(turn_id, &sent, &files)
+        };
+        if let Err(error) = delivered {
+            if let Some(path) = handoff {
+                self.inner.handoffs.lock().insert(*session_id, path);
+            }
+            if introduce {
+                if let Some(live) = self.inner.sessions.lock().get_mut(session_id) {
+                    live.introduced = false;
+                }
+            }
+            self.inner.handle(
+                *session_id,
+                BackendEvent::Error {
+                    message: error.message.clone(),
+                },
+            );
+            return Err(error);
+        }
+        let link = self.inner.links.lock().get(session_id).cloned();
+        if let Some(link) = link {
+            self.inner.handle_event(
+                link.parent,
+                BackendEvent::Subagent {
+                    id: session_id.0.to_string(),
+                    title: link.title,
+                    update: SubagentUpdate::Started,
+                },
+            );
+        }
+        Ok(turn_id)
+    }
+
     fn ensure_idle(&self, session_id: &SessionId, what: &str) -> Result<()> {
         let busy = self
             .inner
@@ -755,6 +1059,32 @@ impl AgentHost {
             .collect()
     }
 
+    /// The active profile of a chat's harness changed since its process started (the person
+    /// switched account): before the next message goes, the process is restarted under the new
+    /// one. The conversation carries on; the new agent is pointed at a record of it, as when the
+    /// harness itself is switched. A turn in progress is never interrupted, and a profile that
+    /// cannot start leaves the running process alone and fails the message with the reason.
+    fn follow_profile(&self, session_id: &SessionId) -> Result<()> {
+        let running_under = {
+            let sessions = self.inner.sessions.lock();
+            match sessions.get(session_id) {
+                Some(live) if live.active_turn.is_none() => live.profile.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let (wanted, _) = self.inner.launch_for(session.provider)?;
+        if wanted == running_under {
+            return Ok(());
+        }
+        self.write_handoff(session_id, session.provider);
+        self.restart(session_id, &session)
+    }
+
     fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
         let dead = self
             .inner
@@ -781,8 +1111,18 @@ impl AgentRuntime for AgentHost {
             .filter_map(|mut item| {
                 let backend = self.backends.get(&item.kind)?;
                 if let Err(reason) = backend.availability() {
-                    item.available = false;
-                    item.detail = Some(reason);
+                    // A profile that names its own program can start the harness without the
+                    // usual one being installed.
+                    let by_profile = self
+                        .inner
+                        .launch_for(item.kind)
+                        .ok()
+                        .and_then(|(_, launch)| launch)
+                        .is_some_and(|launch| launch.program.is_some());
+                    if !by_profile {
+                        item.available = false;
+                        item.detail = Some(reason);
+                    }
                 }
                 Some(item)
             })
@@ -791,6 +1131,10 @@ impl AgentRuntime for AgentHost {
 
     fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix> {
         ProviderRegistry::capabilities_for(provider)
+    }
+
+    fn usage(&self) -> Vec<ProviderUsage> {
+        self.inner.usage_all()
     }
 
     fn start_session(&self, session: &ChatSession) -> Result<()> {
@@ -856,9 +1200,20 @@ impl AgentRuntime for AgentHost {
 
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
         let session_id = session.id;
+        let provider = session.provider;
+        // The profile is read once, here: this process runs under it until it is restarted.
+        let (profile, launch) = self.inner.launch_for(provider)?;
+        let usage_profile = profile.clone();
         let emit = Arc::new(move |event: BackendEvent| {
-            if let Some(inner) = weak.upgrade() {
-                inner.handle(session_id, event);
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            match event {
+                // About the account, not about this chat.
+                BackendEvent::Usage { plan, windows } => {
+                    inner.record_usage(provider, usage_profile.clone(), plan, windows)
+                }
+                event => inner.handle(session_id, event),
             }
         });
         // Investigation sessions only read; everything else may write.
@@ -888,6 +1243,7 @@ impl AgentRuntime for AgentHost {
             effort: session.effort.clone(),
             agent: session.agent.clone(),
             api,
+            launch,
             emit,
         }) {
             Ok(started) => started,
@@ -912,6 +1268,7 @@ impl AgentRuntime for AgentHost {
                 chat: session.kind == crate::domain::SessionKind::Chat,
                 introduced: false,
                 api_token,
+                profile,
             },
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
@@ -1180,81 +1537,32 @@ impl AgentRuntime for AgentHost {
     }
 
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(Error::new(ErrorCode::Invalid, "prompt is empty"));
-        }
-        let turn_id = TurnId::new();
-        self.revive_if_dead(session_id)?;
-        let guide_index = self.inner.guide.lock().clone();
-        let (backend, introduce) = {
-            let mut sessions = self.inner.sessions.lock();
-            let live = sessions
-                .get_mut(session_id)
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
-            if live.active_turn.is_some() {
-                return Err(Error::new(ErrorCode::Invalid, "a turn is already running"));
-            }
-            // The first message of each agent process says what Ataraxia is; later ones do not.
-            let introduce = live.chat && !live.introduced && guide_index.is_some();
-            if introduce {
-                live.introduced = true;
-            }
-            live.active_turn = Some(turn_id);
-            live.status = SessionStatus::Working;
-            append_text(&mut live.transcript, ChatRole::User, turn_id, text);
-            self.inner.persist(*session_id, &live.transcript);
-            self.inner.sink.emit_agent(AgentEvent::Delta {
-                session_id: *session_id,
-                turn_id,
-                role: ChatRole::User,
-                text: text.to_string(),
-            });
-            self.inner
-                .publish_status(*session_id, SessionStatus::Working);
-            (Arc::clone(&live.backend), introduce)
-        };
+        self.send_prompt(session_id, text, Vec::new())
+    }
 
-        // The first message after a switch also tells the new agent where the old conversation is.
-        let handoff = self.inner.handoffs.lock().remove(session_id);
-        let mut sent = String::new();
-        if let (true, Some(index)) = (introduce, &guide_index) {
-            sent.push_str(&guide::preamble(index));
-            sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
+    fn prompt_with_images(
+        &self,
+        session_id: &SessionId,
+        text: &str,
+        images: Vec<ImageUpload>,
+    ) -> Result<TurnId> {
+        self.send_prompt(session_id, text, images)
+    }
+
+    fn attachment(&self, session_id: &SessionId, id: &str) -> Result<String> {
+        let dir = self
+            .inner
+            .attachment_dir
+            .lock()
+            .clone()
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "image not found"))?;
+        attachments::data_url(&dir, session_id, id)
+    }
+
+    fn forget_session(&self, session_id: &SessionId) {
+        if let Some(dir) = self.inner.attachment_dir.lock().clone() {
+            attachments::forget(&dir, session_id);
         }
-        if let Some(path) = &handoff {
-            sent.push_str(&handoff::preamble(path));
-        }
-        sent.push_str(text);
-        if let Err(error) = backend.prompt(turn_id, &sent) {
-            if let Some(path) = handoff {
-                self.inner.handoffs.lock().insert(*session_id, path);
-            }
-            if introduce {
-                if let Some(live) = self.inner.sessions.lock().get_mut(session_id) {
-                    live.introduced = false;
-                }
-            }
-            self.inner.handle(
-                *session_id,
-                BackendEvent::Error {
-                    message: error.message.clone(),
-                },
-            );
-            return Err(error);
-        }
-        let link = self.inner.links.lock().get(session_id).cloned();
-        if let Some(link) = link {
-            self.inner.handle_event(
-                link.parent,
-                BackendEvent::Subagent {
-                    id: session_id.0.to_string(),
-                    title: link.title,
-                    update: SubagentUpdate::Started,
-                },
-            );
-        }
-        Ok(turn_id)
     }
 
     fn cancel(&self, session_id: &SessionId, _turn_id: Option<&TurnId>) -> Result<()> {
@@ -1300,6 +1608,15 @@ impl AgentRuntime for AgentHost {
             Arc::clone(&live.backend)
         };
         backend.resolve_permission(&decision)
+    }
+
+    fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {
+        Ok(self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .map_or(SessionStatus::Idle, |live| live.status))
     }
 
     fn snapshot(&self, session_id: &SessionId) -> Result<ChatSnapshot> {
@@ -1548,6 +1865,352 @@ mod tests {
         let mut revoked = gateway.revoked.lock().clone();
         revoked.sort();
         assert_eq!(revoked, vec!["token-0", "token-1", "token-2"]);
+    }
+
+    #[test]
+    fn what_a_provider_reports_about_its_limits_is_kept_told_and_remembered() {
+        use crate::domain::UsageWindowKind;
+        struct Listens {
+            inner: FakeBackend,
+            emit: Arc<Mutex<Option<super::super::backend::Emitter>>>,
+        }
+        impl AgentBackend for Listens {
+            fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+                *self.emit.lock() = Some(Arc::clone(&ctx.emit));
+                self.inner.start(ctx)
+            }
+        }
+        let emit = Arc::new(Mutex::new(None));
+        let h = harness_with_backend(Arc::new(Listens {
+            inner: FakeBackend::new(Duration::ZERO),
+            emit: Arc::clone(&emit),
+        }));
+        let report = |plan: Option<&str>, windows: Vec<UsageWindow>| {
+            let emit = emit.lock().clone().expect("started");
+            emit(BackendEvent::Usage {
+                plan: plan.map(str::to_string),
+                windows,
+            });
+        };
+        assert!(h.host.usage().is_empty());
+
+        // A report with nothing in it is not a report.
+        report(None, Vec::new());
+        assert!(h.host.usage().is_empty());
+
+        report(
+            Some("pro"),
+            vec![UsageWindow::new(UsageWindowKind::Weekly, 40.0, Some(9))],
+        );
+        // A later report of the other window keeps the first.
+        report(
+            None,
+            vec![UsageWindow::new(UsageWindowKind::FiveHour, 5.0, Some(3))],
+        );
+        let usage = h.host.usage();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].provider, ProviderKind::Fake);
+        assert_eq!(usage[0].plan.as_deref(), Some("pro"));
+        assert_eq!(
+            usage[0]
+                .windows
+                .iter()
+                .map(|w| (w.kind, w.used_percent))
+                .collect::<Vec<_>>(),
+            vec![
+                (UsageWindowKind::FiveHour, 5),
+                (UsageWindowKind::Weekly, 40)
+            ]
+        );
+        // Every report reached the window, none of them as a message of the chat.
+        let told = h
+            .sink
+            .snapshot()
+            .into_iter()
+            .filter(|event| matches!(event, AgentEvent::Usage { .. }))
+            .count();
+        assert_eq!(told, 2);
+        assert!(
+            h.host
+                .snapshot(&h.session.id)
+                .expect("snapshot")
+                .items
+                .is_empty()
+        );
+
+        // The next run of the app starts with what was last reported.
+        let next = AgentHost::new(h.store.clone(), Arc::new(RecordingSink::default()));
+        assert_eq!(next.usage(), usage);
+    }
+
+    /// Starts a stand-in harness and remembers how each start was launched.
+    struct Launches {
+        inner: FakeBackend,
+        seen: Arc<Mutex<Vec<Option<Launch>>>>,
+        emit: Arc<Mutex<Option<super::super::backend::Emitter>>>,
+    }
+
+    impl AgentBackend for Launches {
+        fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+            self.seen.lock().push(ctx.launch.clone());
+            *self.emit.lock() = Some(Arc::clone(&ctx.emit));
+            self.inner.start(ctx)
+        }
+    }
+
+    fn store_profiles(h: &Harness, active: Option<&str>, command: &str) {
+        let active = match active {
+            Some(id) => format!(r#","active":{{"fake":"{id}"}}"#),
+            None => String::new(),
+        };
+        let json = format!(
+            r##"{{"profiles":[{{"id":"work","provider":"fake","name":"Work","color":"#3b82f6","command":{command:?}}}]{active}}}"##
+        );
+        h.store.set_preference(PROFILES_KEY, &json).expect("store");
+    }
+
+    #[test]
+    fn a_chat_follows_the_active_profile_and_restarts_under_a_new_one_on_the_next_message() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let emit = Arc::new(Mutex::new(None));
+        let mut h = harness_with_backend(Arc::new(Launches {
+            inner: FakeBackend::new(Duration::ZERO),
+            seen: Arc::clone(&seen),
+            emit: Arc::clone(&emit),
+        }));
+        let dir = std::env::temp_dir().join(format!("ataraxia-profile-{}", Uuid::new_v4()));
+        *h.host.inner.handoff_dir.lock() = Some(dir.clone());
+        let finish_turn = |h: &Harness| {
+            h.sink
+                .wait_for("permission", |events| pending_request(events).is_some());
+            h.host.cancel(&h.session.id, None).expect("cancel");
+            h.sink
+                .wait_for("turn done", |events| turn_done(events).is_some());
+        };
+
+        // With no profile chosen the harness starts the default way.
+        assert_eq!(seen.lock().clone(), vec![None]);
+        h.host.prompt(&h.session.id, "first").expect("prompt");
+        finish_turn(&h);
+        assert_eq!(seen.lock().len(), 1, "the same process answers again");
+
+        // The person switches account: the next message goes out under the new profile.
+        store_profiles(&h, Some("work"), "ACCOUNT=work sh -x");
+        h.sink.events.lock().clear();
+        h.host.prompt(&h.session.id, "second").expect("prompt");
+        let launches = seen.lock().clone();
+        assert_eq!(launches.len(), 2);
+        let launch = launches[1].clone().expect("a profile launch");
+        assert!(launch.program.is_some_and(|path| path.ends_with("sh")));
+        assert_eq!(launch.args, vec!["-x"]);
+        assert_eq!(
+            launch.env,
+            vec![("ACCOUNT".to_string(), "work".to_string())]
+        );
+        // What was said before is still on screen, and the new agent is pointed at a record.
+        let items = h.host.snapshot(&h.session.id).expect("snapshot").items;
+        assert!(items.iter().any(|item| matches!(
+            item, ChatItem::Message(m) if m.text == "first"
+        )));
+        let record = std::fs::read_dir(&dir)
+            .expect("the record of the conversation was written")
+            .count();
+        assert_eq!(record, 1);
+        finish_turn(&h);
+
+        // Limits reported now are the account's, not the default one's.
+        let report = emit.lock().clone().expect("started");
+        report(BackendEvent::Usage {
+            plan: None,
+            windows: vec![UsageWindow::new(
+                crate::domain::UsageWindowKind::Weekly,
+                30.0,
+                Some(9),
+            )],
+        });
+        let usage = h.host.usage();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].profile.as_deref(), Some("work"));
+
+        // A profile that cannot start fails the message with the reason and leaves the process
+        // that is running alone.
+        store_profiles(&h, Some("work"), "/nowhere/at/all --x");
+        let launched = seen.lock().len();
+        let error = h
+            .host
+            .prompt(&h.session.id, "third")
+            .expect_err("the program is missing");
+        assert!(error.message.contains("profile Work"), "{}", error.message);
+        assert!(error.message.contains("was not found"), "{}", error.message);
+        assert_eq!(seen.lock().len(), launched);
+        assert!(
+            h.host
+                .inner
+                .sessions
+                .lock()
+                .get(&h.session.id)
+                .is_some_and(|live| live.backend.is_alive())
+        );
+
+        // Back to the default.
+        store_profiles(&h, None, "sh");
+        h.host.prompt(&h.session.id, "fourth").expect("prompt");
+        assert_eq!(seen.lock().last().cloned(), Some(None));
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = &mut h;
+    }
+
+    #[test]
+    fn a_profile_that_names_its_own_program_lets_a_harness_that_is_not_installed_count_as_available()
+     {
+        let h = harness();
+        // The demo backend is always available; ask about a provider whose usual program is
+        // missing through the same rule the listing uses.
+        store_profiles(&h, Some("work"), "ACCOUNT=work sh");
+        let (id, launch) = h.host.inner.launch_for(ProviderKind::Fake).expect("launch");
+        assert_eq!(id.as_deref(), Some("work"));
+        assert!(launch.expect("launch").program.is_some());
+        // Only settings: nothing replaces the usual program.
+        store_profiles(&h, Some("work"), "ACCOUNT=work");
+        let (_, launch) = h.host.inner.launch_for(ProviderKind::Fake).expect("launch");
+        assert!(launch.expect("launch").program.is_none());
+    }
+
+    /// Through the whole host, with a real CLI: the text sent to the window is the text of the
+    /// reply, once. Needs the CLI installed and logged in (`cargo test -- --ignored`).
+    fn the_window_is_sent_the_reply_once(backend: Arc<dyn AgentBackend>) {
+        // The harness's worktree is a made-up path; a real process needs a folder to start in.
+        std::fs::create_dir_all("/tmp/repo").expect("a folder to run in");
+        let h = harness_with_backend(backend);
+        h.host
+            .prompt(
+                &h.session.id,
+                "Reply with exactly these words and nothing else: alpha bravo charlie delta echo foxtrot golf hotel",
+            )
+            .expect("prompt");
+        h.sink
+            .wait_for("the turn to end", |events| turn_done(events).is_some());
+        let events = h.sink.snapshot();
+        let pieces: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Delta {
+                    role: ChatRole::Assistant,
+                    text,
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let sent = pieces.concat();
+        let stored: String = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::Message(message) if message.role == ChatRole::Assistant => {
+                    Some(message.text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent.matches("alpha").count(),
+            1,
+            "sent more than once: {pieces:?}"
+        );
+        assert_eq!(
+            sent, stored,
+            "what the window was sent is not what was stored: {pieces:?}"
+        );
+    }
+
+    /// A turn that says something, runs a tool and says something more, the way a real one does.
+    fn a_turn_with_a_tool_is_sent_once(backend: Arc<dyn AgentBackend>) {
+        std::fs::create_dir_all("/tmp/repo").expect("a folder to run in");
+        let h = harness_with_backend(backend);
+        h.host
+            .prompt(
+                &h.session.id,
+                "First write one sentence saying what you are about to do. Then run the shell command `echo hello`. Then write one more sentence saying it is done.",
+            )
+            .expect("prompt");
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            let events = h.sink.snapshot();
+            if turn_done(&events).is_some() || std::time::Instant::now() > deadline {
+                break;
+            }
+            if let Some(request_id) = pending_request(&events) {
+                h.host
+                    .resolve_permission(
+                        &h.session.id,
+                        PermissionDecision {
+                            request_id,
+                            allow: true,
+                        },
+                    )
+                    .ok();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let events = h.sink.snapshot();
+        let pieces: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Delta {
+                    role: ChatRole::Assistant,
+                    text,
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let sent = pieces.concat();
+        let stored: String = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::Message(message) if message.role == ChatRole::Assistant => {
+                    Some(message.text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!sent.is_empty(), "no reply at all: {events:?}");
+        assert_eq!(
+            sent, stored,
+            "what the window was sent is not what was stored: {pieces:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs the codex CLI and a login"]
+    fn a_turn_with_a_tool_is_sent_once_with_codex() {
+        a_turn_with_a_tool_is_sent_once(Arc::new(super::super::CodexBackend::new()));
+    }
+
+    #[test]
+    #[ignore = "needs the claude CLI and a login"]
+    fn a_turn_with_a_tool_is_sent_once_with_claude() {
+        a_turn_with_a_tool_is_sent_once(Arc::new(super::super::ClaudeBackend::new()));
+    }
+
+    #[test]
+    #[ignore = "needs the claude CLI and a login"]
+    fn the_text_sent_to_the_window_is_the_reply_once_with_claude() {
+        the_window_is_sent_the_reply_once(Arc::new(super::super::ClaudeBackend::new()));
+    }
+
+    #[test]
+    #[ignore = "needs the codex CLI and a login"]
+    fn the_text_sent_to_the_window_is_the_reply_once_with_codex() {
+        the_window_is_sent_the_reply_once(Arc::new(super::super::CodexBackend::new()));
     }
 
     #[test]

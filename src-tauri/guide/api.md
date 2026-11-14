@@ -87,7 +87,7 @@ Answers 201 with the decision:
 {"id":"6f1c1c0e-8d1e-4a43-9e0b-2f5a3f0c9a11","title":"Tokens are stored hashed","state":"pending","opened_by":"agent"}
 ```
 
-If nothing has changed in this chat yet there is no checkpoint or no review queue, and the answer is 404 with a message that says so.
+A decision is about the conversation, not about a diff: it is recorded whether or not the chat has changed any code. The review endpoints below are different, because they work on the review queue of a change, and answer 400 when the chat has changed nothing yet.
 
 ### POST /v1/decisions/{decision_id}/messages
 
@@ -153,7 +153,7 @@ Draws a diagram in the Flow tab. See `flow.md` for how to make it hold up.
 | `edges` | array | `{"source": node id, "target": node id, "label": string}`; `source` and `target` required |
 | `name` | string | what the diagram shows, in a few words |
 | `summary` | string | one or two sentences |
-| `checkpoint_id` | string | defaults to the newest checkpoint of this chat |
+| `checkpoint_id` | string | rarely needed; a diagram needs no code changes in the chat |
 
 Answers 201:
 

@@ -14,8 +14,8 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
-    truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, Launch, SubagentRoute,
+    api_env, compose_env, profile_args, profile_program, truncate_output,
 };
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
@@ -52,14 +52,21 @@ impl OpenCodeBackend {
         }
     }
 
-    fn command(&self) -> std::result::Result<(PathBuf, Vec<String>), String> {
+    fn command(
+        &self,
+        launch: Option<&Launch>,
+    ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
-            Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| (program, vec!["acp".to_string()]))
-                .ok_or_else(|| {
-                    format!("opencode CLI not found. Install it or set {OVERRIDE_ENV} to its path.")
-                }),
+            Launcher::Resolve => {
+                profile_program(launch, || resolve_binary(BINARY_NAME, OVERRIDE_ENV))
+                    .map(|program| (program, profile_args(launch, vec!["acp".to_string()])))
+                    .ok_or_else(|| {
+                        format!(
+                            "opencode CLI not found. Install it or set {OVERRIDE_ENV} to its path."
+                        )
+                    })
+            }
         }
     }
 }
@@ -72,12 +79,12 @@ impl Default for OpenCodeBackend {
 
 impl AgentBackend for OpenCodeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command().map(|_| ())
+        self.command(None).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let (program, args) = self
-            .command()
+            .command(ctx.launch.as_ref())
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(AcpShared {
             config: Mutex::new(Vec::new()),
@@ -94,7 +101,10 @@ impl AgentBackend for OpenCodeBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: api_env(ctx.session_id, ctx.api.as_ref()),
+                env: compose_env(
+                    api_env(ctx.session_id, ctx.api.as_ref()),
+                    ctx.launch.as_ref(),
+                ),
                 env_remove: Vec::new(),
             },
             true,
@@ -1018,6 +1028,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = mock_backend()
             .start(BackendContext {
+                launch: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -1323,6 +1334,7 @@ mod tests {
         assert!(backend.availability().is_ok());
         let error = backend
             .start(BackendContext {
+                launch: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),

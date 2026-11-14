@@ -23,9 +23,9 @@ use crate::domain::ids::{CheckpointId, SessionId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     ArtifactId, ArtifactKind, CodeRef, Decision, DecisionId, DecisionKind, DecisionMessage,
-    DecisionState, Error, ErrorCode, Result,
+    DecisionState, Error, ErrorCode, InsightEvent, Result,
 };
-use crate::ports::{ApiAccess, ApiGateway, Database, Git};
+use crate::ports::{ApiAccess, ApiGateway, Database, Git, InsightSink};
 
 // ------------------------------------------------------------------ errors
 
@@ -329,11 +329,20 @@ fn not_found(message: &str) -> ApiError {
     ApiError::new(ApiCode::NotFound, message)
 }
 
+/// Gives a chat that has changed no code a place to hang decisions and diagrams on.
+pub trait Anchor: Send + Sync {
+    /// An empty checkpoint of the chat's code as it stands.
+    fn baseline(&self, session: SessionId) -> Result<crate::domain::Checkpoint>;
+}
+
 /// What one token may do: read and write the data of one chat session.
 pub struct ApiService {
     db: Arc<dyn Database>,
     scope: SessionId,
     allow_write: bool,
+    anchor: Option<Arc<dyn Anchor>>,
+    /// Tells the window what a write changed, so an open tab shows it without being reloaded.
+    sink: Option<Arc<dyn InsightSink>>,
 }
 
 impl ApiService {
@@ -342,7 +351,44 @@ impl ApiService {
             db,
             scope,
             allow_write,
+            anchor: None,
+            sink: None,
         }
+    }
+
+    pub fn with_sink(mut self, sink: Option<Arc<dyn InsightSink>>) -> Self {
+        self.sink = sink;
+        self
+    }
+
+    pub fn with_anchor(mut self, anchor: Option<Arc<dyn Anchor>>) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// The checkpoint a decision or a diagram is about: the one named, the chat's newest, or,
+    /// when the chat has changed nothing, an empty one. Both are about the chat, not about a
+    /// diff, so neither is refused for want of changes.
+    fn anchor_arg(&self, args: &Value) -> ApiResult<(SessionId, crate::domain::Checkpoint)> {
+        let session = self.session_arg(args)?;
+        let checkpoint = match args.get("checkpoint_id").and_then(Value::as_str) {
+            Some(_) => self
+                .db
+                .get_checkpoint(CheckpointId(arg_uuid(args, "checkpoint_id")?))?
+                .ok_or_else(|| not_found("checkpoint not found"))?,
+            None => match self.db.latest_checkpoint(session)? {
+                Some(checkpoint) => checkpoint,
+                None => self
+                    .anchor
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ApiError::invalid("this chat has no code state to attach this to yet")
+                    })?
+                    .baseline(session)?,
+            },
+        };
+        self.in_scope(checkpoint.session_id)?;
+        Ok((checkpoint.session_id, checkpoint))
     }
 
     /// The chat a call is about. A `session_id` in the request is optional; naming another
@@ -432,8 +478,69 @@ impl ApiService {
         );
     }
 
-    /// Runs an endpoint without auditing it.
+    /// Runs an endpoint without auditing it. A write that went through is announced to the window.
     pub fn call(&self, endpoint: Endpoint, args: &Value) -> ApiResult<Value> {
+        let outcome = self.dispatch(endpoint, args);
+        if let Ok(value) = &outcome {
+            self.announce(endpoint, args, value);
+        }
+        outcome
+    }
+
+    /// What an open tab has to be told after `endpoint` wrote something.
+    fn announce(&self, endpoint: Endpoint, args: &Value, result: &Value) {
+        let Some(sink) = &self.sink else { return };
+        let session_id = self.scope;
+        let decision = || {
+            args.get("decision_id")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .map(DecisionId)
+        };
+        let events = match endpoint {
+            Endpoint::RecordDecision => vec![InsightEvent::Decisions { session_id }],
+            Endpoint::AddDecisionMessage => decision()
+                .map(|decision_id| vec![InsightEvent::DecisionThread { decision_id }])
+                .unwrap_or_default(),
+            Endpoint::LinkCommit => decision()
+                .map(|decision_id| {
+                    vec![
+                        InsightEvent::Decisions { session_id },
+                        InsightEvent::DecisionThread { decision_id },
+                    ]
+                })
+                .unwrap_or_default(),
+            // Marks and priorities are read with the checkpoint they belong to.
+            Endpoint::CommentUnit | Endpoint::SetPriority => self
+                .checkpoint_arg(args)
+                .map(|(_, checkpoint)| {
+                    vec![InsightEvent::Checkpoint {
+                        session_id,
+                        checkpoint_id: checkpoint.id,
+                    }]
+                })
+                .unwrap_or_default(),
+            Endpoint::RecordFlow => result
+                .get("artifact_id")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .map(|id| {
+                    vec![InsightEvent::Artifact {
+                        session_id,
+                        artifact_id: ArtifactId(id),
+                        kind: ArtifactKind::Flow,
+                        status: crate::domain::ArtifactStatus::Ready,
+                    }]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        for event in events {
+            sink.emit_insight(event);
+        }
+    }
+
+    fn dispatch(&self, endpoint: Endpoint, args: &Value) -> ApiResult<Value> {
         if endpoint.route().write {
             self.require_write()?;
         }
@@ -482,19 +589,7 @@ impl ApiService {
     }
 
     fn record_decision(&self, args: &Value, now: String) -> ApiResult<Value> {
-        let session = self.session_arg(args)?;
-        let checkpoint = match args.get("checkpoint_id").and_then(Value::as_str) {
-            Some(_) => self
-                .db
-                .get_checkpoint(CheckpointId(arg_uuid(args, "checkpoint_id")?))?
-                .ok_or_else(|| not_found("checkpoint not found"))?,
-            None => self.db.latest_checkpoint(session)?.ok_or_else(|| {
-                ApiError::invalid(
-                    "nothing has changed in this chat yet, so there is nothing to decide about",
-                )
-            })?,
-        };
-        self.in_scope(checkpoint.session_id)?;
+        let (_, checkpoint) = self.anchor_arg(args)?;
         let (title, summary) = (arg_str(args, "title"), arg_str(args, "summary"));
         if title.is_empty() || summary.is_empty() {
             return Err(ApiError::invalid("title and summary are required"));
@@ -620,7 +715,7 @@ impl ApiService {
     }
 
     fn record_flow(&self, args: &Value, now: String) -> ApiResult<Value> {
-        let (session, checkpoint) = self.checkpoint_arg(args)?;
+        let (session, checkpoint) = self.anchor_arg(args)?;
         let chat = self
             .db
             .get_session(session)?
@@ -782,6 +877,9 @@ fn new_token() -> String {
 struct ServerInner {
     db: Arc<dyn Database>,
     grants: Mutex<Vec<Grant>>,
+    /// Set once the engine exists; the engine needs the server first.
+    anchor: std::sync::OnceLock<Arc<dyn Anchor>>,
+    sink: std::sync::OnceLock<Arc<dyn InsightSink>>,
     port: u16,
     stop: AtomicBool,
     active: AtomicUsize,
@@ -833,6 +931,8 @@ impl ApiServer {
         let inner = Arc::new(ServerInner {
             db,
             grants: Mutex::new(Vec::new()),
+            anchor: std::sync::OnceLock::new(),
+            sink: std::sync::OnceLock::new(),
             port,
             stop: AtomicBool::new(false),
             active: AtomicUsize::new(0),
@@ -843,6 +943,16 @@ impl ApiServer {
             .spawn(move || accept_loop(listener, accepting))
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
         Ok(Arc::new(Self { inner }))
+    }
+
+    /// Where writes are announced, so the window shows them as they happen.
+    pub fn set_sink(&self, sink: Arc<dyn InsightSink>) {
+        let _ = self.inner.sink.set(sink);
+    }
+
+    /// Lets calls about a chat without code changes still be answered.
+    pub fn set_anchor(&self, anchor: Arc<dyn Anchor>) {
+        let _ = self.inner.anchor.set(anchor);
     }
 
     pub fn port(&self) -> u16 {
@@ -1236,7 +1346,9 @@ fn respond(
     };
 
     // From here on the caller is known, so every call is audited.
-    let service = ApiService::new(Arc::clone(&inner.db), session, write);
+    let service = ApiService::new(Arc::clone(&inner.db), session, write)
+        .with_anchor(inner.anchor.get().cloned())
+        .with_sink(inner.sink.get().cloned());
     let target = head.target.clone();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     let (route, params) = match find_route(&head.method, path) {
@@ -1486,6 +1598,138 @@ mod tests {
             ]
         );
         assert!(parse_query("a=%zz").is_err());
+    }
+
+    /// Stands in for the engine: gives a chat an empty checkpoint.
+    struct EmptyCheckpoint(Arc<SqliteStore>);
+
+    impl Anchor for EmptyCheckpoint {
+        fn baseline(&self, session: SessionId) -> Result<Checkpoint> {
+            let chat = self.0.get_session(session)?.expect("chat");
+            let checkpoint = Checkpoint {
+                id: CheckpointId::new(),
+                session_id: session,
+                repository_id: chat.repository_id,
+                worktree_id: chat.worktree_id,
+                seq: 1,
+                base_rev: "b".into(),
+                head_rev: "b".into(),
+                source: CheckpointSource::Manual,
+                turn_id: None,
+                files: vec![],
+                status: ArtifactStatus::Ready,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                base_label: None,
+                head_label: None,
+                head_live: true,
+            };
+            self.0.create_checkpoint(&checkpoint)?;
+            Ok(checkpoint)
+        }
+    }
+
+    #[derive(Default)]
+    struct Heard(Mutex<Vec<InsightEvent>>);
+
+    impl InsightSink for Heard {
+        fn emit_insight(&self, event: InsightEvent) {
+            self.0.lock().push(event);
+        }
+    }
+
+    #[test]
+    fn what_the_agent_writes_is_announced_so_an_open_tab_shows_it() {
+        let repo = repo_with_a_file();
+        let (db, a, _b, cp) = seeded_at(repo.clone());
+        seed_review_queue(&db, a, cp);
+        let heard = Arc::new(Heard::default());
+        let writer = service(&db, a, true).with_sink(Some(heard.clone() as Arc<dyn InsightSink>));
+
+        let flow = writer
+            .call(
+                Endpoint::RecordFlow,
+                &json!({"nodes":[{"id":"n1","label":"go","refs":[{"path":"a.py","line":1}]}]}),
+            )
+            .unwrap();
+        let artifact = flow["artifact_id"].as_str().unwrap().to_string();
+        let decision = writer
+            .call(
+                Endpoint::RecordDecision,
+                &json!({"title":"t","summary":"s"}),
+            )
+            .unwrap();
+        let id = decision["id"].as_str().unwrap().to_string();
+        writer
+            .call(
+                Endpoint::AddDecisionMessage,
+                &json!({"decision_id": id, "text":"hi"}),
+            )
+            .unwrap();
+        writer
+            .call(
+                Endpoint::CommentUnit,
+                &json!({"path":"a.py","unit":"go","text":"why?"}),
+            )
+            .unwrap();
+        // A call that is refused announces nothing.
+        assert!(
+            writer
+                .call(Endpoint::RecordDecision, &json!({"title":"","summary":""}))
+                .is_err()
+        );
+        // Reading announces nothing.
+        writer.call(Endpoint::ListDecisions, &json!({})).unwrap();
+
+        let events = heard.0.lock().clone();
+        assert!(
+            matches!(&events[0], InsightEvent::Artifact { kind: ArtifactKind::Flow, artifact_id, session_id, .. }
+            if artifact_id.0.to_string() == artifact && *session_id == a)
+        );
+        assert!(matches!(&events[1], InsightEvent::Decisions { session_id } if *session_id == a));
+        assert!(
+            matches!(&events[2], InsightEvent::DecisionThread { decision_id } if decision_id.0.to_string() == id)
+        );
+        assert!(
+            matches!(&events[3], InsightEvent::Checkpoint { checkpoint_id, .. } if *checkpoint_id == cp)
+        );
+        assert_eq!(events.len(), 4, "{events:?}");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn decisions_and_diagrams_do_not_wait_for_code_changes() {
+        let repo = repo_with_a_file();
+        let (db, _a, b, _cp) = seeded_at(repo.clone());
+        assert!(db.latest_checkpoint(b).unwrap().is_none());
+        let writer = service(&db, b, true).with_anchor(Some(
+            Arc::new(EmptyCheckpoint(db.clone())) as Arc<dyn Anchor>
+        ));
+
+        writer
+            .handle(
+                Endpoint::RecordFlow,
+                &json!({"name":"How it starts","nodes":[
+                    {"id":"n1","label":"go","refs":[{"path":"a.py","line":1}]}]}),
+            )
+            .unwrap();
+        writer
+            .handle(
+                Endpoint::RecordDecision,
+                &json!({"title":"Keep go()","summary":"It stays as it is"}),
+            )
+            .unwrap();
+        assert_eq!(
+            db.list_artifacts(b, Some(ArtifactKind::Flow))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(db.list_decisions(b).unwrap().len(), 1);
+        // Both hang off the one empty checkpoint taken for the first of them.
+        let anchor = db.latest_checkpoint(b).unwrap().unwrap();
+        assert!(anchor.files.is_empty());
+        assert_eq!(db.list_decisions(b).unwrap()[0].checkpoint_id, anchor.id);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

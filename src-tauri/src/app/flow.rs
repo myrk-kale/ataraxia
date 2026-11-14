@@ -282,3 +282,13 @@ impl Engine {
         Ok(content)
     }
 }
+
+impl crate::api::Anchor for Engine {
+    fn baseline(
+        &self,
+        session: crate::domain::ids::SessionId,
+    ) -> Result<crate::domain::Checkpoint> {
+        let session = self.session(session)?;
+        self.baseline_checkpoint(&session)
+    }
+}

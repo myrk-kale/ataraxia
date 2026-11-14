@@ -4,6 +4,13 @@ A flow is a diagram, in the Flow tab, of how a piece of the code works: where a 
 action enters, what handles it, where data goes. It is for someone who has to understand the
 change, not for decoration.
 
+## Flow or Mermaid
+
+A request for "a diagram" can mean two things: a Flow diagram, which is saved in the Flow tab and
+tied to real files through this API, or a Mermaid diagram, a `mermaid` code block in your reply that
+the chat draws. If the developer did not say which, ask, and do not pick one. If they said Flow, use
+this page; if they said Mermaid, write the block and do not call the API.
+
 ## How to draw one (`POST /v1/flows`)
 
 - `name`: what the diagram shows, in a few words. `summary`: one or two sentences.

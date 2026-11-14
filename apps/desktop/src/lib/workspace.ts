@@ -160,6 +160,11 @@ export function workspaceOpenSession(sessionId: SessionId) {
   return invoke<WorkspaceSnapshot>("workspace_open_session", { sessionId });
 }
 
+/** Deletes a chat for good: its messages, checkpoints, decisions and diagrams. The code stays. */
+export function workspaceDeleteSession(sessionId: SessionId) {
+  return invoke<WorkspaceSnapshot>("workspace_delete_session", { sessionId });
+}
+
 /** Every local branch, read from git each time. */
 export function workspaceListBranches(worktreeId: WorktreeId) {
   return invoke<BranchList>("workspace_list_branches", { worktreeId });
