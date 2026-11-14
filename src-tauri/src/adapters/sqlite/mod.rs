@@ -439,6 +439,27 @@ impl Store for SqliteStore {
         })
     }
 
+    fn delete_session(&self, id: SessionId) -> Result<()> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let id = id.0.to_string();
+            // Everything under the chat goes with it through the foreign keys; what the app keeps
+            // by name goes here.
+            conn.execute(
+                "DELETE FROM app_state WHERE key LIKE ?1",
+                params![format!("turn_base:{id}:%")],
+            )
+            .map_err(io)?;
+            let deleted = conn
+                .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])
+                .map_err(io)?;
+            if deleted == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
     fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()> {
         self.with_conn(|conn| {
             let updated = conn
@@ -884,6 +905,7 @@ mod tests {
                 role: ChatRole::User,
                 text: "hi".into(),
                 turn_id: Some(turn),
+                images: Vec::new(),
             }),
             ChatItem::Tool(ToolCallRecord {
                 call_id: ToolCallId::new(),

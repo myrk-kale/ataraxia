@@ -100,6 +100,19 @@ pub fn resolve_binary(name: &str, override_env: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable_file(candidate))
 }
 
+/// The program a launch profile names: a path (it must be an executable file) or a bare name
+/// (looked up the way the harnesses' own binaries are, so a GUI launch finds it too).
+pub fn resolve_program(word: &str) -> Option<PathBuf> {
+    if word.contains('/') {
+        let path = PathBuf::from(word);
+        return is_executable_file(&path).then_some(path);
+    }
+    search_dirs()
+        .into_iter()
+        .map(|dir| dir.join(word))
+        .find(|candidate| is_executable_file(candidate))
+}
+
 /// `PATH` for children: the current one plus the well-known install dirs.
 pub fn enriched_path() -> OsString {
     std::env::join_paths(search_dirs())

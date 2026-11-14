@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { PieceModule } from "../vendor/ascii-magic/player.js";
+import { SCENES, forcedTime, timeOfDay } from "./scenes";
 
 /** How the picture is drawn: filled squares, from the ascii-magic looks. */
 const LOOK = "squares";
@@ -7,9 +7,11 @@ const LOOK = "squares";
 const STRENGTH = 0.6;
 
 /**
- * Animated ASCII art for the opening of the app. It covers its positioned parent entirely
- * (cropping rather than stretching), ignores the pointer, fades in once the art is ready and is
- * dimmed behind the middle, where the word is drawn. The library is loaded on demand.
+ * Animated ASCII art for the opening of the app. The picture follows the time of day (morning,
+ * afternoon, evening, night), read once from this computer's clock when the opening starts. It
+ * covers its positioned parent entirely (cropping rather than stretching), ignores the pointer,
+ * fades in once the art is ready and is dimmed behind the middle, where the word is drawn. The
+ * library and the one picture are loaded on demand.
  */
 export function AsciiBackground() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -28,15 +30,16 @@ export function AsciiBackground() {
     let observer: ResizeObserver | null = null;
     let frame = 0;
 
+    const scene = SCENES[forcedTime(window.location.search, import.meta.env.DEV) ?? timeOfDay(new Date())];
+    host.dataset.scene = scene.slug;
     void Promise.all([
       import("../vendor/ascii-magic/player.js"),
       import("../vendor/ascii-magic/canvas.js"),
-      import("../vendor/ascii-magic/pieces/summit-cloud-sea.js"),
-    ]).then(([{ play }, { CELL_W, cellAspect }, piece]) => {
+      scene.load(),
+    ]).then(([{ play }, { CELL_W, cellAspect }, mod]) => {
       if (cancelled) {
         return;
       }
-      const mod = piece as unknown as PieceModule;
       const start = () => {
         stop();
         const { width, height } = host.getBoundingClientRect();

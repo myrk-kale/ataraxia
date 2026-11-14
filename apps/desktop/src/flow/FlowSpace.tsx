@@ -1,7 +1,7 @@
 import { TextArea } from "@heroui/react";
 import { Handle, Position, ReactFlow, ReactFlowProvider, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { useAppearance } from "../app/appearance/store";
 import type { SpaceBridge } from "../app/spaceCommands";
 import {
@@ -109,17 +109,20 @@ export function FlowSpace({
   const sessionId = session?.id ?? null;
   const repositoryId = session?.repository_id ?? null;
 
-  const loadFlows = useCallback(async () => {
+  const loadFlows = useCallback(async (): Promise<Artifact[] | null> => {
     if (!sessionId) {
       setFlows([]);
       setFlowsState(READY);
-      return;
+      return null;
     }
     try {
-      setFlows(await flowList(sessionId));
+      const list = await flowList(sessionId);
+      setFlows(list);
       setFlowsState(READY);
+      return list;
     } catch (err) {
       setFlowsState({ kind: "failed", message: errorText(err) });
+      return null;
     }
   }, [sessionId]);
 
@@ -146,12 +149,25 @@ export function FlowSpace({
     void loadFlows();
   }, [loadFlows]);
 
+  const knownFlows = useRef(flows);
+  knownFlows.current = flows;
+
   useInsightEvents((event) => {
     if (
       ((event.type === "artifact" && event.kind === "flow") || event.type === "cleared") &&
       event.sessionId === sessionId
     ) {
-      void loadFlows();
+      // A diagram that was not there before (the agent drew one, or Generate started one) is the one
+      // to show; an update to a diagram already listed leaves the choice where it is.
+      const added =
+        event.type === "artifact" && !knownFlows.current.some((item) => item.id === event.artifactId)
+          ? event.artifactId
+          : null;
+      void loadFlows().then((list) => {
+        if (added && list?.some((item) => item.id === added)) {
+          setFlowId(added);
+        }
+      });
     }
   });
 

@@ -1,5 +1,5 @@
 import { Check, ChevronRight, Copy, Loader2, X } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { ToolItem } from "../lib/agent";
 import {
   diffLines,
@@ -146,10 +146,37 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function ToolCard({ tool }: { tool: ToolItem }) {
+// The cards the reader opened. A card scrolled out of the transcript is not kept in the page,
+// so which ones were open is remembered here and not in the page.
+const opened = new Set<string>();
+
+/**
+ * One tool call, closed by default. Its input and output (which can be long) are only put in
+ * the page while it is open.
+ */
+export const ToolCard = memo(function ToolCard({
+  tool,
+  defaultOpen = false,
+}: {
+  tool: ToolItem;
+  defaultOpen?: boolean;
+}) {
   const summary = toolSummary(tool.input);
+  const [open, setOpen] = useState(() => defaultOpen || opened.has(tool.callId));
   return (
-    <details className="group rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
+    <details
+      className="group rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel"
+      open={open}
+      onToggle={(event) => {
+        const now = event.currentTarget.open;
+        if (now) {
+          opened.add(tool.callId);
+        } else {
+          opened.delete(tool.callId);
+        }
+        setOpen(now);
+      }}
+    >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 [&::-webkit-details-marker]:hidden">
         <ChevronRight
           className="shrink-0 text-cg-muted transition-transform group-open:rotate-90"
@@ -165,6 +192,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
           <StatusIcon status={tool.status} />
         </span>
       </summary>
+      {open ? (
       <div className="space-y-3 border-t border-cg-line px-3.5 py-3">
         <InputView input={tool.input} />
         {tool.output !== null && tool.output.length > 0 ? (
@@ -183,6 +211,7 @@ export function ToolCard({ tool }: { tool: ToolItem }) {
           <p className="text-small text-cg-muted">Waiting for the result…</p>
         ) : null}
       </div>
+      ) : null}
     </details>
   );
-}
+});

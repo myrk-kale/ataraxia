@@ -17,9 +17,9 @@ use crate::adapters::syntax::TreeSitterSyntax;
 use crate::domain::agent::ProviderKind;
 use crate::domain::ids::{RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
-    AgentEvent, ArtifactKind, ArtifactStatus, BtwMode, ChatSession, DecisionState, InsightEvent,
-    PermissionDecision, Repository, ReturnPolicy, ReviewState, SessionKind, SessionStatus,
-    Worktree,
+    AgentEvent, ArtifactKind, ArtifactStatus, BtwMode, ChatSession, DecisionState, ImageUpload,
+    InsightEvent, PermissionDecision, PermissionRequestId, Repository, ReturnPolicy, ReviewState,
+    SessionKind, SessionStatus, Worktree,
 };
 use crate::domain::{ChatItem, ChatRole};
 use crate::ports::{AgentRuntime, Database, EventSink, Git, InsightSink, InsightStore, Store};
@@ -115,6 +115,7 @@ fn world() -> World {
     let store: Arc<dyn Store> = db.clone();
     let host = Arc::new(
         AgentHost::new(store, tee.clone())
+            .with_attachment_dir(repo.join(".attachments"))
             .with_insights(db.clone())
             .with_backend(
                 ProviderKind::Fake,
@@ -482,6 +483,32 @@ fn deleting_all_artifacts_needs_the_chat_title_waits_for_running_work_and_leaves
         w.db.latest_checkpoint(w.session.id).unwrap()
     });
     assert_eq!(fresh.seq, 1);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_selection_is_told_to_the_agent_as_what_the_user_has_selected_and_in_which_file() {
+    let w = world();
+    let context = BtwContext {
+        space: "code".into(),
+        item: Some(ContextItem {
+            kind: "selection".into(),
+            label: "README.md".into(),
+            path: Some("README.md".into()),
+            start_line: Some(2),
+            end_line: Some(3),
+            text: Some("line two\nline three".into()),
+        }),
+        active: Vec::new(),
+    };
+    let rendered = w.engine.btw_render_context(w.session.id, &context).unwrap();
+    assert!(
+        rendered.contains("The user has this text selected in the editor"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("File: README.md:2-3"), "{rendered}");
+    assert!(rendered.contains("line two\nline three"), "{rendered}");
+    assert!(!rendered.contains("Looking at:"), "{rendered}");
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 
@@ -1643,4 +1670,362 @@ fn a_helper_session_looks_at_the_same_repositories_as_its_chat() {
     );
     let _ = std::fs::remove_dir_all(&w.repo);
     let _ = std::fs::remove_dir_all(&other);
+}
+
+// ---------------------------------------------------------------- message queue
+
+fn user_texts(w: &World) -> Vec<String> {
+    w.host
+        .snapshot(&w.session.id)
+        .unwrap()
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            ChatItem::Message(message) if message.role == ChatRole::User => Some(message.text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The permission request the agent is parked on, once it is not `after`.
+fn next_request(w: &World, after: Option<PermissionRequestId>) -> PermissionRequestId {
+    wait_for("a permission request", || {
+        w.host
+            .snapshot(&w.session.id)
+            .unwrap()
+            .pending_permission
+            .map(|pending| pending.request_id)
+            .filter(|id| Some(*id) != after)
+    })
+}
+
+fn approve(w: &World, request: PermissionRequestId) {
+    w.host
+        .resolve_permission(
+            &w.session.id,
+            PermissionDecision {
+                request_id: request,
+                allow: true,
+            },
+        )
+        .unwrap();
+}
+
+fn queued_texts(w: &World) -> Vec<String> {
+    w.engine
+        .queue(w.session.id)
+        .items
+        .into_iter()
+        .map(|item| item.text)
+        .collect()
+}
+
+#[test]
+fn queued_messages_go_out_one_after_another_as_each_turn_ends() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+
+    w.engine
+        .enqueue(w.session.id, "second", Vec::new())
+        .unwrap();
+    w.engine
+        .enqueue(w.session.id, "  third  ", Vec::new())
+        .unwrap();
+    assert_eq!(queued_texts(&w), ["second", "third"]);
+    assert_eq!(user_texts(&w), ["first"], "nothing is sent mid-turn");
+
+    approve(&w, first);
+    let second = next_request(&w, Some(first));
+    assert_eq!(user_texts(&w), ["first", "second"]);
+    assert_eq!(queued_texts(&w), ["third"]);
+
+    approve(&w, second);
+    let third = next_request(&w, Some(second));
+    assert_eq!(user_texts(&w), ["first", "second", "third"]);
+    assert!(w.engine.queue(w.session.id).items.is_empty());
+
+    approve(&w, third);
+    wait_for("the last turn to end", || {
+        (w.host.status(&w.session.id).unwrap() == SessionStatus::Ready).then_some(())
+    });
+    assert_eq!(user_texts(&w).len(), 3);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn stopping_a_turn_holds_the_queue_until_the_user_decides() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    next_request(&w, None);
+    w.engine
+        .enqueue(w.session.id, "second", Vec::new())
+        .unwrap();
+
+    w.host.cancel(&w.session.id, None).unwrap();
+    wait_for("the queue to pause", || {
+        w.engine.queue(w.session.id).paused.then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(user_texts(&w), ["first"], "a stop is not 'and carry on'");
+    assert_eq!(queued_texts(&w), ["second"]);
+
+    // Sending it by name is the way on.
+    let id = w.engine.queue(w.session.id).items[0].id.clone();
+    let queue = w.engine.queue_send_now(w.session.id, &id).unwrap();
+    assert!(queue.items.is_empty() && !queue.paused);
+    assert_eq!(user_texts(&w), ["first", "second"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn send_now_stops_the_turn_and_puts_that_message_ahead_of_the_rest() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+    w.engine
+        .enqueue(w.session.id, "second", Vec::new())
+        .unwrap();
+    w.engine.enqueue(w.session.id, "third", Vec::new()).unwrap();
+    let third_id = w.engine.queue(w.session.id).items[1].id.clone();
+
+    w.engine.queue_send_now(w.session.id, &third_id).unwrap();
+    let forced = next_request(&w, Some(first));
+    assert_eq!(user_texts(&w), ["first", "third"]);
+    assert_eq!(queued_texts(&w), ["second"], "the rest keeps its place");
+    assert!(!w.engine.queue(w.session.id).paused);
+
+    // The forced message finishes well, so the queue carries on by itself.
+    approve(&w, forced);
+    next_request(&w, Some(forced));
+    assert_eq!(user_texts(&w), ["first", "third", "second"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_message_queued_while_the_agent_is_free_goes_out_at_once() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    let queue = w.engine.enqueue(w.session.id, "hello", Vec::new()).unwrap();
+    assert!(queue.items.is_empty());
+    next_request(&w, None);
+    assert_eq!(user_texts(&w), ["hello"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn queued_messages_can_be_removed_and_empty_ones_are_refused() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    next_request(&w, None);
+    w.engine.enqueue(w.session.id, "keep", Vec::new()).unwrap();
+    w.engine.enqueue(w.session.id, "drop", Vec::new()).unwrap();
+    assert!(w.engine.enqueue(w.session.id, "   ", Vec::new()).is_err());
+
+    let id = w.engine.queue(w.session.id).items[1].id.clone();
+    let queue = w.engine.queue_remove(w.session.id, &id);
+    assert_eq!(queue.items.len(), 1);
+    assert_eq!(queued_texts(&w), ["keep"]);
+    assert!(w.engine.queue_send_now(w.session.id, "nope").is_err());
+
+    // Every change is announced, so the window never shows a stale list.
+    let announced = w
+        .events
+        .0
+        .lock()
+        .iter()
+        .filter(|event| matches!(event, InsightEvent::Queue { .. }))
+        .count();
+    assert_eq!(announced, 3);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+// ---------------------------------------------------------------- deleting a chat
+
+#[test]
+fn deleting_a_chat_takes_everything_under_it_and_leaves_the_code_and_the_other_chats() {
+    use super::workspace::WorkspaceService;
+
+    let w = world();
+    agent_turn_editing(&w, "README.md", "# demo\nchanged\n");
+    wait_for("checkpoint", || {
+        w.db.latest_checkpoint(w.session.id).unwrap()
+    });
+    let helper = w
+        .engine
+        .hidden_session(&w.session, SessionKind::Analysis, "Helper")
+        .unwrap();
+    w.engine.enqueue(w.session.id, "later", Vec::new()).ok();
+
+    // Another chat of the same repository stays.
+    let mut other = w.session.clone();
+    other.id = SessionId::new();
+    other.title = "Chat 2".into();
+    w.db.create_session(&other).unwrap();
+
+    w.engine.stop_session_for_delete(w.session.id);
+    let git = GitCli;
+    let service = WorkspaceService {
+        git: &git,
+        store: w.db.as_ref(),
+    };
+    let snapshot = service.delete_session(w.session.id).unwrap();
+
+    assert!(w.db.get_session(w.session.id).unwrap().is_none());
+    assert!(
+        w.db.get_session(helper.id).unwrap().is_none(),
+        "helpers go with it"
+    );
+    assert!(w.db.latest_checkpoint(w.session.id).unwrap().is_none());
+    assert!(w.engine.queue(w.session.id).items.is_empty());
+    assert!(snapshot.sessions.iter().all(|item| item.id != w.session.id));
+    assert!(w.db.get_session(other.id).unwrap().is_some());
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("README.md")).unwrap(),
+        "# demo\nchanged\n",
+        "the code is not touched"
+    );
+
+    assert!(
+        service.delete_session(w.session.id).is_err(),
+        "twice is an error"
+    );
+    assert!(
+        service.delete_session(helper.id).is_err(),
+        "a helper is not a chat"
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+// ---------------------------------------------------------------- images
+
+fn png_upload(name: &str) -> ImageUpload {
+    use base64::Engine as _;
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.extend_from_slice(name.as_bytes());
+    ImageUpload {
+        name: name.into(),
+        mime: "image/png".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+fn images_of_user_messages(w: &World) -> Vec<Vec<String>> {
+    w.host
+        .snapshot(&w.session.id)
+        .unwrap()
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            ChatItem::Message(message) if message.role == ChatRole::User => {
+                Some(message.images.into_iter().map(|image| image.name).collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_message_can_carry_pictures_that_are_kept_shown_and_forgotten_with_the_chat() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host
+        .prompt_with_images(&w.session.id, "what is this?", vec![png_upload("shot.png")])
+        .unwrap();
+    next_request(&w, None);
+    assert_eq!(images_of_user_messages(&w), [["shot.png"]]);
+
+    let message = w
+        .host
+        .snapshot(&w.session.id)
+        .unwrap()
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            ChatItem::Message(message) if message.role == ChatRole::User => Some(message),
+            _ => None,
+        })
+        .unwrap();
+    let url = w
+        .host
+        .attachment(&w.session.id, &message.images[0].id)
+        .unwrap();
+    assert!(url.starts_with("data:image/png;base64,"));
+    // The saved transcript keeps the pictures too, so they are there after a restart.
+    let stored = w.db.list_chat_items(w.session.id).unwrap();
+    assert!(
+        stored
+            .iter()
+            .any(|item| matches!(item, ChatItem::Message(m) if !m.images.is_empty()))
+    );
+
+    // Not a picture: refused, and nothing is sent.
+    let bad = ImageUpload {
+        name: "x.png".into(),
+        mime: "image/png".into(),
+        data: "aGVsbG8=".into(),
+    };
+    w.host.cancel(&w.session.id, None).unwrap();
+    wait_for("the turn to end", || {
+        (w.host.status(&w.session.id).unwrap() == SessionStatus::Ready).then_some(())
+    });
+    assert!(
+        w.host
+            .prompt_with_images(&w.session.id, "", vec![bad])
+            .is_err()
+    );
+    assert_eq!(images_of_user_messages(&w).len(), 1);
+
+    w.host.forget_session(&w.session.id);
+    assert!(
+        w.host
+            .attachment(&w.session.id, &message.images[0].id)
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_queued_message_keeps_its_pictures_until_its_turn() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+
+    let queue = w
+        .engine
+        .enqueue(
+            w.session.id,
+            "",
+            vec![png_upload("a.png"), png_upload("b.png")],
+        )
+        .unwrap();
+    assert_eq!(queue.items[0].images, ["a.png", "b.png"]);
+    assert!(
+        w.engine
+            .enqueue(
+                w.session.id,
+                "x",
+                vec![ImageUpload {
+                    name: "n.png".into(),
+                    mime: "image/png".into(),
+                    data: "aGVsbG8=".into(),
+                }]
+            )
+            .is_err(),
+        "a picture that cannot go is refused when queued"
+    );
+
+    approve(&w, first);
+    next_request(&w, Some(first));
+    assert_eq!(
+        images_of_user_messages(&w),
+        [vec![], vec!["a.png".to_string(), "b.png".to_string()]]
+    );
+    assert!(w.engine.queue(w.session.id).items.is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
 }

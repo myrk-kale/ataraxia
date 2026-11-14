@@ -1,9 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { ProviderUsage } from "./usage";
 import type { ChatSession, ProviderKind, SessionId, SessionStatus } from "./workspace";
 
 export type ChatRole = "user" | "assistant" | "system";
 export type ToolStatus = "running" | "done" | "failed";
+
+/** A picture attached to a message. The file stays in the app; `agentAttachment` reads it. */
+export type ImageAttachment = { id: string; name: string; mime: string };
+
+/** A picture on its way to the app: the file's bytes, base64. */
+export type ImageUpload = { name: string; mime: string; data: string };
 
 export type ChatMessage = {
   kind: "message";
@@ -11,6 +18,13 @@ export type ChatMessage = {
   role: ChatRole;
   text: string;
   turnId: string | null;
+  /** On the user's own messages. */
+  images?: ImageAttachment[];
+  /**
+   * Shown as soon as the user sent it, before the app has taken it in. The app's own report of
+   * the message takes its place (see `reconcile`), or it is withdrawn if the send failed.
+   */
+  pending?: boolean;
 };
 
 export type ToolItem = {
@@ -61,14 +75,17 @@ export type ChatSnapshot = {
   pendingPermission: PendingPermission | null;
 };
 
-export type AgentEvent =
+type AgentEventBody =
   | { type: "status"; sessionId: SessionId; status: SessionStatus }
+  /** A provider reported its limits. Not about one chat. */
+  | { type: "usage"; usage: ProviderUsage }
   | {
       type: "delta";
       sessionId: SessionId;
       turnId: string;
       role: ChatRole;
       text: string;
+      images?: ImageAttachment[];
     }
   | {
       type: "tool";
@@ -111,6 +128,13 @@ export type AgentEvent =
       update: SubagentUpdate;
     }
   | { type: "error"; sessionId: SessionId; message: string };
+
+/**
+ * What the app sends about an agent. `seq` is its place in the order the app sent them, which
+ * lets the chat ignore one that reaches it twice; it is absent on events made without the app
+ * (tests, the demo).
+ */
+export type AgentEvent = AgentEventBody & { seq?: number };
 
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   fake: "Fake",
@@ -189,8 +213,73 @@ export function agentGetOptions(sessionId: SessionId) {
   return invoke<SessionOptions>("agent_get_options", { sessionId });
 }
 
-export function agentPrompt(sessionId: SessionId, text: string) {
-  return invoke<string>("agent_prompt", { sessionId, text });
+export function agentPrompt(sessionId: SessionId, text: string, images: ImageUpload[] = []) {
+  return invoke<string>("agent_prompt", { sessionId, text, images });
+}
+
+/** An attached picture as a `data:` URL, to show it. */
+export function agentAttachment(sessionId: SessionId, id: string) {
+  return invoke<string>("agent_attachment", { sessionId, id });
+}
+
+/** A message typed while the agent was busy, waiting its turn. */
+export type QueuedMessage = {
+  id: string;
+  text: string;
+  /** Names of the pictures that go with it. */
+  images: string[];
+  /** Shown as soon as it was sent, before the app has put it in the queue: it has no id of the app's yet. */
+  pending?: boolean;
+};
+
+/** A message that was sent to the queue and is not in the app's list yet. */
+export type QueuedLocally = QueuedMessage & { text: string; known: ReadonlySet<string> };
+
+/**
+ * The queue as the person should see it: the app's list, then what was sent and is on its way
+ * there. A message the app has since listed is not shown twice: it is matched on its text, among
+ * the entries the app's list did not have when it was sent.
+ */
+export function withLocal(queue: MessageQueue, local: QueuedLocally[]): MessageQueue {
+  if (local.length === 0) {
+    return queue;
+  }
+  const claimed = new Set<string>();
+  const waiting = local.filter((message) => {
+    const reflected = queue.items.find(
+      (item) => !message.known.has(item.id) && !claimed.has(item.id) && item.text === message.text,
+    );
+    if (reflected) {
+      claimed.add(reflected.id);
+    }
+    return !reflected;
+  });
+  return {
+    ...queue,
+    items: [...queue.items, ...waiting.map(({ id, text, images }) => ({ id, text, images, pending: true }))],
+  };
+}
+
+/** What a chat has waiting. `paused`: the last turn was stopped or failed, so nothing goes out alone. */
+export type MessageQueue = { items: QueuedMessage[]; paused: boolean };
+
+export const EMPTY_QUEUE: MessageQueue = { items: [], paused: false };
+
+export function agentQueue(sessionId: SessionId) {
+  return invoke<MessageQueue>("agent_queue", { sessionId });
+}
+
+export function agentEnqueue(sessionId: SessionId, text: string, images: ImageUpload[] = []) {
+  return invoke<MessageQueue>("agent_enqueue", { sessionId, text, images });
+}
+
+export function agentQueueRemove(sessionId: SessionId, id: string) {
+  return invoke<MessageQueue>("agent_queue_remove", { sessionId, id });
+}
+
+/** Stops the running turn and sends this message next, ahead of the others. */
+export function agentQueueSendNow(sessionId: SessionId, id: string) {
+  return invoke<MessageQueue>("agent_queue_send_now", { sessionId, id });
 }
 
 export function agentCancel(sessionId: SessionId) {
@@ -222,6 +311,8 @@ export function listenAgentEvents(
 }
 
 export type ChatState = {
+  /** The number of the last event applied, so a repeat of it is not applied again. */
+  lastSeq: number;
   items: ChatItem[];
   subagents: SubagentView[];
   restoredCount: number;
@@ -232,6 +323,7 @@ export type ChatState = {
 };
 
 export const initialChatState: ChatState = {
+  lastSeq: 0,
   items: [],
   subagents: [],
   restoredCount: 0,
@@ -243,15 +335,57 @@ export const initialChatState: ChatState = {
 
 export type ChatAction =
   | { type: "loaded"; snapshot: ChatSnapshot }
+  /** The user sent a message: show it, and the agent as working, without waiting for the app. */
+  | { type: "optimistic"; id: string; text: string; images: ImageAttachment[] }
+  /** That send failed: take the message back out and put the status back as it was. */
+  | { type: "rollback"; id: string; status: SessionStatus }
   | { type: "event"; event: AgentEvent }
   | { type: "failed"; message: string }
   | { type: "dismissError" };
+
+/** The message shown ahead of the app that is this text, if there is one. */
+export function waitingFor(items: ChatItem[], text: string): ChatMessage | undefined {
+  const wanted = text.trim();
+  for (const item of items) {
+    if (item.kind === "message" && item.pending === true && item.role === "user" && item.text.trim() === wanted) {
+      return item;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The app has taken in the user's message: the one shown at once becomes the real one, in the
+ * same place and with the same key (so nothing is drawn again), or null if none was waiting for
+ * this text. It matches on the text, because a message that is not ours (a note from a BTW, say)
+ * can arrive just as we sent one.
+ */
+export function reconcile(
+  items: ChatItem[],
+  text: string,
+  turnId: string,
+  images?: ImageAttachment[],
+): ChatItem[] | null {
+  const shown = waitingFor(items, text);
+  if (!shown) {
+    return null;
+  }
+  const real: ChatMessage = {
+    ...shown,
+    text,
+    turnId,
+    pending: false,
+    ...(images && images.length > 0 ? { images } : {}),
+  };
+  return items.map((item) => (item === shown ? real : item));
+}
 
 function appendDelta(
   items: ChatItem[],
   role: ChatRole,
   turnId: string,
   text: string,
+  images?: ImageAttachment[],
 ): ChatItem[] {
   const last = items[items.length - 1];
   if (last && last.kind === "message" && last.role === role && last.turnId === turnId) {
@@ -259,7 +393,14 @@ function appendDelta(
   }
   return [
     ...items,
-    { kind: "message", id: `${turnId}:${items.length}`, role, text, turnId },
+    {
+      kind: "message",
+      id: `${turnId}:${items.length}`,
+      role,
+      text,
+      turnId,
+      ...(images && images.length > 0 ? { images } : {}),
+    },
   ];
 }
 
@@ -380,6 +521,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "loaded":
       return {
+        lastSeq: state.lastSeq,
         items: action.snapshot.items,
         subagents: action.snapshot.subagents ?? [],
         restoredCount: action.snapshot.restoredCount,
@@ -388,20 +530,49 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         error: null,
         loaded: true,
       };
+    case "optimistic": {
+      const shown: ChatMessage = {
+        kind: "message",
+        id: action.id,
+        role: "user",
+        text: action.text,
+        turnId: null,
+        pending: true,
+        ...(action.images.length > 0 ? { images: action.images } : {}),
+      };
+      return { ...state, error: null, status: "working", items: [...state.items, shown] };
+    }
+    case "rollback":
+      // Only a message still waiting is withdrawn: one the app has taken in is real, whatever
+      // reports the failure.
+      return {
+        ...state,
+        status: action.status,
+        items: state.items.filter((item) => !(item.kind === "message" && item.id === action.id && item.pending === true)),
+      };
     case "failed":
       return { ...state, error: action.message, loaded: true };
     case "dismissError":
       return { ...state, error: null };
     case "event": {
       const event = action.event;
+      if (event.seq !== undefined) {
+        // An event this chat has already applied, delivered again: nothing to do.
+        if (event.seq <= state.lastSeq) {
+          return state;
+        }
+        state = { ...state, lastSeq: event.seq };
+      }
       switch (event.type) {
         case "status":
           return { ...state, status: event.status };
-        case "delta":
+        case "delta": {
+          const taken = event.role === "user" ? reconcile(state.items, event.text, event.turnId, event.images) : null;
           return {
             ...state,
-            items: appendDelta(state.items, event.role, event.turnId, event.text),
+            items: taken ?? appendDelta(state.items, event.role, event.turnId, event.text, event.images),
           };
+        }
         case "tool":
           return {
             ...state,
@@ -483,6 +654,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           };
         case "error":
           return { ...state, error: event.message, pending: null };
+        case "usage":
+          // About the provider, not this chat: the meter listens for it itself.
+          return state;
       }
     }
   }

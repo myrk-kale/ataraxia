@@ -56,6 +56,17 @@ export function isTerminalToggle(event: Pick<KeyLike, "key" | "ctrlKey" | "metaK
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "`";
 }
 
+/** Shift with an up or down arrow, and nothing else held: the move between spaces. */
+export function isSpaceKey(event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): boolean {
+  return (
+    event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    (event.key === "ArrowUp" || event.key === "ArrowDown")
+  );
+}
+
 /** Maps a key press to an action, or `null` when the key must be left alone. */
 export function resolveShortcut(event: KeyLike, context: ShortcutContext): ShortcutAction | null {
   // Never during IME composition: those keys pick candidates.
@@ -86,12 +97,14 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (event.altKey && !mod && !event.shiftKey && event.code === "KeyV" && context.space === "code" && !typing) {
     return { type: "version" };
   }
+  // The spaces are a column of dots: up goes to the one above, down to the one below. It wins over
+  // whatever has focus, a field, the editor or the terminal included, so the keyboard can always
+  // leave where it is.
+  if (isSpaceKey(event)) {
+    return { type: "space", delta: event.key === "ArrowUp" ? -1 : 1 };
+  }
   if (typing || mod || event.altKey) {
     return null;
-  }
-  // The spaces are a column of dots: up goes to the one above, down to the one below.
-  if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-    return { type: "space", delta: event.key === "ArrowUp" ? -1 : 1 };
   }
   if (event.shiftKey && key === "a") {
     return { type: "artifacts" };
@@ -120,7 +133,7 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
 
 /** The shortcuts shown in the legend, in reading order. */
 export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: string }[] = [
-  { keys: ["Shift", "↑/↓"], label: "Previous / next space", scope: "Everywhere" },
+  { keys: ["Shift", "↑/↓"], label: "Previous / next space, even while typing or in the editor and terminal", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "`"], label: "Toggle the terminal", scope: "Everywhere" },

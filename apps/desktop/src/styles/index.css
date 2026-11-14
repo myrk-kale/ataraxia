@@ -379,3 +379,52 @@ select:focus-visible {
 .cg-unit-range {
   background: var(--cg-accent-bg);
 }
+
+/*
+ * The loader shown while the agent works: three dots that rise and settle one after another,
+ * like a wave. The dots are drawn in the colour of the text round them, so they follow the
+ * theme. With reduced motion they hold still.
+ */
+.cg-loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+}
+.cg-loader > span {
+  display: block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  will-change: transform, opacity;
+  animation: cg-loader-wave 0.8s cubic-bezier(0.36, 0, 0.22, 1) infinite;
+}
+.cg-loader > span:nth-child(2) {
+  animation-delay: -0.66s;
+}
+.cg-loader > span:nth-child(3) {
+  animation-delay: -0.52s;
+}
+@keyframes cg-loader-wave {
+  0%,
+  100% {
+    transform: translateY(3px) scale(0.78);
+    opacity: 0.46;
+  }
+  40% {
+    transform: translateY(-9px) scale(1.05);
+    opacity: 1;
+  }
+  62% {
+    transform: translateY(1px) scale(0.9);
+    opacity: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cg-loader > span {
+    animation: none;
+    opacity: 0.8;
+  }
+}

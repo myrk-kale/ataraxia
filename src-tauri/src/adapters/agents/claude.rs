@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::backend::{
-    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute, api_env,
-    truncate_output,
+    AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, ImageFile, Launch,
+    SubagentRoute, api_env, compose_env, profile_args, profile_program, truncate_output,
 };
 use super::definitions::claude_agents;
 use super::process::{ExitInfo, ManagedProcess, SpawnSpec, resolve_binary};
@@ -25,6 +25,7 @@ use crate::domain::agent::{ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
+    UsageWindow, UsageWindowKind,
 };
 
 const BINARY_NAME: &str = "claude";
@@ -57,6 +58,7 @@ impl ClaudeBackend {
 
     fn command(
         &self,
+        launch: Option<&Launch>,
         model: Option<&str>,
         effort: Option<&str>,
         agent: Option<&str>,
@@ -65,28 +67,30 @@ impl ClaudeBackend {
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
-            Launcher::Resolve => resolve_binary(BINARY_NAME, OVERRIDE_ENV)
-                .map(|program| {
-                    // Read-only sessions run in plan mode, whatever the user configured.
-                    let mode = if read_only {
-                        Some("plan".to_string())
-                    } else {
-                        permission_mode()
-                    };
-                    let mut args = launch_args(mode.as_deref(), model, effort, agent);
-                    // Other repositories of the workspace. The flag takes a list, so it goes
-                    // last, after every other option.
-                    for dir in extra_dirs {
-                        args.push("--add-dir".into());
-                        args.push(dir.to_string_lossy().into_owned());
-                    }
-                    (program, args)
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "claude CLI not found. Install Claude Code or set {OVERRIDE_ENV} to its path."
-                    )
-                }),
+            Launcher::Resolve => profile_program(launch, || {
+                resolve_binary(BINARY_NAME, OVERRIDE_ENV)
+            })
+            .map(|program| {
+                // Read-only sessions run in plan mode, whatever the user configured.
+                let mode = if read_only {
+                    Some("plan".to_string())
+                } else {
+                    permission_mode()
+                };
+                let mut args = launch_args(mode.as_deref(), model, effort, agent);
+                // Other repositories of the workspace. The flag takes a list, so it goes
+                // last, after every other option.
+                for dir in extra_dirs {
+                    args.push("--add-dir".into());
+                    args.push(dir.to_string_lossy().into_owned());
+                }
+                (program, profile_args(launch, args))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "claude CLI not found. Install Claude Code or set {OVERRIDE_ENV} to its path."
+                )
+            }),
         }
     }
 }
@@ -159,12 +163,13 @@ impl Default for ClaudeBackend {
 
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command(None, None, None, false, &[]).map(|_| ())
+        self.command(None, None, None, None, false, &[]).map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let (program, args) = self
             .command(
+                ctx.launch.as_ref(),
                 ctx.model.as_deref(),
                 ctx.effort.as_deref(),
                 ctx.agent.as_deref(),
@@ -185,7 +190,10 @@ impl AgentBackend for ClaudeBackend {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: claude_env(ctx.session_id, ctx.api.as_ref()),
+                env: compose_env(
+                    claude_env(ctx.session_id, ctx.api.as_ref()),
+                    ctx.launch.as_ref(),
+                ),
                 // A parent Claude Code session marks its children; strip it so we can nest.
                 env_remove: vec!["CLAUDECODE".into(), "CLAUDE_CODE_ENTRYPOINT".into()],
             },
@@ -301,6 +309,15 @@ impl ClaudeShared {
             Some("assistant") => self.on_assistant(&frame),
             Some("user") => self.on_user(&frame),
             Some("result") => self.on_result(&frame),
+            Some("rate_limit_event") => {
+                let windows = usage_windows(&frame);
+                if !windows.is_empty() {
+                    (self.emit)(BackendEvent::Usage {
+                        plan: None,
+                        windows,
+                    });
+                }
+            }
             Some("control_request") => self.on_control_request(&frame),
             Some("control_cancel_request") => self.on_control_cancel(&frame),
             _ => {}
@@ -823,6 +840,36 @@ struct ClaudeSession {
     cwd: PathBuf,
 }
 
+impl ClaudeSession {
+    fn send_user_message(&self, turn_id: TurnId, content: Vec<Value>) -> Result<()> {
+        if !self.is_alive() {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                self.shared.with_exit_info("claude is not running".into()),
+            ));
+        }
+        {
+            let mut state = self.shared.state.lock();
+            state.turn = Some(turn_id);
+            state.cancel_requested = false;
+        }
+        let process = self
+            .shared
+            .process
+            .get()
+            .ok_or_else(|| Error::new(ErrorCode::Agent, "claude is not running"))?;
+        process.write_line(
+            &json!({
+                "type": "user",
+                "message": { "role": "user", "content": content },
+                "parent_tool_use_id": null,
+                "session_id": ""
+            })
+            .to_string(),
+        )
+    }
+}
+
 impl BackendSession for ClaudeSession {
     fn message_subagent(
         &self,
@@ -880,31 +927,29 @@ impl BackendSession for ClaudeSession {
     }
 
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
-        if !self.is_alive() {
-            return Err(Error::new(
-                ErrorCode::Agent,
-                self.shared.with_exit_info("claude is not running".into()),
-            ));
+        self.send_user_message(turn_id, vec![json!({ "type": "text", "text": text })])
+    }
+
+    fn prompt_with_images(&self, turn_id: TurnId, text: &str, images: &[ImageFile]) -> Result<()> {
+        use base64::Engine as _;
+        // Pictures first, then the words about them.
+        let mut content = Vec::new();
+        for image in images {
+            let bytes = std::fs::read(&image.path)
+                .map_err(|error| Error::new(ErrorCode::Io, format!("{}: {error}", image.name)))?;
+            content.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.mime,
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes)
+                }
+            }));
         }
-        {
-            let mut state = self.shared.state.lock();
-            state.turn = Some(turn_id);
-            state.cancel_requested = false;
+        if !text.trim().is_empty() {
+            content.push(json!({ "type": "text", "text": text }));
         }
-        let process = self
-            .shared
-            .process
-            .get()
-            .ok_or_else(|| Error::new(ErrorCode::Agent, "claude is not running"))?;
-        process.write_line(
-            &json!({
-                "type": "user",
-                "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
-                "parent_tool_use_id": null,
-                "session_id": ""
-            })
-            .to_string(),
-        )
+        self.send_user_message(turn_id, content)
     }
 
     fn cancel(&self) -> Result<()> {
@@ -1072,8 +1117,88 @@ fn permission_detail(tool_name: &str, input: &Value, request: &Value) -> String 
     }
 }
 
+/// The limits a `rate_limit_event` frame reports: `utilization` is a share from 0 to 1 and
+/// `resetsAt` is in Unix seconds. The frame lists both windows under `unifiedWindows`; a frame
+/// without that list only carries the window named by `rateLimitType`.
+fn usage_windows(frame: &Value) -> Vec<UsageWindow> {
+    let Some(info) = frame.get("rate_limit_info") else {
+        return Vec::new();
+    };
+    let window = |kind: UsageWindowKind, node: &Value| {
+        let share = node.get("utilization").and_then(Value::as_f64)?;
+        let resets_at = node.get("resetsAt").and_then(Value::as_i64);
+        Some(UsageWindow::new(kind, share * 100.0, resets_at))
+    };
+    let mut windows = Vec::new();
+    if let Some(listed) = info.get("unifiedWindows") {
+        for (name, kind) in [
+            ("five_hour", UsageWindowKind::FiveHour),
+            ("seven_day", UsageWindowKind::Weekly),
+        ] {
+            if let Some(found) = listed.get(name).and_then(|node| window(kind, node)) {
+                windows.push(found);
+            }
+        }
+    }
+    if windows.is_empty() {
+        let kind = match info.get("rateLimitType").and_then(Value::as_str) {
+            Some("five_hour") => Some(UsageWindowKind::FiveHour),
+            Some("seven_day") => Some(UsageWindowKind::Weekly),
+            _ => None,
+        };
+        if let Some(found) = kind.and_then(|kind| window(kind, info)) {
+            windows.push(found);
+        }
+    }
+    windows
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn both_windows_come_out_of_a_rate_limit_event() {
+        let frame = json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed_warning",
+                "resetsAt": 1795021200,
+                "rateLimitType": "seven_day",
+                "utilization": 0.76,
+                "unifiedWindows": {
+                    "five_hour": { "utilization": 0.06, "resetsAt": 1794658200, "status": "allowed" },
+                    "seven_day": { "utilization": 0.76, "resetsAt": 1795021200, "status": "allowed_warning" }
+                }
+            }
+        });
+        assert_eq!(
+            usage_windows(&frame),
+            vec![
+                UsageWindow::new(UsageWindowKind::FiveHour, 6.0, Some(1794658200)),
+                UsageWindow::new(UsageWindowKind::Weekly, 76.0, Some(1795021200)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_frame_without_the_list_reports_the_window_it_names() {
+        let frame = json!({
+            "rate_limit_info": { "rateLimitType": "five_hour", "utilization": 0.5, "resetsAt": 7 }
+        });
+        assert_eq!(
+            usage_windows(&frame),
+            vec![UsageWindow::new(UsageWindowKind::FiveHour, 50.0, Some(7))]
+        );
+    }
+
+    #[test]
+    fn a_frame_that_gives_no_share_reports_nothing() {
+        let frame = json!({
+            "rate_limit_info": { "rateLimitType": "five_hour", "status": "allowed" }
+        });
+        assert!(usage_windows(&frame).is_empty());
+        assert!(usage_windows(&json!({ "type": "rate_limit_event" })).is_empty());
+    }
+
     #[test]
     fn launch_args_carry_the_permission_mode() {
         let args = launch_args(Some("auto"), None, None, None);
@@ -1129,6 +1254,7 @@ mod tests {
         let sender = Mutex::new(sender);
         let session = backend
             .start(BackendContext {
+                launch: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -1164,6 +1290,108 @@ mod tests {
             }
             panic!("timed out waiting for {what}; saw {seen:?}");
         }
+    }
+
+    /// The profile's settings reach the real CLI: an account folder with nothing in it is a
+    /// Claude that is not logged in, so the turn fails with that. Needs `claude` installed
+    /// (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs the claude CLI"]
+    fn the_settings_of_a_launch_profile_reach_the_real_cli() {
+        let account = std::env::temp_dir().join(format!("ataraxia-account-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&account).expect("account folder");
+        let launch = Launch {
+            env: vec![(
+                "CLAUDE_CONFIG_DIR".into(),
+                account.to_string_lossy().into_owned(),
+            )],
+            ..Launch::default()
+        };
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let session = ClaudeBackend::new()
+            .start(BackendContext {
+                launch: Some(launch),
+                read_only: false,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                api: None,
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start claude");
+        session.prompt(TurnId::new(), "say ok").expect("prompt");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut told = String::new();
+        while Instant::now() < deadline && told.is_empty() {
+            match events.recv_timeout(Duration::from_millis(100)) {
+                Ok(BackendEvent::Error { message }) => told = message,
+                Ok(BackendEvent::Delta { text, .. }) => told = text,
+                _ => {}
+            }
+        }
+        session.shutdown();
+        let _ = std::fs::remove_dir_all(&account);
+        assert!(
+            told.to_lowercase().contains("not logged in"),
+            "an empty account folder should be a Claude that is not logged in, got: {told:?}"
+        );
+    }
+
+    /// What the real CLI sends for a streamed reply: the text must arrive once, not twice.
+    /// Needs `claude` installed and logged in (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs the claude CLI and a login"]
+    fn a_streamed_reply_from_the_real_cli_arrives_once() {
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let session = ClaudeBackend::new()
+            .start(BackendContext {
+                launch: None,
+                read_only: true,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                api: None,
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start claude");
+        session
+            .prompt(
+                TurnId::new(),
+                "Reply with exactly these words and nothing else: alpha bravo charlie delta echo foxtrot golf hotel",
+            )
+            .expect("prompt");
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut text = String::new();
+        let mut pieces = Vec::new();
+        while Instant::now() < deadline {
+            match events.recv_timeout(Duration::from_millis(100)) {
+                Ok(BackendEvent::Delta { text: piece, .. }) => {
+                    pieces.push(piece.clone());
+                    text.push_str(&piece);
+                }
+                Ok(BackendEvent::TurnDone { .. }) | Ok(BackendEvent::Error { .. }) => break,
+                _ => {}
+            }
+        }
+        session.shutdown();
+        assert_eq!(
+            text.matches("alpha").count(),
+            1,
+            "the reply was streamed twice: {text:?} from {pieces:?}"
+        );
+        assert!(text.contains("hotel"), "no reply: {text:?}");
     }
 
     fn is_turn_done(event: &BackendEvent) -> bool {

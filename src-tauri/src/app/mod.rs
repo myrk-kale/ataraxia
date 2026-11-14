@@ -10,6 +10,7 @@ pub mod fakes;
 pub mod flow;
 pub mod health;
 pub mod heuristics;
+pub mod queue;
 pub mod review;
 pub mod units;
 pub mod workspace;

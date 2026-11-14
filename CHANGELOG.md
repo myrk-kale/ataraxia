@@ -6,6 +6,121 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
+### Added
+
+- Message queue. While the agent works, Enter (or the Queue button) puts what you type in a queue
+  above the composer instead of refusing it, and the messages go out one after another as each turn
+  ends well. "Send now" on a queued message stops the running turn and sends that message next, ahead
+  of the rest. A turn you stopped or that failed pauses the queue; the queue keeps going while you
+  look at another chat.
+
+- Pictures in the chat. Paste an image into the message field or choose files with the paperclip
+  (PNG, JPEG, GIF or WebP, 5 per message, 5 MB each; other files are refused with a reason for now).
+  They show as thumbnails before sending and in the message after. Claude Code gets them as images,
+  Codex as local images, and OpenCode gets the file's path. Queued messages keep their pictures.
+- The opening animation follows the time of day: sunrise over a snowy peak in the morning, a bright
+  island in the afternoon, the savanna at sunset in the evening and the sea under the moon at night.
+  It reads this computer's clock and needs nothing from the network.
+- Agent profiles, for people with more than one account on an agent. Settings > Agent profiles keeps,
+  for Claude Code, Codex and OpenCode, any number of profiles besides the default: a name, a colour
+  and the command that starts it, written as in a terminal (for example
+  `CLAUDE_CONFIG_DIR=~/.claude-work claude`; leave the program out to use the usual one). One
+  profile per agent is in use, and the form says what a command would run before it is saved. The
+  profile in use shows as a soft blur of its colour behind the agent's mark in the composer, with
+  its name on hover. A chat that is already open switches to the new profile at its next message
+  (a turn in progress is never interrupted), and the new agent is told where the conversation so
+  far is kept. The limits meter follows the account: each profile has its own numbers, and the
+  details name the profile.
+- Provider limits in the composer. Next to the agent's name, a small meter shows the five-hour and
+  weekly limits of the provider the chat runs on (Claude Code and Codex), as a bar and a number each.
+  Click it for when each window resets, the plan, and how long ago the provider reported. The last
+  known numbers are kept, so they show at start-up; a window that has since reset shows 0%; from 75%
+  the number turns amber and from 90% red, always with an icon. Providers that report no limits
+  show no meter.
+- A Copy button on tables (as cells, and as an HTML table), code blocks and diagrams.
+- Mermaid flowcharts are drawn as animated text on the graphics card (WebGL2), in the app's colours
+  and the code font, instead of by the Mermaid library: the drawing is about 22 KB of code against
+  about 2 MB, appears in a third of the time, and costs nothing while it is paused or out of view.
+  The animation (data flow by default, repeating) can be paused with a click on the diagram, and
+  each diagram has its own choice of animation (draw in, data flow, step by step, node pulse,
+  typing, state changes, matrix glitch, or none). A diagram opens full screen, where it can be
+  zoomed (wheel, pinch, buttons or + and -) and dragged, and is drawn again at each zoom so it stays
+  sharp. It has one Copy button, which copies the Mermaid source, and a description for screen
+  readers. Settings > Appearance > Diagrams has the default animation, Repeat, and the style of the
+  lines (square, all rounded, double, heavy or plain ASCII). Links go round the boxes and keep off
+  each other unless they share an end. Other kinds of diagram, subgraphs and anything the text
+  drawing cannot show faithfully, and a machine without WebGL2, still get the Mermaid library,
+  loaded only then.
+- The agent is told to ask which kind of diagram the developer wants, a Flow diagram or a Mermaid
+  one, when a request for a diagram does not say, instead of choosing.
+- Agent profiles, for people with more than one account on an agent. Settings > Agent profiles keeps,
+  for Claude Code, Codex and OpenCode, any number of profiles besides the default: a name, a colour
+  and the command that starts it, written as in a terminal (for example
+  `CLAUDE_CONFIG_DIR=~/.claude-work claude`; leave the program out to use the usual one). One
+  profile per agent is in use, and the form says what a command would run before it is saved. The
+  profile in use shows as a soft blur of its colour behind the agent's mark in the composer, with
+  its name on hover. A chat that is already open switches to the new profile at its next message
+  (a turn in progress is never interrupted), and the new agent is told where the conversation so
+  far is kept. The limits meter follows the account: each profile has its own numbers, and the
+  details name the profile.
+- Provider limits in the composer. Next to the agent's name, a small meter shows the five-hour and
+  weekly limits of the provider the chat runs on (Claude Code and Codex), as a bar and a number each.
+  Click it for when each window resets, the plan, and how long ago the provider reported. The last
+  known numbers are kept, so they show at start-up; a window that has since reset shows 0%; from 75%
+  the number turns amber and from 90% red, always with an icon. Providers that report no limits
+  show no meter.
+- A Copy button on tables (as cells, and as an HTML table), code blocks and diagrams.
+- Mermaid flowcharts are drawn as animated text on the graphics card (WebGL2), in the app's colours
+  and the code font, instead of by the Mermaid library: the drawing is about 22 KB of code against
+  about 2 MB, appears in a third of the time, and at rest costs the page nothing. One animation
+  plays once as a diagram comes into view (draw in, data flow, step by step, node pulse, typing,
+  state changes or matrix glitch, chosen in Settings > Appearance > Diagrams, which also has Keep
+  animating and the style of the lines: square, all rounded, double, heavy or plain ASCII), then it
+  rests. A diagram has Replay, Copy text (the drawing itself, as text) and Copy source, and a
+  description for screen readers. Links go round the boxes and keep off each other unless they
+  share an end. Other kinds of diagram, subgraphs and anything the text drawing cannot show
+  faithfully, and a machine without WebGL2, still get the Mermaid library, loaded only then.
+- Selecting text in the Code editor shows a small bar next to it: Ask, Comment and Copy. Ask opens
+  BTW with the selection attached; the bar names the selection, its file and lines, and the agent is
+  told the user has that text selected, in that file, so "this" means it.
+- Chats can be deleted from the Sessions list, with a second click to confirm. Their messages,
+  pictures, checkpoints, decisions and diagrams go; the code does not.
+
+### Changed
+
+- A long chat no longer gets heavy. Only the messages and tool calls on screen (and a few either
+  side) are in the page; the rest are blank space of the right height, so the memory and the work
+  of a chat stay those of one screen however long it runs. While a reply streams in, only that
+  reply is redrawn instead of the whole conversation, a tool call's input and output are only in
+  the page while it is open (and it stays open when you scroll back), pictures are kept in a
+  bounded cache, and a diagram that scrolls back into view is not drawn again. In a test chat of
+  2,000 messages and tool calls the page held 453 elements instead of 14,945.
+- A message you send is in its bubble at once and the loader starts at once, without waiting for
+  the app: the app first marks where the working tree stands (a snapshot of git in each
+  repository), which could leave the window looking frozen for a moment. The app's own report of
+  the message then takes the place of the one shown, without drawing it again, pictures included.
+  If the app refuses the message it is taken back out and its text and pictures go back in the
+  field, ahead of anything typed meanwhile. A message sent to the queue is listed at once too.
+- The loader while the agent works is three dots that rise and settle in a wave, in the colour of
+  the text, and still when the system asks for reduced motion.
+- Shift with Up or Down changes space wherever focus is, the message field, the editor and the
+  terminal included.
+
+### Fixed
+
+- Streamed text could show every word twice (`VouVou usar usar a a skill skill`) when an event
+  reached the window twice. Every agent event now carries a number and the chat applies each
+  number once, so a repeated delivery changes nothing. The stored conversation was never affected.
+
+- What the agent writes through the local API (a diagram, a decision, a message on a decision, a
+  linked commit, a comment or a priority) now shows up in the open tab at once. It was saved, but the
+  window was never told, so a Flow or Decisions tab that was already open stayed as it was until the
+  chat was reopened. A diagram that is new is also the one the Flow tab shows.
+- The agent can record a decision or a diagram in a chat that has not changed any code. Before, the
+  local API refused ("nothing has changed in this chat yet"), though neither is about a diff.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

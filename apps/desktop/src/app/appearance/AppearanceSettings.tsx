@@ -7,6 +7,7 @@ import { installedFonts } from "./installedFonts";
 import { useBackground } from "../../chat/background";
 import { Toggle } from "../../ui/Overlay";
 import { BUILT_IN_THEMES, useAppearance, type Mode } from "./store";
+import { DiagramSettings } from "./DiagramSettings";
 
 const SWATCHES = ["--cg-canvas", "--cg-panel", "--cg-ink", "--cg-accent", "--cg-green", "--cg-red"] as const;
 
@@ -228,6 +229,8 @@ export function AppearanceSettings() {
           <Toggle hideLabel isSelected={background.enabled} label="Animated background" onChange={background.set} />
         </SettingRow>
       </section>
+
+      <DiagramSettings />
 
       <section aria-label="Fonts" className="flex flex-col">
         <div className="mb-1 flex items-center justify-between gap-2">

@@ -53,9 +53,31 @@ describe("shortcuts", () => {
         expect(resolveShortcut(press(key), { space: "code", overlay: false }) && true).toBeTruthy();
         expect(resolveShortcut(press(key, {}, inner), { space: "code", overlay: false }), `${markup} ${key}`).toBeNull();
       }
-      expect(resolveShortcut(press("ArrowDown", { shiftKey: true }, inner), idle)).toBeNull();
       expect(resolveShortcut(press("A", { shiftKey: true }, inner), idle)).toBeNull();
     }
+  });
+
+  it("moves between spaces with Shift+Up and Shift+Down from anywhere, fields, editor and terminal included", () => {
+    for (const markup of [
+      "<input />",
+      "<textarea></textarea>",
+      "<div contenteditable='true'></div>",
+      "<div class='monaco-editor'><span tabindex='0'></span></div>",
+      "<div class='xterm'><span tabindex='0'></span></div>",
+      "<div role='combobox' tabindex='0'></div>",
+      "<button></button>",
+    ]) {
+      const target = el(markup);
+      const inner = (target.firstElementChild as HTMLElement | null) ?? target;
+      expect(resolveShortcut(press("ArrowDown", { shiftKey: true }, inner), idle), markup).toEqual({ type: "space", delta: 1 });
+      expect(resolveShortcut(press("ArrowUp", { shiftKey: true }, inner), idle), markup).toEqual({ type: "space", delta: -1 });
+    }
+    // With another modifier held it is a different chord (extend selection by word, for one).
+    const field = el("<textarea></textarea>");
+    expect(resolveShortcut(press("ArrowDown", { shiftKey: true, altKey: true }, field), idle)).toBeNull();
+    expect(resolveShortcut(press("ArrowDown", { shiftKey: true, metaKey: true }, field), idle)).toBeNull();
+    // Not while composing with an IME.
+    expect(resolveShortcut(press("ArrowDown", { shiftKey: true, isComposing: true }, field), idle)).toBeNull();
   });
 
   it("allows Ctrl+K in a text field but leaves it to Monaco inside the editor", () => {

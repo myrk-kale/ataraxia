@@ -37,6 +37,7 @@ import { Loading, LOADING, READY, type LoadState } from "../ui/State";
 import { CommentComposer } from "./CommentComposer";
 import { ChangedList, ComponentQueue, ProjectTree } from "./FileLists";
 import type { EditorHandle, EditorSelection, LineMarks } from "./MonacoEditor";
+import { SelectionMenu } from "./SelectionMenu";
 import {
   ancestors,
   shownLabel,
@@ -685,6 +686,17 @@ export function CodeSpace({
     }
   }
 
+  const startComment = useCallback(() => {
+    if (!doc) {
+      return;
+    }
+    if (!checkpoint || !inCheckpoint) {
+      onError("Comments attach to a changed file of a checkpoint. Open a changed file first.");
+      return;
+    }
+    setCommenting(true);
+  }, [doc, checkpoint, inCheckpoint, onError]);
+
   // Shortcuts reach the space through the bridge: queue navigation, version toggle, comments.
   useEffect(() => {
     bridge.current.commands = {
@@ -704,21 +716,12 @@ export function CodeSpace({
           void openFile(next);
         }
       },
-      comment: () => {
-        if (!doc) {
-          return;
-        }
-        if (!checkpoint || !inCheckpoint) {
-          onError("Comments attach to a changed file of a checkpoint. Open a changed file first.");
-          return;
-        }
-        setCommenting(true);
-      },
+      comment: startComment,
     };
     return () => {
       bridge.current.commands = {};
     };
-  }, [bridge, toggleVersion, toggleWrap, queue, units, mode, activeUnit, openUnit, doc, openFile, checkpoint, inCheckpoint, onError]);
+  }, [bridge, toggleVersion, toggleWrap, queue, units, mode, activeUnit, openUnit, doc, openFile, startComment]);
 
   // What BTW is told about Code: the selection if there is one, else the component open in the
   // queue, else the file, whichever space BTW is summoned from.
@@ -1115,6 +1118,15 @@ export function CodeSpace({
                       selection.current = next;
                       bridge.current.context = contextOf(next);
                     }}
+                    selectionMenu={(picked, dismiss) => (
+                      <SelectionMenu
+                        text={picked.text}
+                        // BTW reads the selection from the bridge, which every change of it updated.
+                        onAsk={onBtw}
+                        onComment={checkpoint && inCheckpoint ? startComment : undefined}
+                        onDone={dismiss}
+                      />
+                    )}
                   />
                 </Suspense>
               )}

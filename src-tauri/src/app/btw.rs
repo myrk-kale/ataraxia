@@ -243,7 +243,15 @@ impl Engine {
             context.space
         );
         if let Some(item) = &context.item {
-            out.push_str("Looking at: ");
+            if item.kind == "selection" {
+                // What "this" and "here" mean in the question.
+                out.push_str(
+                    "The user has this text selected in the editor, so \"this\", \"here\" and \"that\" \
+                     in the question mean it: ",
+                );
+            } else {
+                out.push_str("Looking at: ");
+            }
             out.push_str(&self.render_item(&worktree.path, item, MAX_CONTEXT_LINES));
         }
         let others: Vec<&ContextItem> = context.active.iter().take(MAX_OTHER_ITEMS).collect();

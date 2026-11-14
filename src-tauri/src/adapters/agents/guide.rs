@@ -34,6 +34,7 @@ pub fn preamble(index: &Path) -> String {
          - Never generate or record any of these on your own.\n\
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
          - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
+         - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          The developer's message follows.\n\n",
         index.display()
@@ -87,6 +88,7 @@ mod tests {
         assert!(prompt.contains("Never generate"));
         assert!(prompt.contains("one short question"));
         assert!(prompt.contains("ATARAXIA_API_URL"));
+        assert!(prompt.contains("Flow diagram") && prompt.contains("Mermaid diagram"));
         // The pages the index names all exist.
         let readme = std::fs::read_to_string(&index).expect("index");
         for (name, _) in FILES.iter().filter(|(name, _)| *name != "README.md") {
@@ -111,10 +113,25 @@ mod tests {
     }
 
     #[test]
+    fn a_request_for_a_diagram_with_no_kind_is_answered_with_a_question_and_not_a_choice() {
+        let text = preamble(Path::new("/data/guide/README.md"));
+        let line = text
+            .lines()
+            .find(|line| line.contains("asks for a diagram"))
+            .expect("a line about diagrams");
+        assert!(line.contains("ask first"));
+        assert!(line.contains("Flow diagram"));
+        assert!(line.contains("Mermaid diagram"));
+        assert!(line.contains("Do not choose for them"));
+        // And it does not ask when the kind was already said.
+        assert!(line.contains("do not ask"));
+    }
+
+    #[test]
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 190,
+            text.split_whitespace().count() < 240,
             "{} words",
             text.split_whitespace().count()
         );

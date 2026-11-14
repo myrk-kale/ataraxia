@@ -402,6 +402,14 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
     }
     case "flow_delete_preset": return ok(null);
     case "flow_list": return ok(flows);
+    case "dev_agent_flow": {
+      // What the agent does through the local API: a diagram appears with nobody pressing Generate.
+      flowCount += 1;
+      const artifact = { id: "f" + flowCount, session_id: sessionId, checkpoint_id: "cp2", kind: "flow", dedupe_key: String(flowCount), version: flowCount, status: "ready", content: flowContent, provenance: { presetName: "Drawn by the agent", prompt: "", extra: "" }, error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      flows = [artifact, ...flows];
+      emit("insight://event", { type: "artifact", sessionId, artifactId: artifact.id, kind: "flow", status: "ready" });
+      return ok(artifact);
+    }
     case "flow_generate": {
       flowCount += 1;
       const preset = presets.find((p) => p.id === args?.presetId)!;

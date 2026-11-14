@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use crate::domain::agent::SessionOptions;
 use crate::domain::ids::{SessionId, TurnId};
-use crate::domain::{PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId};
+use crate::domain::{
+    PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId, UsageWindow,
+};
 use crate::ports::ApiAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +54,11 @@ pub enum BackendEvent {
     TurnStarted {
         turn_id: TurnId,
     },
+    /// Where the account's limits stand. The host knows which provider is speaking.
+    Usage {
+        plan: Option<String>,
+        windows: Vec<UsageWindow>,
+    },
     /// Progress inside a subagent's own conversation.
     Subagent {
         id: String,
@@ -89,7 +96,49 @@ pub struct BackendContext {
     pub read_only: bool,
     /// Where the agent finds Ataraxia's local API, with a token for this process only.
     pub api: Option<ApiAccess>,
+    /// How the chosen launch profile starts the harness; `None` is the default way.
+    pub launch: Option<Launch>,
     pub emit: Emitter,
+}
+
+/// What a launch profile changes about starting a harness.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Launch {
+    /// The program to run instead of the harness's usual one.
+    pub program: Option<PathBuf>,
+    /// Arguments that come before the ones the harness is always started with.
+    pub args: Vec<String>,
+    /// Variables set for the process, after (so over) the ones Ataraxia sets.
+    pub env: Vec<(String, String)>,
+}
+
+/// The program to run: the profile's if it names one, else the harness's usual one.
+pub fn profile_program(
+    launch: Option<&Launch>,
+    usual: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    launch
+        .and_then(|launch| launch.program.clone())
+        .or_else(usual)
+}
+
+/// The arguments to run with: the profile's, then the ones the harness is always started with.
+pub fn profile_args(launch: Option<&Launch>, own: Vec<String>) -> Vec<String> {
+    match launch {
+        Some(launch) => launch.args.iter().cloned().chain(own).collect(),
+        None => own,
+    }
+}
+
+/// The environment of the process: Ataraxia's variables, then the profile's.
+pub fn compose_env(
+    mut base: Vec<(String, String)>,
+    launch: Option<&Launch>,
+) -> Vec<(String, String)> {
+    if let Some(launch) = launch {
+        base.extend(launch.env.iter().cloned());
+    }
+    base
 }
 
 pub const API_URL_ENV: &str = "ATARAXIA_API_URL";
@@ -117,9 +166,38 @@ pub trait AgentBackend: Send + Sync {
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>>;
 }
 
+/// A picture of a message, as a file an agent can open.
+#[derive(Debug, Clone)]
+pub struct ImageFile {
+    pub path: std::path::PathBuf,
+    pub mime: String,
+    pub name: String,
+}
+
+/// The message with the pictures' places said in words, for providers that read files.
+pub fn with_image_paths(text: &str, images: &[ImageFile]) -> String {
+    if images.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str("The user attached these images, saved as files you can open:\n");
+    for image in images {
+        out.push_str(&format!("- {} ({})\n", image.path.display(), image.name));
+    }
+    out
+}
+
 /// A live provider session. Methods take `&self`; implementations use interior mutability.
 pub trait BackendSession: Send + Sync {
     fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()>;
+    /// A message with pictures. A provider with no way to take them natively is told where the
+    /// files are, in the text, and reads them with its own tools.
+    fn prompt_with_images(&self, turn_id: TurnId, text: &str, images: &[ImageFile]) -> Result<()> {
+        self.prompt(turn_id, &with_image_paths(text, images))
+    }
     /// Must lead to exactly one `TurnDone { ok: false }` for the active turn.
     fn cancel(&self) -> Result<()>;
     fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()>;
@@ -233,5 +311,58 @@ mod tests {
             line,
             format!("http://127.0.0.1:4000 secret-token {}", session.0)
         );
+    }
+
+    #[test]
+    fn a_profile_changes_the_program_and_puts_its_arguments_first() {
+        let launch = Launch {
+            program: Some(PathBuf::from("/opt/work/claude")),
+            args: vec!["--settings".into(), "w.json".into()],
+            env: vec![("CLAUDE_CONFIG_DIR".into(), "/w".into())],
+        };
+        assert_eq!(
+            profile_program(Some(&launch), || Some(PathBuf::from("/usr/bin/claude"))),
+            Some(PathBuf::from("/opt/work/claude"))
+        );
+        assert_eq!(
+            profile_args(Some(&launch), vec!["--verbose".into()]),
+            vec!["--settings", "w.json", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn a_profile_of_settings_alone_keeps_the_usual_program_and_arguments() {
+        let launch = Launch {
+            env: vec![("CODEX_HOME".into(), "/w".into())],
+            ..Launch::default()
+        };
+        assert_eq!(
+            profile_program(Some(&launch), || Some(PathBuf::from("/usr/bin/codex"))),
+            Some(PathBuf::from("/usr/bin/codex"))
+        );
+        assert_eq!(
+            profile_args(Some(&launch), vec!["app-server".into()]),
+            vec!["app-server"]
+        );
+    }
+
+    #[test]
+    fn without_a_profile_nothing_changes() {
+        assert_eq!(profile_program(None, || None), None);
+        assert_eq!(profile_args(None, vec!["acp".into()]), vec!["acp"]);
+        assert_eq!(
+            compose_env(vec![("A".into(), "1".into())], None),
+            vec![("A".to_string(), "1".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_profiles_settings_come_after_ataraxias_so_they_win() {
+        let launch = Launch {
+            env: vec![("A".into(), "profile".into())],
+            ..Launch::default()
+        };
+        let env = compose_env(vec![("A".into(), "ataraxia".into())], Some(&launch));
+        assert_eq!(env.last(), Some(&("A".to_string(), "profile".to_string())));
     }
 }

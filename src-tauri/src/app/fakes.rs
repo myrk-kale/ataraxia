@@ -317,6 +317,16 @@ impl Store for FakeStore {
             .cloned())
     }
 
+    fn delete_session(&self, id: SessionId) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let before = sessions.len();
+        sessions.retain(|item| item.id != id && item.parent_session_id != Some(id));
+        if sessions.len() == before {
+            return Err(Error::new(ErrorCode::NotFound, "session not found"));
+        }
+        Ok(())
+    }
+
     fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()> {
         let mut sessions = self.sessions.lock().expect("sessions");
         let session = sessions

@@ -560,6 +560,20 @@ impl<'a> WorkspaceService<'a> {
         self.bootstrap()
     }
 
+    /// Deletes a chat. The agent process of the chat is the caller's to stop first.
+    pub fn delete_session(&self, session_id: SessionId) -> Result<WorkspaceSnapshot> {
+        let session = self
+            .store
+            .get_session(session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        if session.kind != SessionKind::Chat {
+            return Err(Error::new(ErrorCode::Invalid, "only chats can be deleted"));
+        }
+        self.store.delete_session(session_id)?;
+        // A selection that points at a chat that is gone reads as no selection.
+        self.bootstrap()
+    }
+
     fn worktree_of(&self, worktree_id: WorktreeId) -> Result<(Repository, Worktree)> {
         let worktree = self
             .store
