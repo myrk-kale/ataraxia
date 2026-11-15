@@ -1,7 +1,9 @@
-//! The record a new harness inherits when the user switches providers mid-chat.
+//! The record an agent inherits when it takes over a conversation it has no memory of: the user
+//! switched providers or accounts mid-chat, or the agent could not pick its own conversation up
+//! again (the app was restarted, its process died, its model changed).
 //!
-//! The provider conversation cannot move between harnesses, so the whole exchange is written to a
-//! text file and the new agent is told, once, that it continues that conversation and may read it.
+//! The whole exchange is written to a text file and the new agent is told, once, that it continues
+//! that conversation and may read parts of it.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -54,7 +56,7 @@ pub fn render(from_provider: &str, items: &[ChatItem], subagents: &[SubagentReco
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "Conversation between the user and a coding agent ({from_provider}), up to the point where the user switched agents.\nEvery entry is labelled: [user], [agent], [tool], [subagent: <title>] with its own [user], [agent] and [tool] entries.\n"
+        "Conversation between the user and a coding agent ({from_provider}), up to the point where a new agent took over.\nEvery entry is labelled: [user], [agent], [tool], [subagent: <title>] with its own [user], [agent] and [tool] entries.\n"
     );
     items_into(&mut out, items, ("user", "agent", "tool"));
     for subagent in subagents {
@@ -97,7 +99,7 @@ pub fn write(path: &Path, text: &str) -> Result<()> {
 /// What the new agent reads ahead of the user's next message.
 pub fn preamble(path: &Path) -> String {
     format!(
-        "[Context from Ataraxia] This chat continues a conversation the user had with another agent, which they switched away from. You start without that agent's memory. The full conversation (user, agent, tool and subagent entries, in order) is saved at {}. Read it if you need what was said or done before; otherwise just answer the message below.\n\n",
+        "[Context from Ataraxia] This chat continues a conversation that was already under way: the user talked with an agent before (another one, or this one before it restarted), and you start without its memory. What was said and done (user, agent, tool and subagent entries, in order) is saved at {}. It can be long, so do not read it all: read the parts you need, the end first, or search it for the words of the message below. If the message below needs nothing from before, just answer it.\n\n",
         path.display()
     )
 }
