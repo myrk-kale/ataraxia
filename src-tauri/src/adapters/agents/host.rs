@@ -1024,9 +1024,9 @@ impl AgentHost {
     /// Saves the whole conversation as text for the harness that takes over. Failing to write it
     /// never blocks the switch; the new agent just is not pointed at a record.
     fn write_handoff(&self, session_id: &SessionId, from: ProviderKind) {
-        let Some(dir) = self.inner.handoff_dir.lock().clone() else {
+        if self.inner.handoff_dir.lock().is_none() {
             return;
-        };
+        }
         let (items, subagents) = {
             let sessions = self.inner.sessions.lock();
             match sessions.get(session_id) {
@@ -1044,11 +1044,26 @@ impl AgentHost {
                 ),
             }
         };
+        self.write_handoff_of(session_id, from, &items, &subagents);
+    }
+
+    /// Writes the record of `items` and `subagents` and queues the pointer to it for the next
+    /// message the agent gets.
+    fn write_handoff_of(
+        &self,
+        session_id: &SessionId,
+        from: ProviderKind,
+        items: &[ChatItem],
+        subagents: &[SubagentRecord],
+    ) {
+        let Some(dir) = self.inner.handoff_dir.lock().clone() else {
+            return;
+        };
         if items.is_empty() && subagents.is_empty() {
             return;
         }
         let path = handoff::handoff_path(&dir, session_id);
-        let text = handoff::render(from.as_str(), &items, &subagents);
+        let text = handoff::render(from.as_str(), items, subagents);
         match handoff::write(&path, &text) {
             Ok(()) => {
                 self.inner.handoffs.lock().insert(*session_id, path);
@@ -1297,6 +1312,12 @@ impl AgentRuntime for AgentHost {
             .set_session_agent_ref(session_id, started.conversation().as_deref())
         {
             eprintln!("ataraxia: could not remember the conversation: {error}");
+        }
+        // Whenever the screen shows earlier messages "for reference", the agent has not read
+        // them: its first message points it at a record of them. A switch of harness or account
+        // already wrote one just before this restart, and that one stands.
+        if !resumed && !self.inner.handoffs.lock().contains_key(&session_id) {
+            self.write_handoff_of(&session_id, provider, &carried, &carried_subagents);
         }
         let mut sessions = self.inner.sessions.lock();
         sessions.insert(
@@ -3393,6 +3414,43 @@ mod tests {
             &snapshot.items[0],
             ChatItem::Message(m) if m.text == "remember me"
         ));
+    }
+
+    #[test]
+    fn an_agent_that_starts_fresh_under_an_old_transcript_is_pointed_at_it_once() {
+        let h = harness();
+        h.host.prompt(&h.session.id, "remember me").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+
+        // The app restarts and the agent cannot pick the conversation up: the transcript is on
+        // screen "for reference" and the agent that takes over starts without it.
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let dir = std::env::temp_dir().join(format!("ataraxia-handoff-{}", Uuid::new_v4()));
+        let restarted = AgentHost::new(h.store.clone(), Arc::new(RecordingSink::default()))
+            .with_backend(ProviderKind::Fake, Arc::new(Recorder(Arc::clone(&prompts))))
+            .with_handoff_dir(dir.clone());
+        restarted.start_session(&h.session).expect("start");
+        assert!(
+            restarted
+                .snapshot(&h.session.id)
+                .expect("snapshot")
+                .restored_count
+                > 0
+        );
+
+        restarted.prompt(&h.session.id, "and now?").expect("prompt");
+        let sent = prompts.lock().clone();
+        let path = handoff::handoff_path(&dir, &h.session.id);
+        assert!(sent[0].contains("continues a conversation"), "{}", sent[0]);
+        assert!(sent[0].contains(&path.display().to_string()), "{}", sent[0]);
+        assert!(sent[0].ends_with("and now?"));
+        let record = std::fs::read_to_string(&path).expect("record");
+        assert!(record.contains("[user]\nremember me"), "{record}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
