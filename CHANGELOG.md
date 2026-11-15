@@ -6,6 +6,19 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-15
+
+### Fixed
+
+- An agent that starts fresh under an earlier transcript now knows the conversation continues. The
+  notice "Earlier messages are shown for reference; the agent starts fresh" shows when the app was
+  restarted and the harness could not pick the conversation up, when its process died, or when the
+  model changed; in those cases the new agent began with no context at all, because the record of the
+  conversation was only written when you switched harness or account. Now the agent's first message
+  tells it that the chat continues an earlier conversation, and where it is saved, and asks it to
+  read only the parts it needs: the end first, or a search for the words of your message. It is told
+  once, with the first message after the restart.
+
 ## [0.5.0] - 2026-11-15
 
 ### Added
@@ -263,7 +276,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/myrk-kale/ataraxia/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/myrk-kale/ataraxia/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/myrk-kale/ataraxia/compare/v0.2.0...v0.3.0
