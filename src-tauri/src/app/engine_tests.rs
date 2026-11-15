@@ -987,6 +987,7 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends()
             PermissionDecision {
                 request_id,
                 allow: true,
+                answers: Default::default(),
             },
         )
         .unwrap();
@@ -1706,6 +1707,7 @@ fn approve(w: &World, request: PermissionRequestId) {
             PermissionDecision {
                 request_id: request,
                 allow: true,
+                answers: Default::default(),
             },
         )
         .unwrap();

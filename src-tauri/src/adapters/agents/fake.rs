@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use uuid::Uuid;
 
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, SubagentRoute,
@@ -22,6 +23,8 @@ const TOOL_INPUT: &str = "{\"path\":\"README.md\"}";
 pub struct FakeBackend {
     step_delay: Duration,
     live_settings: bool,
+    exit_on_shutdown: bool,
+    resumable: bool,
 }
 
 impl FakeBackend {
@@ -29,7 +32,22 @@ impl FakeBackend {
         Self {
             step_delay,
             live_settings: true,
+            exit_on_shutdown: false,
+            resumable: false,
         }
+    }
+
+    /// Keeps a conversation the way harnesses that can pick one up again do (tests): every new
+    /// start without one to resume begins a numbered conversation.
+    pub fn resumable(mut self) -> Self {
+        self.resumable = true;
+        self
+    }
+
+    /// Reports an error as it is shut down, the way a killed process reports its exit (tests).
+    pub fn exiting_on_shutdown(mut self) -> Self {
+        self.exit_on_shutdown = true;
+        self
     }
 
     /// Behaves like providers that only read model/effort at process start (tests).
@@ -47,10 +65,18 @@ impl Default for FakeBackend {
 
 impl AgentBackend for FakeBackend {
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+        let (conversation, resumed) = match (self.resumable, ctx.resume) {
+            (false, _) => (None, false),
+            (true, Some(id)) => (Some(id), true),
+            (true, None) => (Some(format!("fake-{}", Uuid::new_v4())), false),
+        };
         Ok(Arc::new(FakeSession {
+            conversation,
+            resumed,
             emit: ctx.emit,
             step_delay: self.step_delay,
             live_settings: self.live_settings,
+            exit_on_shutdown: self.exit_on_shutdown,
             read_only: ctx.read_only,
             state: Arc::new(Mutex::new(FakeState::default())),
         }))
@@ -70,14 +96,25 @@ struct Pending {
 }
 
 struct FakeSession {
+    conversation: Option<String>,
+    resumed: bool,
     emit: Emitter,
     step_delay: Duration,
     live_settings: bool,
+    exit_on_shutdown: bool,
     read_only: bool,
     state: Arc<Mutex<FakeState>>,
 }
 
 impl BackendSession for FakeSession {
+    fn conversation(&self) -> Option<String> {
+        self.conversation.clone()
+    }
+
+    fn resumed(&self) -> bool {
+        self.resumed
+    }
+
     fn apply_settings(
         &self,
         _model: Option<&str>,
@@ -228,6 +265,16 @@ impl BackendSession for FakeSession {
 
     fn shutdown(&self) {
         let _ = self.cancel();
+        if self.exit_on_shutdown {
+            // A killed process reports its exit a moment later, once it has been replaced.
+            let emit = Arc::clone(&self.emit);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                emit(BackendEvent::Error {
+                    message: "fake exited".into(),
+                });
+            });
+        }
     }
 }
 
@@ -293,6 +340,7 @@ impl TurnRun {
             request_id,
             tool_name: TOOL_NAME.into(),
             detail: "Allow reading README.md in the selected worktree?".into(),
+            questions: Vec::new(),
         });
     }
 }

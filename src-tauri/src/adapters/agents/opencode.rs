@@ -19,7 +19,7 @@ use super::backend::{
 };
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
-use crate::domain::agent::{AgentChoice, ModelChoice, SessionOptions};
+use crate::domain::agent::{AgentChoice, ModelChoice, SessionOptions, SlashCommand};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
@@ -112,8 +112,9 @@ impl AgentBackend for OpenCodeBackend {
         )?;
         let _ = shared.client.set(Arc::clone(&client));
 
+        let mut resumed = false;
         let handshake = (|| -> Result<()> {
-            client.request(
+            let hello = client.request(
                 "initialize",
                 json!({
                     "protocolVersion": 1,
@@ -129,6 +130,29 @@ impl AgentBackend for OpenCodeBackend {
                 }),
                 Some(HANDSHAKE_TIMEOUT),
             )?;
+            // The session of the last run, when the agent can pick one up without replaying it
+            // (replayed messages would be shown twice); a lost one begins a new session.
+            let can_resume = hello
+                .pointer("/agentCapabilities/sessionCapabilities/resume")
+                .is_some_and(|value| !value.is_null());
+            if let (true, Some(wanted)) = (can_resume, ctx.resume.as_deref()) {
+                if let Ok(picked) = client.request(
+                    "session/resume",
+                    json!({
+                        "sessionId": wanted,
+                        "cwd": ctx.cwd.to_string_lossy(),
+                        "mcpServers": []
+                    }),
+                    Some(HANDSHAKE_TIMEOUT),
+                ) {
+                    let _ = shared.acp_session_id.set(wanted.to_string());
+                    if let Some(options) = picked.get("configOptions") {
+                        shared.remember_config(parse_config_options(options), true);
+                    }
+                    resumed = true;
+                    return Ok(());
+                }
+            }
             let created = client.request(
                 "session/new",
                 json!({ "cwd": ctx.cwd.to_string_lossy(), "mcpServers": [] }),
@@ -157,7 +181,7 @@ impl AgentBackend for OpenCodeBackend {
                 .as_deref()
                 .or(if ctx.read_only { Some("plan") } else { None }),
         );
-        Ok(Arc::new(AcpSession { shared }))
+        Ok(Arc::new(AcpSession { shared, resumed }))
     }
 }
 
@@ -194,6 +218,35 @@ struct AcpState {
     /// Child sessions seen so far (id → title), so updates addressed to one are recognised
     /// even without the `_meta` marker.
     children: HashMap<String, String>,
+    /// The commands the agent runs from a `/name` message, as it last said.
+    commands: Vec<SlashCommand>,
+}
+
+/// The agent's own list: a name, a description and, for one that takes arguments, a hint.
+fn parse_commands(list: &[Value]) -> Vec<SlashCommand> {
+    list.iter()
+        .filter_map(|node| {
+            let name = node.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(SlashCommand {
+                name: name.trim_start_matches('/').to_string(),
+                description: node
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                hint: node
+                    .pointer("/input/hint")
+                    .and_then(Value::as_str)
+                    .filter(|hint| !hint.trim().is_empty())
+                    .map(str::to_string),
+                source: None,
+            })
+        })
+        .collect()
 }
 
 /// A subagent's child session, as marked by OpenCode on its updates.
@@ -419,6 +472,13 @@ impl AcpShared {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let mut state = self.state.lock();
+        // Said at any time, not only during a turn.
+        if kind == "available_commands_update" {
+            if let Some(list) = update.get("availableCommands").and_then(Value::as_array) {
+                state.commands = parse_commands(list);
+            }
+            return;
+        }
         let Some(turn_id) = state.turn else {
             return;
         };
@@ -645,6 +705,7 @@ impl AcpShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
+                questions: Vec::new(),
             });
             state.active = Some(next);
         }
@@ -759,9 +820,23 @@ impl AcpShared {
 
 struct AcpSession {
     shared: Arc<AcpShared>,
+    /// The session of an earlier run was picked up again.
+    resumed: bool,
 }
 
 impl BackendSession for AcpSession {
+    fn commands(&self) -> Vec<SlashCommand> {
+        self.shared.state.lock().commands.clone()
+    }
+
+    fn conversation(&self) -> Option<String> {
+        self.shared.acp_session_id.get().cloned()
+    }
+
+    fn resumed(&self) -> bool {
+        self.resumed
+    }
+
     fn message_subagent(
         &self,
         _turn_id: TurnId,
@@ -1024,6 +1099,15 @@ mod tests {
     }
 
     fn start_with(model: Option<&str>, effort: Option<&str>, agent: Option<&str>) -> Harness {
+        start_full(model, effort, agent, None)
+    }
+
+    fn start_full(
+        model: Option<&str>,
+        effort: Option<&str>,
+        agent: Option<&str>,
+        resume: Option<&str>,
+    ) -> Harness {
         let (sender, events) = mpsc::channel();
         let sender = Mutex::new(sender);
         let session = mock_backend()
@@ -1036,6 +1120,7 @@ mod tests {
                 model: model.map(str::to_string),
                 effort: effort.map(str::to_string),
                 agent: agent.map(str::to_string),
+                resume: resume.map(str::to_string),
                 api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
@@ -1043,6 +1128,47 @@ mod tests {
             })
             .expect("handshake with mock agent");
         Harness { session, events }
+    }
+
+    #[test]
+    fn the_commands_the_agent_announces_are_offered_with_their_hint() {
+        let h = start();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut commands = h.session.commands();
+        while commands.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            commands = h.session.commands();
+        }
+        h.session.shutdown();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].name, "review");
+        assert_eq!(commands[0].hint.as_deref(), Some("commit|branch|pr"));
+        assert_eq!(commands[1].name, "compact");
+        assert_eq!(commands[1].hint, None);
+    }
+
+    #[test]
+    fn a_session_the_agent_still_has_is_picked_up_again() {
+        let h = start_full(None, None, None, Some("ses_old"));
+        assert!(h.session.resumed());
+        assert_eq!(h.session.conversation().as_deref(), Some("ses_old"));
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn a_session_the_agent_lost_begins_a_new_one() {
+        let h = start_full(None, None, None, Some("gone_session"));
+        assert!(!h.session.resumed());
+        assert_eq!(h.session.conversation().as_deref(), Some("ses_mock"));
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn a_first_run_begins_a_session_and_reports_it() {
+        let h = start();
+        assert!(!h.session.resumed());
+        assert_eq!(h.session.conversation().as_deref(), Some("ses_mock"));
+        h.session.shutdown();
     }
 
     fn state_line(h: &Harness) -> String {
@@ -1250,7 +1376,11 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         };
         h.session
-            .resolve_permission(&PermissionDecision { request_id, allow })
+            .resolve_permission(&PermissionDecision {
+                request_id,
+                allow,
+                answers: Default::default(),
+            })
             .expect("resolve");
         seen.extend(h.until("turn done", is_turn_done));
         h.session.shutdown();
@@ -1342,6 +1472,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                resume: None,
                 api: None,
                 emit: Arc::new(|_| {}),
             })

@@ -179,6 +179,26 @@ pub enum SubagentUpdate {
 pub struct PermissionDecision {
     pub request_id: PermissionRequestId,
     pub allow: bool,
+    /// What the person answered to the agent's questions, by question text. Several choices of
+    /// one question are joined with a comma. Empty when the request asked nothing.
+    #[serde(default)]
+    pub answers: std::collections::BTreeMap<String, String>,
+}
+
+/// A question the agent puts to the person, with the answers it suggests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionQuestion {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +253,8 @@ pub enum AgentEvent {
         request_id: PermissionRequestId,
         tool_name: String,
         detail: String,
+        #[serde(default)]
+        questions: Vec<PermissionQuestion>,
     },
     #[serde(rename_all = "camelCase")]
     TurnDone {
@@ -261,6 +283,8 @@ pub struct PendingPermission {
     pub turn_id: TurnId,
     pub tool_name: String,
     pub detail: String,
+    #[serde(default)]
+    pub questions: Vec<PermissionQuestion>,
 }
 
 /// Everything the UI needs to rebuild a chat view after (re)opening a session.

@@ -4,6 +4,7 @@ use super::{AppState, map_error};
 use crate::app::artifacts::{ReviewView, Side};
 use crate::app::btw::BtwContext;
 use crate::app::decisions::DecisionDetail;
+use crate::domain::agent::MentionPath;
 use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     Artifact, ArtifactId, BtwMode, BtwTask, BtwTaskId, ChatSession, Checkpoint, CodeRef, Decision,
@@ -28,6 +29,15 @@ pub fn session_get(state: tauri::State<'_, AppState>, session_id: SessionId) -> 
 #[tauri::command(async)]
 pub fn code_tree(state: tauri::State<'_, AppState>, worktree_id: WorktreeId) -> Res<Vec<String>> {
     state.engine.code_tree(worktree_id).map_err(map_error)
+}
+
+/// What `@` offers in a chat: its files and folders.
+#[tauri::command(async)]
+pub fn session_paths(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> Res<Vec<MentionPath>> {
+    state.engine.session_paths(session_id).map_err(map_error)
 }
 
 #[tauri::command(async)]

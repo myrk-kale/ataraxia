@@ -411,6 +411,18 @@ pub fn agent_message_subagent(
         .map_err(map_error)
 }
 
+/// What `/` offers in a chat: the commands and skills of its harness.
+#[tauri::command(async)]
+pub fn agent_list_commands(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<Vec<crate::domain::agent::SlashCommand>, String> {
+    state
+        .agent_runtime()
+        .session_commands(&session_id)
+        .map_err(map_error)
+}
+
 #[tauri::command(async)]
 pub fn agent_get_options(
     state: tauri::State<'_, AppState>,
@@ -513,10 +525,18 @@ pub fn agent_resolve_permission(
     session_id: SessionId,
     request_id: PermissionRequestId,
     allow: bool,
+    answers: Option<std::collections::BTreeMap<String, String>>,
 ) -> std::result::Result<(), String> {
     state
         .agent_runtime()
-        .resolve_permission(&session_id, PermissionDecision { request_id, allow })
+        .resolve_permission(
+            &session_id,
+            PermissionDecision {
+                request_id,
+                allow,
+                answers: answers.unwrap_or_default(),
+            },
+        )
         .map_err(map_error)
 }
 

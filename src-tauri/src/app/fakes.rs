@@ -118,6 +118,7 @@ pub struct FakeStore {
     session_worktrees: Mutex<HashMap<SessionId, Vec<WorktreeId>>>,
     preferences: Mutex<HashMap<String, String>>,
     chat_items: Mutex<HashMap<SessionId, Vec<ChatItem>>>,
+    agent_refs: Mutex<HashMap<SessionId, String>>,
 }
 
 impl FakeStore {
@@ -358,6 +359,19 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>> {
+        Ok(self.agent_refs.lock().expect("refs").get(&id).cloned())
+    }
+
+    fn set_session_agent_ref(&self, id: SessionId, agent_ref: Option<&str>) -> Result<()> {
+        let mut refs = self.agent_refs.lock().expect("refs");
+        match agent_ref {
+            Some(value) => refs.insert(id, value.to_string()),
+            None => refs.remove(&id),
+        };
+        Ok(())
+    }
+
     fn update_session_provider(
         &self,
         id: SessionId,
@@ -370,6 +384,7 @@ impl Store for FakeStore {
             .find(|item| item.id == id)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
         session.provider = provider;
+        self.agent_refs.lock().expect("refs").remove(&id);
         session.model = None;
         session.effort = None;
         session.agent = None;

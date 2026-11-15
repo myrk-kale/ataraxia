@@ -6,7 +6,7 @@
 //! through `control_request` (`can_use_tool`) answered with `control_response`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -21,7 +21,11 @@ use super::backend::{
 use super::definitions::claude_agents;
 use super::process::{ExitInfo, ManagedProcess, SpawnSpec, resolve_binary};
 use super::subagent_tail::{TailSpec, spawn_tail};
-use crate::domain::agent::{ModelChoice, SessionOptions};
+use crate::domain::agent::{ModelChoice, SessionOptions, SlashCommand};
+use crate::domain::{PermissionQuestion, QuestionOption};
+
+/// The tool Claude asks the person things with.
+const ASK_TOOL: &str = "AskUserQuestion";
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
@@ -56,12 +60,14 @@ impl ClaudeBackend {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn command(
         &self,
         launch: Option<&Launch>,
         model: Option<&str>,
         effort: Option<&str>,
         agent: Option<&str>,
+        conversation: &Conversation,
         read_only: bool,
         extra_dirs: &[PathBuf],
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
@@ -77,7 +83,7 @@ impl ClaudeBackend {
                 } else {
                     permission_mode()
                 };
-                let mut args = launch_args(mode.as_deref(), model, effort, agent);
+                let mut args = launch_args(mode.as_deref(), model, effort, agent, conversation);
                 // Other repositories of the workspace. The flag takes a list, so it goes
                 // last, after every other option.
                 for dir in extra_dirs {
@@ -117,11 +123,76 @@ fn permission_mode() -> Option<String> {
     }
 }
 
+/// Which conversation of Claude Code a process runs: one that begins now, under this id, or one
+/// that is picked up again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Conversation {
+    New(String),
+    Resume(String),
+}
+
+impl Conversation {
+    fn id(&self) -> &str {
+        match self {
+            Self::New(id) | Self::Resume(id) => id,
+        }
+    }
+
+    /// Picks up `wanted` when Claude Code still has it for this folder, else begins a new one.
+    /// Asking Claude Code to resume what it lacks makes it stop with an error.
+    fn choose(wanted: Option<&str>, cwd: &Path, launch: Option<&Launch>) -> Self {
+        match wanted {
+            Some(id) if session_is_kept(id, cwd, launch) => Self::Resume(id.to_string()),
+            _ => Self::New(Uuid::new_v4().to_string()),
+        }
+    }
+}
+
+/// Where Claude Code keeps its conversations: the folder of the account the process runs under.
+fn config_dir(launch: Option<&Launch>) -> Option<PathBuf> {
+    let from_profile = launch.and_then(|launch| {
+        launch
+            .env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "CLAUDE_CONFIG_DIR")
+            .map(|(_, value)| PathBuf::from(value))
+    });
+    from_profile
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+}
+
+/// Claude Code files a folder's conversations under its path with every character that is not a
+/// letter or a digit turned into a dash.
+fn project_folder_name(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Whether Claude Code has the conversation `id` for `cwd`, under the account of `launch`.
+fn session_is_kept(id: &str, cwd: &Path, launch: Option<&Launch>) -> bool {
+    let Some(projects) = config_dir(launch).map(|dir| dir.join("projects")) else {
+        return false;
+    };
+    // The folder may be named by the path as given or by the one it resolves to.
+    let mut names = vec![project_folder_name(cwd)];
+    if let Ok(resolved) = cwd.canonicalize() {
+        names.push(project_folder_name(&resolved));
+    }
+    names
+        .iter()
+        .any(|name| projects.join(name).join(format!("{id}.jsonl")).is_file())
+}
+
 fn launch_args(
     mode: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
     agent: Option<&str>,
+    conversation: &Conversation,
 ) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
@@ -152,6 +223,14 @@ fn launch_args(
         args.push("--agent".into());
         args.push(agent.into());
     }
+    args.push(
+        match conversation {
+            Conversation::New(_) => "--session-id",
+            Conversation::Resume(_) => "--resume",
+        }
+        .into(),
+    );
+    args.push(conversation.id().into());
     args
 }
 
@@ -163,16 +242,21 @@ impl Default for ClaudeBackend {
 
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
-        self.command(None, None, None, None, false, &[]).map(|_| ())
+        let conversation = Conversation::New(String::new());
+        self.command(None, None, None, None, &conversation, false, &[])
+            .map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+        let conversation =
+            Conversation::choose(ctx.resume.as_deref(), &ctx.cwd, ctx.launch.as_ref());
         let (program, args) = self
             .command(
                 ctx.launch.as_ref(),
                 ctx.model.as_deref(),
                 ctx.effort.as_deref(),
                 ctx.agent.as_deref(),
+                &conversation,
                 ctx.read_only,
                 &ctx.extra_dirs,
             )
@@ -213,6 +297,7 @@ impl AgentBackend for ClaudeBackend {
         Ok(Arc::new(ClaudeSession {
             shared,
             cwd: ctx.cwd,
+            conversation,
         }))
     }
 }
@@ -225,6 +310,7 @@ struct QueuedPermission {
     tool_name: String,
     detail: String,
     input: Value,
+    questions: Vec<PermissionQuestion>,
 }
 
 struct ToolMeta {
@@ -258,6 +344,8 @@ struct ClaudeState {
     /// A background subagent was launched: the agent may speak again without being asked
     /// (to report it), so frames outside a turn start one instead of being dropped.
     background_seen: bool,
+    /// The commands and skills Claude Code runs from a `/name` message, as it last said.
+    commands: Vec<SlashCommand>,
 }
 
 struct ClaudeShared {
@@ -319,6 +407,8 @@ impl ClaudeShared {
                 }
             }
             Some("control_request") => self.on_control_request(&frame),
+            Some("control_response") => self.on_control_response(&frame),
+            Some("system") => self.on_system(&frame),
             Some("control_cancel_request") => self.on_control_cancel(&frame),
             _ => {}
         }
@@ -775,6 +865,7 @@ impl ClaudeShared {
                 input_text(Some(&input)),
             );
         }
+        let questions = ask_questions(&tool_name, &input);
         state.queue.push_back(QueuedPermission {
             request_id: PermissionRequestId::new(),
             turn_id,
@@ -783,8 +874,29 @@ impl ClaudeShared {
             detail: permission_detail(&tool_name, &input, request),
             tool_name,
             input,
+            questions,
         });
         self.pump_permissions(&mut state);
+    }
+
+    /// The answer to the `initialize` request carries the commands and skills.
+    fn on_control_response(&self, frame: &Value) {
+        let commands = frame
+            .pointer("/response/response/commands")
+            .and_then(Value::as_array);
+        if let Some(commands) = commands {
+            self.state.lock().commands = parse_commands(commands);
+        }
+    }
+
+    /// Claude Code says again which commands there are when they change (a plugin loads).
+    fn on_system(&self, frame: &Value) {
+        if frame.get("subtype").and_then(Value::as_str) != Some("commands_changed") {
+            return;
+        }
+        if let Some(commands) = frame.get("commands").and_then(Value::as_array) {
+            self.state.lock().commands = parse_commands(commands);
+        }
     }
 
     fn on_control_cancel(&self, frame: &Value) {
@@ -813,6 +925,7 @@ impl ClaudeShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
+                questions: next.questions.clone(),
             });
             state.active = Some(next);
         }
@@ -838,6 +951,7 @@ impl ClaudeShared {
 struct ClaudeSession {
     shared: Arc<ClaudeShared>,
     cwd: PathBuf,
+    conversation: Conversation,
 }
 
 impl ClaudeSession {
@@ -871,6 +985,18 @@ impl ClaudeSession {
 }
 
 impl BackendSession for ClaudeSession {
+    fn commands(&self) -> Vec<SlashCommand> {
+        self.shared.state.lock().commands.clone()
+    }
+
+    fn conversation(&self) -> Option<String> {
+        Some(self.conversation.id().to_string())
+    }
+
+    fn resumed(&self) -> bool {
+        matches!(self.conversation, Conversation::Resume(_))
+    }
+
     fn message_subagent(
         &self,
         turn_id: TurnId,
@@ -988,10 +1114,11 @@ impl BackendSession for ClaudeSession {
             }
             state.active.take().expect("checked above")
         };
+        let input = with_answers(&active.tool_name, &active.input, &decision.answers);
         self.shared.respond_permission(
             &active.control_id,
             &active.tool_use_id,
-            &active.input,
+            &input,
             decision.allow,
         );
         let mut state = self.shared.state.lock();
@@ -1089,9 +1216,100 @@ pub(super) fn tool_result_text(content: Option<&Value>) -> String {
     }
 }
 
+/// Claude Code's list of commands: each has a name, a description that ends with where it comes
+/// from in parentheses ("(user)", "(project)", a plugin) and a hint for its arguments.
+fn parse_commands(list: &[Value]) -> Vec<SlashCommand> {
+    let text = |node: &Value, key: &str| {
+        node.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    list.iter()
+        .filter_map(|node| {
+            let name = text(node, "name")?;
+            let described = text(node, "description").unwrap_or_default();
+            let (description, source) = match described.rsplit_once(" (") {
+                Some((description, tail)) if tail.ends_with(')') && !tail.contains(' ') => (
+                    description.trim_end().to_string(),
+                    Some(tail.trim_end_matches(')').to_string()),
+                ),
+                _ => (described, None),
+            };
+            Some(SlashCommand {
+                name,
+                description,
+                hint: text(node, "argumentHint"),
+                source,
+            })
+        })
+        .collect()
+}
+
+/// The questions of an `AskUserQuestion` call; any other tool asks nothing.
+fn ask_questions(tool_name: &str, input: &Value) -> Vec<PermissionQuestion> {
+    if tool_name != ASK_TOOL {
+        return Vec::new();
+    }
+    let text = |node: &Value, key: &str| {
+        node.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    input
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter(|node| !text(node, "question").is_empty())
+                .map(|node| PermissionQuestion {
+                    question: text(node, "question"),
+                    header: text(node, "header"),
+                    options: node
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|options| {
+                            options
+                                .iter()
+                                .map(|option| QuestionOption {
+                                    label: text(option, "label"),
+                                    description: text(option, "description"),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    multi_select: node
+                        .get("multiSelect")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The input an approved call runs with. `AskUserQuestion` needs the answers in it, keyed by
+/// question text; without them it ends in an error, as if nobody had been asked.
+fn with_answers(
+    tool_name: &str,
+    input: &Value,
+    answers: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    let mut input = input.clone();
+    if tool_name == ASK_TOOL && !answers.is_empty() {
+        if let Some(object) = input.as_object_mut() {
+            object.insert("answers".into(), json!(answers));
+        }
+    }
+    input
+}
+
 fn permission_detail(tool_name: &str, input: &Value, request: &Value) -> String {
     let text = |key: &str| input.get(key).and_then(Value::as_str);
     match tool_name {
+        ASK_TOOL => "Claude has a question for you".into(),
         "Bash" => match text("command") {
             Some(command) => format!("Allow running: {command}"),
             None => "Allow running a shell command".into(),
@@ -1201,18 +1419,89 @@ mod tests {
 
     #[test]
     fn launch_args_carry_the_permission_mode() {
-        let args = launch_args(Some("auto"), None, None, None);
+        let fresh = Conversation::New("c1".into());
+        let args = launch_args(Some("auto"), None, None, None, &fresh);
         let at = args.iter().position(|a| a == "--permission-mode").unwrap();
         assert_eq!(args[at + 1], "auto");
-        assert!(!launch_args(None, None, None, None).contains(&"--permission-mode".to_string()));
-        let tuned = launch_args(None, Some("opus"), Some("high"), Some("code-reviewer"));
+        assert!(
+            !launch_args(None, None, None, None, &fresh).contains(&"--permission-mode".to_string())
+        );
+        let tuned = launch_args(
+            None,
+            Some("opus"),
+            Some("high"),
+            Some("code-reviewer"),
+            &fresh,
+        );
         let at = tuned.iter().position(|a| a == "--model").unwrap();
         assert_eq!(tuned[at + 1], "opus");
         let at = tuned.iter().position(|a| a == "--effort").unwrap();
         assert_eq!(tuned[at + 1], "high");
         let at = tuned.iter().position(|a| a == "--agent").unwrap();
         assert_eq!(tuned[at + 1], "code-reviewer");
-        assert!(!launch_args(None, None, None, None).contains(&"--model".to_string()));
+        assert!(!launch_args(None, None, None, None, &fresh).contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn a_new_conversation_is_named_and_a_kept_one_is_resumed() {
+        let args = launch_args(None, None, None, None, &Conversation::New("c1".into()));
+        let at = args.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(args[at + 1], "c1");
+        assert!(!args.contains(&"--resume".to_string()));
+        let args = launch_args(None, None, None, None, &Conversation::Resume("c2".into()));
+        let at = args.iter().position(|a| a == "--resume").unwrap();
+        assert_eq!(args[at + 1], "c2");
+        assert!(!args.contains(&"--session-id".to_string()));
+    }
+
+    #[test]
+    fn a_conversation_is_resumed_only_when_claude_code_still_has_it() {
+        let account = std::env::temp_dir().join(format!("ataraxia-keep-{}", Uuid::new_v4()));
+        let cwd = account.join("work tree");
+        std::fs::create_dir_all(&cwd).expect("work folder");
+        let launch = Launch {
+            env: vec![(
+                "CLAUDE_CONFIG_DIR".into(),
+                account.to_string_lossy().into_owned(),
+            )],
+            ..Launch::default()
+        };
+        // Nothing said yet: Claude Code has no file for it.
+        let asked = Conversation::choose(Some("abc"), &cwd, Some(&launch));
+        assert!(matches!(asked, Conversation::New(id) if id != "abc"));
+        assert!(matches!(
+            Conversation::choose(None, &cwd, Some(&launch)),
+            Conversation::New(_)
+        ));
+
+        let folder = account.join("projects").join(project_folder_name(&cwd));
+        std::fs::create_dir_all(&folder).expect("projects folder");
+        std::fs::write(folder.join("abc.jsonl"), "{}\n").expect("conversation");
+        assert_eq!(
+            Conversation::choose(Some("abc"), &cwd, Some(&launch)),
+            Conversation::Resume("abc".into())
+        );
+        // Under another account the conversation is not there.
+        let other = Launch {
+            env: vec![(
+                "CLAUDE_CONFIG_DIR".into(),
+                account.join("other").to_string_lossy().into_owned(),
+            )],
+            ..Launch::default()
+        };
+        assert!(matches!(
+            Conversation::choose(Some("abc"), &cwd, Some(&other)),
+            Conversation::New(_)
+        ));
+        std::fs::remove_dir_all(&account).ok();
+    }
+
+    #[test]
+    fn claude_code_names_a_projects_folder_after_its_path() {
+        assert_eq!(
+            project_folder_name(Path::new("/Users/me/dev/my.app")),
+            "-Users-me-dev-my-app"
+        );
     }
 
     use std::sync::mpsc::{self, Receiver};
@@ -1262,6 +1551,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                resume: None,
                 api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
@@ -1319,6 +1609,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                resume: None,
                 api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
@@ -1343,6 +1634,99 @@ mod tests {
         );
     }
 
+    /// A chat reopened under the same model goes on with what was said before, in the real CLI.
+    /// Needs `claude` installed and logged in (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs the claude CLI and a login"]
+    fn a_conversation_picked_up_again_with_the_real_cli_remembers_what_was_said() {
+        let cwd = std::env::temp_dir().join(format!("ataraxia-resume-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).expect("work folder");
+        let ask = |resume: Option<String>, text: &str| {
+            let (sender, events) = mpsc::channel();
+            let sender = Mutex::new(sender);
+            let session = ClaudeBackend::new()
+                .start(BackendContext {
+                    launch: None,
+                    read_only: true,
+                    session_id: crate::domain::ids::SessionId::new(),
+                    cwd: cwd.clone(),
+                    extra_dirs: Vec::new(),
+                    model: Some("haiku".into()),
+                    effort: None,
+                    agent: None,
+                    resume,
+                    api: None,
+                    emit: Arc::new(move |event| {
+                        let _ = sender.lock().send(event);
+                    }),
+                })
+                .expect("start claude");
+            session.prompt(TurnId::new(), text).expect("prompt");
+            let deadline = Instant::now() + Duration::from_secs(90);
+            let mut reply = String::new();
+            while Instant::now() < deadline {
+                match events.recv_timeout(Duration::from_millis(100)) {
+                    Ok(BackendEvent::Delta { text, .. }) => reply.push_str(&text),
+                    Ok(BackendEvent::TurnDone { .. }) | Ok(BackendEvent::Error { .. }) => break,
+                    _ => {}
+                }
+            }
+            let outcome = (session.conversation(), session.resumed(), reply);
+            session.shutdown();
+            outcome
+        };
+        let (conversation, resumed, _) =
+            ask(None, "Remember the word PINEAPPLE. Reply with OK only.");
+        assert!(!resumed, "the first run begins a conversation");
+        let (again, resumed, reply) = ask(
+            conversation.clone(),
+            "Which word did I ask you to remember? Reply with the word only.",
+        );
+        let _ = std::fs::remove_dir_all(&cwd);
+        assert!(resumed, "the conversation should have been kept");
+        assert_eq!(again, conversation);
+        assert!(reply.to_uppercase().contains("PINEAPPLE"), "got: {reply:?}");
+    }
+
+    /// The real CLI says which commands and skills it has as soon as it starts.
+    /// Needs `claude` installed (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs the claude CLI"]
+    fn the_real_cli_lists_its_commands_without_a_message() {
+        let h = start_real();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut commands = h.commands();
+        while commands.is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+            commands = h.commands();
+        }
+        h.shutdown();
+        assert!(!commands.is_empty(), "no commands reported");
+        assert!(commands.iter().all(|item| !item.name.is_empty()));
+    }
+
+    fn start_real() -> Arc<dyn BackendSession> {
+        let (sender, _events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        ClaudeBackend::new()
+            .start(BackendContext {
+                launch: None,
+                read_only: true,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start claude")
+    }
+
     /// What the real CLI sends for a streamed reply: the text must arrive once, not twice.
     /// Needs `claude` installed and logged in (`cargo test -- --ignored`).
     #[test]
@@ -1360,6 +1744,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                resume: None,
                 api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
@@ -1438,7 +1823,11 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         };
         h.session
-            .resolve_permission(&PermissionDecision { request_id, allow })
+            .resolve_permission(&PermissionDecision {
+                request_id,
+                allow,
+                answers: Default::default(),
+            })
             .expect("resolve");
         seen.extend(h.until("turn done", is_turn_done));
         h.session.shutdown();
@@ -1746,6 +2135,93 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(!h.session.is_alive());
+    }
+
+    fn ask_input() -> Value {
+        json!({
+            "questions": [
+                {
+                    "question": "Which model?",
+                    "header": "Model",
+                    "multiSelect": false,
+                    "options": [
+                        { "label": "Sonnet", "description": "Fast" },
+                        { "label": "Opus", "description": "Deep" }
+                    ]
+                },
+                { "question": "", "options": [] }
+            ]
+        })
+    }
+
+    fn wait_for_commands(h: &Harness, wanted: usize) -> Vec<SlashCommand> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = h.session.commands();
+            if found.len() >= wanted || Instant::now() > deadline {
+                return found;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_commands_claude_reports_on_start_are_offered_with_their_source_and_hint() {
+        let h = start();
+        let commands = wait_for_commands(&h, 2);
+        h.session.shutdown();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].name, "review");
+        assert_eq!(commands[0].description, "Review the changes");
+        assert_eq!(commands[0].source.as_deref(), Some("user"));
+        assert_eq!(commands[0].hint.as_deref(), Some("[branch]"));
+        assert_eq!(commands[1].source, None);
+        assert_eq!(commands[1].hint, None);
+    }
+
+    #[test]
+    fn commands_that_change_while_claude_runs_replace_the_list() {
+        let h = start();
+        wait_for_commands(&h, 2);
+        h.session
+            .prompt(TurnId::new(), "reload please")
+            .expect("prompt");
+        h.until("turn done", is_turn_done);
+        let commands = wait_for_commands(&h, 3);
+        h.session.shutdown();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[2].name, "figma:implement");
+        assert_eq!(commands[2].source.as_deref(), Some("plugin"));
+    }
+
+    #[test]
+    fn a_question_the_agent_asks_reaches_the_person_with_its_options() {
+        let questions = ask_questions("AskUserQuestion", &ask_input());
+        assert_eq!(questions.len(), 1, "a question with no text is left out");
+        assert_eq!(questions[0].question, "Which model?");
+        assert_eq!(questions[0].header, "Model");
+        assert!(!questions[0].multi_select);
+        assert_eq!(questions[0].options[1].label, "Opus");
+        assert_eq!(questions[0].options[1].description, "Deep");
+        assert!(ask_questions("Bash", &ask_input()).is_empty());
+        assert_eq!(
+            permission_detail("AskUserQuestion", &ask_input(), &Value::Null),
+            "Claude has a question for you"
+        );
+    }
+
+    #[test]
+    fn the_answers_go_back_inside_the_input_of_the_question_tool_only() {
+        let mut answers = std::collections::BTreeMap::new();
+        answers.insert("Which model?".to_string(), "Opus".to_string());
+        let input = with_answers("AskUserQuestion", &ask_input(), &answers);
+        assert_eq!(input["answers"]["Which model?"], "Opus");
+        assert_eq!(input["questions"], ask_input()["questions"]);
+        assert_eq!(with_answers("Bash", &ask_input(), &answers), ask_input());
+        assert_eq!(
+            with_answers("AskUserQuestion", &ask_input(), &Default::default()),
+            ask_input()
+        );
     }
 
     #[test]

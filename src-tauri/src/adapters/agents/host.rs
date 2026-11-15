@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -12,11 +13,14 @@ use uuid::Uuid;
 
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, ImageFile, Launch, SubagentRoute,
+    split_command,
 };
 use super::process::resolve_program;
 use super::registry::ProviderRegistry;
 use super::{attachments, guide, handoff};
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
+use crate::domain::agent::{
+    CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions, SlashCommand,
+};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
@@ -47,6 +51,9 @@ struct Live {
     /// The launch profile this process was started with (`None`: the default way). When the
     /// active profile changes, the next message restarts the process under the new one.
     profile: Option<String>,
+    /// Cleared when this process is retired, so what it still says while it dies (its exit)
+    /// is not taken for news about the process that replaced it.
+    current: Arc<AtomicBool>,
 }
 
 /// A conversation that is shown as a subagent of another chat.
@@ -161,6 +168,7 @@ impl AgentHost {
 impl Inner {
     /// Stops a live agent process and takes its API token away.
     fn retire(&self, live: &Live) {
+        live.current.store(false, Ordering::SeqCst);
         live.backend.shutdown();
         self.revoke(live.api_token.as_deref());
     }
@@ -518,6 +526,7 @@ impl Inner {
                 request_id,
                 tool_name,
                 detail,
+                questions,
             } => {
                 if live.active_turn != Some(turn_id) {
                     return;
@@ -529,6 +538,7 @@ impl Inner {
                         let _ = backend.resolve_permission(&PermissionDecision {
                             request_id,
                             allow: false,
+                            answers: Default::default(),
                         });
                     });
                     return;
@@ -538,6 +548,7 @@ impl Inner {
                     turn_id,
                     tool_name: tool_name.clone(),
                     detail: detail.clone(),
+                    questions: questions.clone(),
                 });
                 live.status = SessionStatus::WaitingPermission;
                 self.sink.emit_agent(AgentEvent::Permission {
@@ -546,6 +557,7 @@ impl Inner {
                     request_id,
                     tool_name,
                     detail,
+                    questions,
                 });
                 self.publish_status(session_id, SessionStatus::WaitingPermission);
             }
@@ -899,7 +911,12 @@ impl AgentHost {
                 return Err(Error::new(ErrorCode::Invalid, "a turn is already running"));
             }
             // The first message of each agent process says what Ataraxia is; later ones do not.
-            let introduce = live.chat && !live.introduced && guide_index.is_some();
+            // A command goes out as it is, since the harness only runs one at the very start of
+            // the message; the introduction waits for the next message.
+            let introduce = live.chat
+                && !live.introduced
+                && guide_index.is_some()
+                && !split_command(text).is_some();
             if introduce {
                 live.introduced = true;
             }
@@ -920,7 +937,11 @@ impl AgentHost {
         };
 
         // The first message after a switch also tells the new agent where the old conversation is.
-        let handoff = self.inner.handoffs.lock().remove(session_id);
+        let handoff = if split_command(text).is_some() {
+            None
+        } else {
+            self.inner.handoffs.lock().remove(session_id)
+        };
         let mut sent = String::new();
         if let (true, Some(index)) = (introduce, &guide_index) {
             sent.push_str(&guide::preamble(index));
@@ -1082,6 +1103,8 @@ impl AgentHost {
             return Ok(());
         }
         self.write_handoff(session_id, session.provider);
+        // Another account does not hold the conversation of this one.
+        self.inner.store.set_session_agent_ref(*session_id, None)?;
         self.restart(session_id, &session)
     }
 
@@ -1204,7 +1227,12 @@ impl AgentRuntime for AgentHost {
         // The profile is read once, here: this process runs under it until it is restarted.
         let (profile, launch) = self.inner.launch_for(provider)?;
         let usage_profile = profile.clone();
+        let current = Arc::new(AtomicBool::new(true));
+        let emit_current = Arc::clone(&current);
         let emit = Arc::new(move |event: BackendEvent| {
+            if !emit_current.load(Ordering::SeqCst) {
+                return;
+            }
             let Some(inner) = weak.upgrade() else {
                 return;
             };
@@ -1242,6 +1270,13 @@ impl AgentRuntime for AgentHost {
             model: session.model.clone(),
             effort: session.effort.clone(),
             agent: session.agent.clone(),
+            // The conversation of the last run, kept only while the model is the one it began
+            // under (changing the model forgets it).
+            resume: self
+                .inner
+                .store
+                .session_agent_ref(session.id)
+                .unwrap_or_default(),
             api,
             launch,
             emit,
@@ -1253,22 +1288,36 @@ impl AgentRuntime for AgentHost {
             }
         };
 
+        // What the harness holds now: the picked-up conversation, or the new one that replaces a
+        // missing or forgotten one.
+        let resumed = started.resumed();
+        if let Err(error) = self
+            .inner
+            .store
+            .set_session_agent_ref(session_id, started.conversation().as_deref())
+        {
+            eprintln!("ataraxia: could not remember the conversation: {error}");
+        }
         let mut sessions = self.inner.sessions.lock();
         sessions.insert(
             session_id,
             Live {
                 backend: started,
                 status: SessionStatus::Ready,
-                restored_count: carried.len(),
+                // A resumed agent still has all of it; only a new one is shown the old messages
+                // as reference.
+                restored_count: if resumed { 0 } else { carried.len() },
                 transcript: carried,
                 subagents: carried_subagents,
                 active_turn: None,
                 pending: None,
                 read_only: session.kind.read_only(),
                 chat: session.kind == crate::domain::SessionKind::Chat,
-                introduced: false,
+                // A resumed conversation was told about Ataraxia when it began.
+                introduced: resumed,
                 api_token,
                 profile,
+                current,
             },
         );
         self.inner.publish_status(session_id, SessionStatus::Ready);
@@ -1315,6 +1364,28 @@ impl AgentRuntime for AgentHost {
             .store
             .get_session(*session_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        // Only a chat of the developer's own sets what new chats start with.
+        if updated.kind == crate::domain::SessionKind::Chat {
+            for (key, value) in [
+                (updated.provider.model_preference_key(), &model),
+                (updated.provider.effort_preference_key(), &effort),
+            ] {
+                if let Err(error) = self
+                    .inner
+                    .store
+                    .set_preference(&key, value.as_deref().unwrap_or(""))
+                {
+                    eprintln!("ataraxia: could not remember the chosen {key}: {error}");
+                }
+            }
+        }
+
+        // Only the model decides whether the conversation goes on: a new one begins when it
+        // changes (also when it goes back to an earlier one), never for effort or agent.
+        let model_changed = session.model != model;
+        if model_changed {
+            self.inner.store.set_session_agent_ref(*session_id, None)?;
+        }
 
         let live_backend = self
             .inner
@@ -1323,7 +1394,9 @@ impl AgentRuntime for AgentHost {
             .get(session_id)
             .map(|live| Arc::clone(&live.backend));
         if let Some(backend) = live_backend {
-            if !backend.apply_settings(model.as_deref(), effort.as_deref(), agent.as_deref()) {
+            if model_changed
+                || !backend.apply_settings(model.as_deref(), effort.as_deref(), agent.as_deref())
+            {
                 self.restart(session_id, &updated)?;
             }
         }
@@ -1524,6 +1597,18 @@ impl AgentRuntime for AgentHost {
             self.inner.persist_subagents(*session_id, &live.subagents);
             self.inner.retire(&live);
         }
+    }
+
+    fn session_commands(&self, session_id: &SessionId) -> Result<Vec<SlashCommand>> {
+        let backend = self
+            .inner
+            .sessions
+            .lock()
+            .get(session_id)
+            .map(|live| Arc::clone(&live.backend));
+        Ok(backend
+            .map(|backend| backend.commands())
+            .unwrap_or_default())
     }
 
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions> {
@@ -2150,6 +2235,7 @@ mod tests {
                         PermissionDecision {
                             request_id,
                             allow: true,
+                            answers: Default::default(),
                         },
                     )
                     .ok();
@@ -2320,6 +2406,181 @@ mod tests {
         let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
         assert_eq!(snapshot.items.len(), before, "the transcript is kept");
         assert_eq!(snapshot.restored_count, before, "the agent starts fresh");
+    }
+
+    #[test]
+    fn the_exit_of_a_process_replaced_by_a_restart_is_not_an_error() {
+        let h = harness_with(
+            FakeBackend::new(Duration::ZERO)
+                .restarting_on_settings()
+                .exiting_on_shutdown(),
+        );
+        h.host
+            .configure_session(&h.session.id, Some("opus".into()), None, None)
+            .expect("configure");
+        h.host
+            .configure_session(&h.session.id, Some("haiku".into()), None, None)
+            .expect("configure again");
+        std::thread::sleep(Duration::from_millis(400));
+        let errors = h
+            .sink
+            .snapshot()
+            .into_iter()
+            .filter(|event| matches!(event, AgentEvent::Error { .. }))
+            .count();
+        assert_eq!(errors, 0, "changing the model is not a failure");
+    }
+
+    #[test]
+    fn configure_remembers_the_choice_for_new_chats() {
+        let h = harness();
+        h.host
+            .configure_session(
+                &h.session.id,
+                Some("opus".into()),
+                Some("high".into()),
+                None,
+            )
+            .expect("configure");
+        let key = ProviderKind::Fake.model_preference_key();
+        assert_eq!(
+            h.store.get_preference(&key).unwrap().as_deref(),
+            Some("opus")
+        );
+        let key = ProviderKind::Fake.effort_preference_key();
+        assert_eq!(
+            h.store.get_preference(&key).unwrap().as_deref(),
+            Some("high")
+        );
+    }
+
+    /// A chat with some history, on a harness that can pick its conversation up again.
+    fn resumable_chat() -> Harness {
+        let h = harness_with(
+            FakeBackend::new(Duration::ZERO)
+                .restarting_on_settings()
+                .resumable(),
+        );
+        h.host.prompt(&h.session.id, "hello").expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        h
+    }
+
+    fn kept(h: &Harness) -> Option<String> {
+        h.store.session_agent_ref(h.session.id).expect("ref")
+    }
+
+    fn shown_as_reference(h: &Harness) -> usize {
+        h.host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .restored_count
+    }
+
+    #[test]
+    fn the_conversation_of_a_chat_is_kept_and_picked_up_again_under_the_same_model() {
+        let h = resumable_chat();
+        let first = kept(&h).expect("a conversation is kept once the chat starts");
+        let before = h
+            .host
+            .snapshot(&h.session.id)
+            .expect("snapshot")
+            .items
+            .len();
+        assert!(before > 0);
+
+        // The same model, however the process comes back (effort here): nothing starts over.
+        h.host
+            .configure_session(&h.session.id, None, Some("low".into()), None)
+            .expect("configure");
+        assert_eq!(kept(&h).as_deref(), Some(first.as_str()));
+        assert_eq!(shown_as_reference(&h), 0, "no notice: the agent remembers");
+        assert_eq!(
+            h.host
+                .snapshot(&h.session.id)
+                .expect("snapshot")
+                .items
+                .len(),
+            before
+        );
+
+        // The app was closed and the chat opened again.
+        h.host
+            .restart(
+                &h.session.id,
+                &h.store.get_session(h.session.id).unwrap().unwrap(),
+            )
+            .expect("reopen");
+        assert_eq!(kept(&h).as_deref(), Some(first.as_str()));
+        assert_eq!(shown_as_reference(&h), 0);
+    }
+
+    #[test]
+    fn changing_the_model_begins_a_new_conversation_each_time_even_back_to_an_earlier_model() {
+        let h = resumable_chat();
+        h.host
+            .configure_session(&h.session.id, Some("opus".into()), None, None)
+            .expect("to opus");
+        let first = kept(&h).expect("conversation");
+        assert!(
+            shown_as_reference(&h) > 0,
+            "the old messages are only reference now"
+        );
+
+        h.host
+            .configure_session(&h.session.id, Some("sonnet".into()), None, None)
+            .expect("to sonnet");
+        let second = kept(&h).expect("conversation");
+        assert_ne!(first, second);
+
+        // Back to the model it had before: still a new conversation, not the earlier one.
+        h.host
+            .configure_session(&h.session.id, Some("opus".into()), None, None)
+            .expect("back to opus");
+        let third = kept(&h).expect("conversation");
+        assert_ne!(third, first);
+        assert_ne!(third, second);
+        assert!(shown_as_reference(&h) > 0);
+    }
+
+    #[test]
+    fn a_model_change_starts_over_even_when_the_harness_could_apply_it_live() {
+        // This harness takes a new model without restarting; the conversation still ends.
+        let h = harness_with(FakeBackend::new(Duration::ZERO).resumable());
+        let first = kept(&h).expect("conversation");
+        h.host
+            .configure_session(&h.session.id, Some("opus".into()), None, None)
+            .expect("configure");
+        assert_ne!(kept(&h).expect("conversation"), first);
+    }
+
+    #[test]
+    fn effort_and_agent_never_end_the_conversation() {
+        let h = resumable_chat();
+        let first = kept(&h).expect("conversation");
+        h.host
+            .configure_session(&h.session.id, None, Some("high".into()), None)
+            .expect("effort");
+        h.host
+            .configure_session(&h.session.id, None, Some("low".into()), None)
+            .expect("effort again");
+        assert_eq!(kept(&h).as_deref(), Some(first.as_str()));
+        assert_eq!(shown_as_reference(&h), 0);
+    }
+
+    #[test]
+    fn switching_the_harness_forgets_the_conversation() {
+        let h = resumable_chat();
+        assert!(kept(&h).is_some());
+        h.host
+            .switch_provider(&h.session.id, ProviderKind::Codex)
+            .expect("switch");
+        // The other harness here keeps nothing, and it never inherits the old one's.
+        assert_eq!(kept(&h), None);
     }
 
     #[test]
@@ -2555,6 +2816,37 @@ mod tests {
             ChatItem::Message(message) => !message.text.contains("Never generate"),
             _ => true,
         }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_command_goes_out_as_typed_and_the_introduction_waits_for_the_next_message() {
+        let mut h = harness();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        h.host
+            .backends
+            .insert(ProviderKind::Fake, Arc::new(Recorder(Arc::clone(&prompts))));
+        let dir = std::env::temp_dir().join(format!("ataraxia-guide-{}", Uuid::new_v4()));
+        *h.host.inner.guide.lock() = Some(guide::install(&dir).expect("guide"));
+        h.host.shutdown_all();
+        h.host.start_session(&h.session).expect("restart");
+
+        h.host
+            .prompt(&h.session.id, "/review the staged changes")
+            .expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        h.host
+            .prompt(&h.session.id, "now the tests")
+            .expect("prompt");
+
+        let sent = prompts.lock().clone();
+        assert_eq!(sent[0], "/review the staged changes");
+        assert!(sent[1].contains("Never generate"), "{}", sent[1]);
+        assert!(sent[1].ends_with("now the tests"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2965,6 +3257,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: true,
+                    answers: Default::default(),
                 },
             )
             .expect("resolve");
@@ -2996,6 +3289,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: false,
+                    answers: Default::default(),
                 },
             )
             .expect("resolve");
@@ -3038,6 +3332,7 @@ mod tests {
                 PermissionDecision {
                     request_id: PermissionRequestId::new(),
                     allow: true,
+                    answers: Default::default(),
                 },
             )
             .expect_err("mismatch");
@@ -3067,6 +3362,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: true,
+                    answers: Default::default(),
                 },
             )
             .expect("resolve");
