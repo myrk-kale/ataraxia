@@ -20,7 +20,7 @@ const sessions = [
   { ...session, id: "s3", worktree_id: "w2", provider: "opencode", title: "Explain the worker lifecycle" },
 ];
 
-// `?state=empty|permission|working|fresh` previews other UI states in the browser.
+// `?state=empty|permission|question|working|fresh` previews other UI states in the browser.
 const mode = new URLSearchParams(window.location.search).get("state");
 
 // `?workspace=multi` opens a workspace of two repositories; by default each repository is its own.
@@ -58,11 +58,29 @@ const chat: { items: unknown[]; subagents: unknown[]; restoredCount: number; sta
     { kind: "message", id: "m3", role: "assistant", text: "Implemented asynchronous generation. The request now returns 202 Accepted and the worker persists progress. I updated the repository and added tests.", turnId: "t1" },
   ],
   restoredCount: mode === "restored" ? 2 : 0,
-  status: mode === "permission" ? "waiting-permission" : mode === "working" ? "working" : "ready",
+  status: mode === "permission" || mode === "question" ? "waiting-permission" : mode === "working" ? "working" : "ready",
   pendingPermission:
     mode === "permission"
       ? { requestId: "p1", turnId: "t1", toolName: "Bash", detail: "Allow running pytest tests/documents -q in the selected worktree?" }
-      : null,
+      : mode === "question"
+        ? {
+            requestId: "p2",
+            turnId: "t1",
+            toolName: "AskUserQuestion",
+            detail: "Claude has a question for you",
+            questions: [
+              {
+                question: "Which approach do you want?",
+                header: "Approach",
+                multiSelect: false,
+                options: [
+                  { label: "Real resume", description: "The agent keeps its context." },
+                  { label: "Hide the notice", description: "Only the screen changes." },
+                ],
+              },
+            ],
+          }
+        : null,
 };
 if (mode === "fresh") {
   chat.items = [];
@@ -329,6 +347,22 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       return null;
     }
     case "agent_get_snapshot": return chat;
+    case "agent_list_commands":
+      return [
+        { name: "review", description: "Review the changes in the working tree", hint: "[branch]", source: "user" },
+        { name: "compact", description: "Compact the conversation", hint: null, source: null },
+        { name: "figma:implement-design", description: "Build the screen from a Figma design", hint: "<url>", source: "plugin" },
+        { name: "init", description: "Set up the AGENTS.md of this project", hint: null, source: "project" },
+      ];
+    case "session_paths":
+      return [
+        { path: "src/", dir: true, repository: null },
+        { path: "src/chat/", dir: true, repository: null },
+        { path: "src/chat/ChatPanel.tsx", dir: false, repository: null },
+        { path: "src/chat/ComposerPicker.tsx", dir: false, repository: null },
+        { path: "src-tauri/src/lib.rs", dir: false, repository: null },
+        { path: "README.md", dir: false, repository: null },
+      ];
     case "agent_get_options": {
       const target = snapshot.sessions.find((item) => item.id === args?.sessionId) ?? session;
       return optionsByProvider[target.provider];

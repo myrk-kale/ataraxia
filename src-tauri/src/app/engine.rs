@@ -40,6 +40,9 @@ pub struct Engine {
     pub(crate) busy: Mutex<std::collections::HashSet<String>>,
     /// Messages waiting for the agent of each chat to finish.
     pub(crate) queues: Mutex<HashMap<SessionId, super::queue::QueueState>>,
+    /// Held while the first queued message is read and handed to the agent, so two ends of turn
+    /// (or an end and a "send now") cannot both take the same message.
+    pub(crate) sending: Mutex<()>,
     task_timeout: Duration,
 }
 
@@ -77,6 +80,7 @@ impl Engine {
             waiters: Mutex::new(HashMap::new()),
             busy: Mutex::new(std::collections::HashSet::new()),
             queues: Mutex::new(HashMap::new()),
+            sending: Mutex::new(()),
             task_timeout: TASK_TIMEOUT,
         })
     }

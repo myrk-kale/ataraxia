@@ -127,11 +127,21 @@ def main():
         frame = read_frame()
         method = frame.get("method")
         if method == "initialize":
-            send({"id": frame["id"], "result": {"protocolVersion": 1, "agentCapabilities": {},
+            send({"id": frame["id"], "result": {"protocolVersion": 1, "agentCapabilities": {
+                                                    "sessionCapabilities": {"resume": {}}},
                                                 "agentInfo": {"name": "MockAgent", "version": "0"}}})
         elif method == "session/new":
             send({"id": frame["id"], "result": {"sessionId": SESSION,
                                                 "configOptions": config_options()}})
+            update({"sessionUpdate": "available_commands_update", "availableCommands": [
+                {"name": "review", "description": "review changes [commit|branch|pr]",
+                 "input": {"hint": "commit|branch|pr"}},
+                {"name": "compact", "description": "Compact the session"}]})
+        elif method == "session/resume":
+            if frame["params"]["sessionId"].startswith("gone"):
+                send({"id": frame["id"], "error": {"code": -32002, "message": "session not found"}})
+                continue
+            send({"id": frame["id"], "result": {"configOptions": config_options()}})
         elif method == "session/set_config_option":
             params = frame["params"]
             CONFIG[params["configId"]] = params["value"]

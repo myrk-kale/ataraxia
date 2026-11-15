@@ -158,6 +158,12 @@ impl Engine {
     /// A chat's turn ended: send the next message, or hold the queue if the turn did not end
     /// well.
     pub(crate) fn queue_advance(&self, session_id: SessionId, ok: bool) {
+        // A turn that failed or was stopped holds the queue, unless it is an old end that reaches
+        // here after another turn has begun (a forced message): that one is running, and its own
+        // end decides.
+        if !ok && self.is_working(session_id) {
+            return;
+        }
         {
             let mut queues = self.queues.lock();
             let Some(state) = queues.get_mut(&session_id) else {
@@ -185,6 +191,9 @@ impl Engine {
 
     /// Hands the first message to the agent. On failure the message stays and the queue holds.
     fn queue_send_next(&self, session_id: SessionId) -> Result<()> {
+        // What is first in the queue is read, sent and taken out as one step: another caller
+        // waits here and then finds the next message (or the agent busy), never the same one.
+        let _sending = self.sending.lock();
         let Some(item) = self
             .queues
             .lock()
@@ -247,7 +256,7 @@ impl Engine {
         }
     }
 
-    fn is_working(&self, session_id: SessionId) -> bool {
+    pub(crate) fn is_working(&self, session_id: SessionId) -> bool {
         matches!(
             self.runtime.status(&session_id),
             Ok(SessionStatus::Working | SessionStatus::WaitingPermission)

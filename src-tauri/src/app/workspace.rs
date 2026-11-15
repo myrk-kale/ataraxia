@@ -773,6 +773,15 @@ impl<'a> WorkspaceService<'a> {
         Ok(false)
     }
 
+    /// A saved model or effort; empty or unreadable means none.
+    fn remembered_setting(&self, key: &str) -> Option<String> {
+        self.store
+            .get_preference(key)
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+    }
+
     pub fn create_session(
         &self,
         repository_id: RepositoryId,
@@ -816,6 +825,9 @@ impl<'a> WorkspaceService<'a> {
 
         let now = now_rfc3339()?;
         let count = self.store.list_workspace_sessions(workspace.id)?.len() + 1;
+        // A new chat starts with the model and effort last chosen for its harness.
+        let model = self.remembered_setting(&provider.model_preference_key());
+        let effort = self.remembered_setting(&provider.effort_preference_key());
         let session = ChatSession {
             id: SessionId::new(),
             workspace_id: Some(workspace.id),
@@ -826,8 +838,8 @@ impl<'a> WorkspaceService<'a> {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| format!("Chat {count}")),
             status: SessionStatus::Idle,
-            model: None,
-            effort: None,
+            model,
+            effort,
             agent: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
@@ -956,6 +968,80 @@ mod tests {
         let snapshot = service.open_repository(&root).expect("reopen");
         assert_eq!(snapshot.repositories.len(), 1);
         assert_eq!(store.list_repositories().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_new_chat_starts_with_the_model_and_effort_last_chosen_for_its_harness() {
+        let root = PathBuf::from("/tmp/ataraxia-demo");
+        let git = FakeGit::with_repo(
+            root.clone(),
+            vec![WorktreeInfo {
+                path: root.clone(),
+                branch: Some("main".into()),
+                head: Some("abc".into()),
+            }],
+        );
+        let mut store = FakeStore::default();
+        store.healthy = true;
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        let snapshot = service.open_repository(&root).expect("open");
+        let (repo_id, worktree_id) = (snapshot.repositories[0].id, snapshot.worktrees[0].id);
+
+        let first = service
+            .create_session(repo_id, worktree_id, None, ProviderKind::Fake)
+            .expect("create");
+        assert_eq!(first.sessions[0].model, None);
+
+        store
+            .set_preference(&ProviderKind::Fake.model_preference_key(), "opus")
+            .unwrap();
+        store
+            .set_preference(&ProviderKind::Fake.effort_preference_key(), "high")
+            .unwrap();
+        let snapshot = service
+            .create_session(repo_id, worktree_id, None, ProviderKind::Fake)
+            .expect("create");
+        let newest = snapshot
+            .sessions
+            .iter()
+            .find(|session| Some(session.id) == snapshot.selected_session_id)
+            .expect("selected");
+        assert_eq!(newest.model.as_deref(), Some("opus"));
+        assert_eq!(newest.effort.as_deref(), Some("high"));
+
+        // Another harness has its own choice, and a cleared one means the default again.
+        let other = service
+            .create_session(repo_id, worktree_id, None, ProviderKind::Codex)
+            .expect("create");
+        let selected = other.selected_session_id;
+        assert_eq!(
+            other
+                .sessions
+                .iter()
+                .find(|s| Some(s.id) == selected)
+                .unwrap()
+                .model,
+            None
+        );
+        store
+            .set_preference(&ProviderKind::Fake.model_preference_key(), "")
+            .unwrap();
+        let cleared = service
+            .create_session(repo_id, worktree_id, None, ProviderKind::Fake)
+            .expect("create");
+        let selected = cleared.selected_session_id;
+        assert_eq!(
+            cleared
+                .sessions
+                .iter()
+                .find(|s| Some(s.id) == selected)
+                .unwrap()
+                .model,
+            None
+        );
     }
 
     /// A fake git with several repositories, one checkout each, named after their folders.

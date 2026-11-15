@@ -987,6 +987,7 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends()
             PermissionDecision {
                 request_id,
                 allow: true,
+                answers: Default::default(),
             },
         )
         .unwrap();
@@ -1706,6 +1707,7 @@ fn approve(w: &World, request: PermissionRequestId) {
             PermissionDecision {
                 request_id: request,
                 allow: true,
+                answers: Default::default(),
             },
         )
         .unwrap();
@@ -1802,6 +1804,47 @@ fn send_now_stops_the_turn_and_puts_that_message_ahead_of_the_rest() {
     approve(&w, forced);
     next_request(&w, Some(forced));
     assert_eq!(user_texts(&w), ["first", "third", "second"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+/// Several ends of turn reaching the queue at once (and a forced message) must not send the same
+/// message twice.
+#[test]
+fn a_queued_message_is_sent_once_however_many_callers_reach_the_queue_together() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    for round in 0..40 {
+        let text = format!("round {round}");
+        w.host.prompt(&w.session.id, "busy").unwrap();
+        let busy = next_request(&w, None);
+        w.engine.enqueue(w.session.id, &text, Vec::new()).unwrap();
+
+        // The turn ends and, at the same moment, other callers ask the queue to go on.
+        let start = std::sync::Arc::new(std::sync::Barrier::new(5));
+        let callers: Vec<_> = (0..4)
+            .map(|_| {
+                let (engine, start, id) = (w.engine.clone(), start.clone(), w.session.id);
+                std::thread::spawn(move || {
+                    start.wait();
+                    engine.queue_advance(id, true);
+                })
+            })
+            .collect();
+        start.wait();
+        approve(&w, busy);
+        for caller in callers {
+            caller.join().unwrap();
+        }
+        // Whatever went out is parked at its permission request: let it end.
+        let sent = next_request(&w, Some(busy));
+        approve(&w, sent);
+        wait_for("the queue to settle", || {
+            (w.engine.queue(w.session.id).items.is_empty() && !w.engine.is_working(w.session.id))
+                .then_some(())
+        });
+        let times = user_texts(&w).iter().filter(|item| **item == text).count();
+        assert_eq!(times, 1, "{text} was sent {times} times");
+    }
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 

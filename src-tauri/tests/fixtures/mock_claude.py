@@ -41,9 +41,18 @@ def wait_for(predicate):
             ack(frame)
 
 
+COMMANDS = [
+    {"name": "review", "description": "Review the changes (user)", "argumentHint": "[branch]"},
+    {"name": "compact", "description": "Compact the conversation", "argumentHint": ""},
+]
+
+
 def ack(frame):
+    body = {}
+    if frame["request"].get("subtype") == "initialize":
+        body = {"commands": COMMANDS}
     send({"type": "control_response",
-          "response": {"subtype": "success", "request_id": frame["request_id"], "response": {}}})
+          "response": {"subtype": "success", "request_id": frame["request_id"], "response": body}})
 
 
 def stream_text(text_parts, message_id=MSG):
@@ -215,6 +224,11 @@ def main():
                 run_background()
             elif text.startswith("Use the SendMessage tool"):
                 run_relay(text)
+            elif text.startswith("reload"):
+                send({"type": "system", "subtype": "commands_changed", "commands": COMMANDS + [
+                    {"name": "figma:implement", "description": "Build it from a design (plugin)",
+                     "argumentHint": "<url>"}]})
+                run_plain()
             elif text.startswith("hang"):
                 run_hang()
             elif text.startswith("crash"):

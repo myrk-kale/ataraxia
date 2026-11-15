@@ -45,6 +45,7 @@ import {
   toUploads,
 } from "./attachments";
 import { AttachmentStrip } from "./AttachmentStrip";
+import { ComposerPicker } from "./ComposerPicker";
 import { useBackground } from "./background";
 import { Hero } from "./Hero";
 import { Loader } from "./Loader";
@@ -55,8 +56,10 @@ import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
 import { SubagentBar } from "./SubagentBar";
-import { PermissionDialog } from "./PermissionDialog";
+import { PermissionPrompt } from "./PermissionPrompt";
 import { VirtualTranscript } from "./VirtualTranscript";
+import { takesBack, withTakenBack } from "./takeBack";
+import { useComposerPicker } from "./useComposerPicker";
 import { useMessageQueue } from "./useMessageQueue";
 
 const STICK_THRESHOLD_PX = 80;
@@ -213,8 +216,27 @@ export function ChatPanel({
     askedFor.current = id;
   }, [state.pending]);
 
+  // The message field comes back when the agent's question is settled: give it the focus again.
+  const hadPending = useRef(false);
+  useEffect(() => {
+    if (hadPending.current && !state.pending) {
+      composerRef.current?.focus();
+    }
+    hadPending.current = state.pending !== null;
+  }, [state.pending]);
+
   const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
   const canWrite = activeSubagent === null || provider?.settings.subagent_messages === true;
+  // `/` runs an action of the main agent and `@` points at a file or an agent, the same for every
+  // harness; what a message to a subagent can use of it is only the `@`.
+  const picker = useComposerPicker({
+    sessionId,
+    draft,
+    onDraft: setDraft,
+    field: composerRef,
+    commands: activeSubagent === null,
+    agents: provider?.settings.agents ? (options?.agents ?? []) : [],
+  });
 
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
   useLayoutEffect(() => {
@@ -230,6 +252,14 @@ export function ChatPanel({
     if (element) {
       element.style.height = "auto";
       element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_PX)}px`;
+      // The background is as tall as the area above the field would be with the field at its
+      // smallest: what the field grows by is added back, so it stays where it is. The height
+      // that counts is the one on screen, which the style sheet may cap below the one asked for.
+      const least = parseFloat(getComputedStyle(element).minHeight) || 0;
+      element.closest<HTMLElement>(".cg-chat")?.style.setProperty(
+        "--composer-growth",
+        `${Math.max(0, element.offsetHeight - least)}px`,
+      );
     }
   }, [draft]);
 
@@ -428,9 +458,18 @@ export function ChatPanel({
   }
 
   function removeQueued(id: string) {
-    void agentQueueRemove(sessionId, id).catch((err: unknown) =>
-      dispatch({ type: "failed", message: errorText(err) }),
-    );
+    const text = shownQueue.items.find((item) => item.id === id)?.text ?? "";
+    // With nothing typed in the field, taking a message out of the queue puts it back there to be
+    // edited or sent again; with something typed, that is left alone.
+    const restore = takesBack(draft, text);
+    agentQueueRemove(sessionId, id)
+      .then(() => {
+        if (restore) {
+          setDraft((current) => withTakenBack(current, text));
+          composerRef.current?.focus();
+        }
+      })
+      .catch((err: unknown) => dispatch({ type: "failed", message: errorText(err) }));
   }
 
   async function configure(model: string | null, effort: string | null, agent: string | null) {
@@ -451,6 +490,9 @@ export function ChatPanel({
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (picker.onKeyDown(event)) {
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void send();
@@ -470,13 +512,13 @@ export function ChatPanel({
     }
   }
 
-  async function resolve(allow: boolean) {
+  async function resolve(allow: boolean, answers?: Record<string, string>) {
     const pending = state.pending;
     if (!pending) {
       return;
     }
     try {
-      await agentResolvePermission(sessionId, pending.requestId, allow);
+      await agentResolvePermission(sessionId, pending.requestId, allow, answers);
     } catch (err) {
       dispatch({ type: "failed", message: errorText(err) });
     }
@@ -500,7 +542,18 @@ export function ChatPanel({
   return (
     <section className="cg-chat flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="relative min-h-0 flex-1">
-        {background.enabled ? <AsciiMark mark={emptyChat} /> : null}
+        {background.enabled ? (
+          // It does not follow the area above the field as that shrinks when the field grows (the
+          // letter and the lit parts would rise with it): it reaches down behind the field by as
+          // much as the field has grown.
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0"
+            style={{ bottom: "calc(var(--composer-growth, 0px) * -1)" }}
+          >
+            <AsciiMark mark={emptyChat} />
+          </div>
+        ) : null}
         <div ref={scrollRef} className="relative h-full overflow-y-auto" onScroll={onScroll}>
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
@@ -638,8 +691,21 @@ export function ChatPanel({
         onStop={cancelTurn}
       />
 
+      {state.pending ? (
+        // What the agent is waiting for takes the place of the message field until it is settled.
+        // The field stays in the page, hidden, so what was typed in it is still there after.
+        <div className="relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5">
+          <PermissionPrompt
+            pending={state.pending}
+            onResolve={(allow, answers) => {
+              void resolve(allow, answers);
+            }}
+          />
+        </div>
+      ) : null}
+
       <form
-        className="mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5"
+        className={`relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5 ${state.pending ? "hidden" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
           void send();
@@ -648,7 +714,15 @@ export function ChatPanel({
         {activeSubagent ? null : (
           <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} />
         )}
-        <div className="cg-field rounded-cg-lg bg-cg-tint px-4 py-3.5">
+        <div className="cg-field relative rounded-cg-lg bg-cg-tint px-4 py-3.5">
+          <ComposerPicker
+            active={picker.active}
+            id={picker.listId}
+            items={picker.open ? picker.items : []}
+            label={picker.label}
+            onHover={picker.hover}
+            onPick={picker.pick}
+          />
           {attachNotice ? (
             <p className="mb-2 text-small text-cg-del-fg" role="status">
               {attachNotice}
@@ -657,6 +731,10 @@ export function ChatPanel({
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
           <textarea
             ref={composerRef}
+            aria-activedescendant={picker.activeId}
+            aria-controls={picker.open ? picker.listId : undefined}
+            aria-expanded={picker.open}
+            aria-haspopup="listbox"
             aria-label="Message"
             className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
             disabled={!state.loaded || !canWrite}
@@ -671,8 +749,10 @@ export function ChatPanel({
             }
             rows={2}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => picker.onChange(event.currentTarget)}
+            onClick={(event) => picker.onSelect(event.currentTarget)}
             onKeyDown={onComposerKeyDown}
+            onKeyUp={(event) => picker.onSelect(event.currentTarget)}
             onPaste={onPaste}
           />
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
@@ -761,13 +841,6 @@ export function ChatPanel({
           </div>
         </div>
       </form>
-
-      <PermissionDialog
-        pending={state.pending}
-        onResolve={(allow) => {
-          void resolve(allow);
-        }}
-      />
     </section>
   );
 }

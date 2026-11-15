@@ -12,6 +12,16 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    /// Preference that remembers the model last chosen for this provider, for new chats.
+    pub fn model_preference_key(self) -> String {
+        format!("last_model.{}", self.as_str())
+    }
+
+    /// Preference that remembers the reasoning effort last chosen for this provider.
+    pub fn effort_preference_key(self) -> String {
+        format!("last_effort.{}", self.as_str())
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Fake => "fake",
@@ -100,6 +110,29 @@ pub struct AgentChoice {
     pub id: String,
     pub label: String,
     pub description: Option<String>,
+}
+
+/// An action the harness runs when a message begins with `/name`: one of its commands or skills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    /// What follows the name, when the harness says (`[branch]`, `<file>`).
+    pub hint: Option<String>,
+    /// Where it comes from, when the harness says (user, project, a plugin).
+    pub source: Option<String>,
+}
+
+/// A file or folder of the chat's repositories that `@` can point at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionPath {
+    /// What goes after the `@`: relative to the folder the agent works in, or absolute for
+    /// another repository of the workspace.
+    pub path: String,
+    /// A folder (its path ends with a slash) rather than a file.
+    pub dir: bool,
+    /// The repository it belongs to, when it is not the one the agent works in.
+    pub repository: Option<String>,
 }
 
 /// What a live session offers right now (discovered from the provider, not hard-coded).

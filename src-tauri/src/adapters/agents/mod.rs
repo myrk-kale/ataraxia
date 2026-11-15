@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod backend;
 pub mod claude;
 pub mod codex;
+pub mod codex_commands;
 pub mod definitions;
 pub mod fake;
 pub mod guide;

@@ -15,12 +15,14 @@ use serde_json::{Value, json};
 
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, ImageFile, Launch,
-    SubagentRoute, api_env, compose_env, profile_args, profile_program, truncate_output,
+    SubagentRoute, api_env, compose_env, profile_args, profile_program, split_command,
+    truncate_output,
 };
+use super::codex_commands;
 use super::definitions::codex_agents;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
-use crate::domain::agent::{ModelChoice, SessionOptions};
+use crate::domain::agent::{ModelChoice, SessionOptions, SlashCommand};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
@@ -35,6 +37,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Asking for the limits goes to the account's server; it is not worth waiting long for.
 const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
+const COMMANDS_TIMEOUT: Duration = Duration::from_secs(10);
 
 const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
 const FILE_CHANGE_APPROVAL: &str = "item/fileChange/requestApproval";
@@ -172,6 +175,7 @@ impl AgentBackend for CodexBackend {
         )?;
         let _ = shared.client.set(Arc::clone(&client));
 
+        let mut resumed = false;
         let handshake = (|| -> Result<()> {
             client.request(
                 "initialize",
@@ -185,17 +189,30 @@ impl AgentBackend for CodexBackend {
                 Some(HANDSHAKE_TIMEOUT),
             )?;
             client.notify_bare("initialized")?;
-            let started = client.request(
-                "thread/start",
-                thread_start_params(
-                    &ctx.cwd,
-                    approvals_reviewer().as_deref(),
-                    ctx.model.as_deref(),
-                    ctx.read_only,
-                    &ctx.extra_dirs,
-                ),
-                Some(HANDSHAKE_TIMEOUT),
-            )?;
+            let params = thread_start_params(
+                &ctx.cwd,
+                approvals_reviewer().as_deref(),
+                ctx.model.as_deref(),
+                ctx.read_only,
+                &ctx.extra_dirs,
+            );
+            // The thread of the last run, if Codex still has it; a thread that never got a
+            // message has nothing saved, and then a new one begins.
+            if let Some(wanted) = ctx.resume.as_deref() {
+                let mut resume = params.clone();
+                resume["threadId"] = json!(wanted);
+                // The history stays on Codex's side; the chat already shows it.
+                resume["excludeTurns"] = json!(true);
+                if client
+                    .request("thread/resume", resume, Some(HANDSHAKE_TIMEOUT))
+                    .is_ok()
+                {
+                    let _ = shared.thread_id.set(wanted.to_string());
+                    resumed = true;
+                    return Ok(());
+                }
+            }
+            let started = client.request("thread/start", params, Some(HANDSHAKE_TIMEOUT))?;
             let thread_id = started
                 .pointer("/thread/id")
                 .and_then(Value::as_str)
@@ -225,6 +242,7 @@ impl AgentBackend for CodexBackend {
             shared,
             cwd: ctx.cwd,
             models: OnceLock::new(),
+            resumed,
         }))
     }
 }
@@ -869,6 +887,7 @@ impl CodexShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
+                questions: Vec::new(),
             });
             state.active = Some(next);
         }
@@ -895,7 +914,13 @@ impl CodexShared {
         );
     }
 
-    fn run_turn_start(&self, turn_id: TurnId, text: String, images: Vec<ImageFile>) {
+    fn run_turn_start(
+        &self,
+        turn_id: TurnId,
+        text: String,
+        images: Vec<ImageFile>,
+        extra: Vec<Value>,
+    ) {
         let (Some(client), Some(thread_id)) = (self.client.get(), self.thread_id.get()) else {
             return;
         };
@@ -916,6 +941,7 @@ impl CodexShared {
         if !text.trim().is_empty() || input.is_empty() {
             input.push(json!({ "type": "text", "text": text, "text_elements": [] }));
         }
+        input.extend(extra);
         let mut params = json!({
             "threadId": thread_id,
             "input": input
@@ -965,6 +991,8 @@ struct CodexSession {
     cwd: PathBuf,
     /// `model/list` answer, fetched on first use.
     models: OnceLock<(Vec<ModelChoice>, Option<String>)>,
+    /// The thread of an earlier run was picked up again.
+    resumed: bool,
 }
 
 impl CodexSession {
@@ -982,14 +1010,58 @@ impl CodexSession {
             state.cancel_requested = false;
             state.last_error = None;
         }
+        // A command is not run from the text: Codex takes a skill by name with an attached item,
+        // and a custom prompt is filled in here.
+        let (text, extra) = match split_command(text) {
+            Some((command, args)) => {
+                let (skills, prompts) = (self.skills(), self.prompts());
+                match codex_commands::invocation(command, args, &skills, &prompts) {
+                    Some(run) => (run.text, run.items),
+                    None => (text.to_string(), Vec::new()),
+                }
+            }
+            None => (text.to_string(), Vec::new()),
+        };
         let shared = Arc::clone(&self.shared);
-        let text = text.to_string();
-        thread::spawn(move || shared.run_turn_start(turn_id, text, images));
+        thread::spawn(move || shared.run_turn_start(turn_id, text, images, extra));
         Ok(())
+    }
+
+    /// The skills Codex has for this folder; none when it does not answer.
+    fn skills(&self) -> Vec<codex_commands::Skill> {
+        let Some(client) = self.shared.client.get() else {
+            return Vec::new();
+        };
+        client
+            .request(
+                "skills/list",
+                json!({ "cwds": [self.cwd.to_string_lossy()] }),
+                Some(COMMANDS_TIMEOUT),
+            )
+            .map(|answer| codex_commands::parse_skills(&answer))
+            .unwrap_or_default()
+    }
+
+    fn prompts(&self) -> Vec<codex_commands::CustomPrompt> {
+        codex_commands::prompts_dir()
+            .map(|dir| codex_commands::read_prompts(&dir))
+            .unwrap_or_default()
     }
 }
 
 impl BackendSession for CodexSession {
+    fn commands(&self) -> Vec<SlashCommand> {
+        codex_commands::commands(&self.skills(), &self.prompts())
+    }
+
+    fn conversation(&self) -> Option<String> {
+        self.shared.thread_id.get().cloned()
+    }
+
+    fn resumed(&self) -> bool {
+        self.resumed
+    }
+
     fn apply_settings(
         &self,
         model: Option<&str>,
@@ -1688,6 +1760,10 @@ mod tests {
     }
 
     fn start() -> Harness {
+        start_resuming(None)
+    }
+
+    fn start_resuming(resume: Option<&str>) -> Harness {
         let backend = CodexBackend::with_command(
             PathBuf::from("python3"),
             vec![concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_codex.py").into()],
@@ -1704,6 +1780,7 @@ mod tests {
                 model: None,
                 effort: None,
                 agent: None,
+                resume: resume.map(str::to_string),
                 api: None,
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
@@ -1711,6 +1788,103 @@ mod tests {
             })
             .expect("start mock codex");
         Harness { session, events }
+    }
+
+    fn said(h: &Harness, text: &str) -> Value {
+        h.session.prompt(TurnId::new(), text).expect("prompt");
+        let seen = h.until("turn done", is_turn_done);
+        serde_json::from_str(&deltas(&seen)).expect("the mock echoes the input")
+    }
+
+    #[test]
+    fn the_skills_codex_has_are_offered_as_commands() {
+        let h = start();
+        let commands = h.session.commands();
+        h.session.shutdown();
+        let skill = commands
+            .iter()
+            .find(|item| item.name == "review-mock")
+            .expect("the enabled skill");
+        assert_eq!(skill.description, "Review things");
+        assert_eq!(skill.source.as_deref(), Some("user"));
+        assert!(!commands.iter().any(|item| item.name == "off-mock"));
+    }
+
+    #[test]
+    fn a_skill_typed_as_a_command_reaches_codex_named_and_attached() {
+        let h = start();
+        let input = said(&h, "/review-mock the diff");
+        h.session.shutdown();
+        assert_eq!(input[0]["text"], "$review-mock the diff");
+        assert_eq!(input[1]["type"], "skill");
+        assert_eq!(input[1]["name"], "review-mock");
+        assert_eq!(input[1]["path"], "/skills/review-mock/SKILL.md");
+    }
+
+    #[test]
+    fn a_message_that_is_no_command_of_codex_goes_out_as_typed() {
+        let h = start();
+        let unknown = said(&h, "/nothing-like-this at all");
+        let path = said(&h, "echo /etc/hosts please");
+        h.session.shutdown();
+        assert_eq!(unknown[0]["text"], "/nothing-like-this at all");
+        assert_eq!(unknown.as_array().map(Vec::len), Some(1));
+        assert_eq!(path[0]["text"], "echo /etc/hosts please");
+    }
+
+    /// Codex's own skills show up as commands. Needs `codex` installed
+    /// (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs the codex CLI"]
+    fn the_real_cli_lists_its_skills_as_commands() {
+        let (sender, _events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let session = CodexBackend::new()
+            .start(BackendContext {
+                launch: None,
+                read_only: true,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start codex");
+        let commands = session.commands();
+        session.shutdown();
+        assert!(commands.iter().all(|item| !item.name.is_empty()));
+        eprintln!("{} commands, e.g. {:?}", commands.len(), commands.first());
+    }
+
+    #[test]
+    fn a_thread_codex_still_has_is_picked_up_again() {
+        let h = start_resuming(Some("thread-old"));
+        assert!(h.session.resumed());
+        assert_eq!(h.session.conversation().as_deref(), Some("thread-old"));
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn a_thread_codex_lost_begins_a_new_one() {
+        let h = start_resuming(Some("gone-thread"));
+        assert!(!h.session.resumed());
+        let started = h.session.conversation().expect("a thread");
+        assert_ne!(started, "gone-thread");
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn a_first_run_begins_a_thread_and_reports_it() {
+        let h = start();
+        assert!(!h.session.resumed());
+        assert!(h.session.conversation().is_some());
+        h.session.shutdown();
     }
 
     impl Harness {
@@ -1778,7 +1952,11 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         };
         h.session
-            .resolve_permission(&PermissionDecision { request_id, allow })
+            .resolve_permission(&PermissionDecision {
+                request_id,
+                allow,
+                answers: Default::default(),
+            })
             .expect("resolve");
         seen.extend(h.until("turn done", is_turn_done));
         h.session.shutdown();

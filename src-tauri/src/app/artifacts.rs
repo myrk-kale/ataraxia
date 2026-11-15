@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::analysis::{decisions_prompt, parse_decisions};
 use super::engine::Engine;
 use super::review::{ReviewPriority, prioritize};
-use crate::domain::agent::ProviderKind;
+use crate::domain::agent::{MentionPath, ProviderKind};
 use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     Artifact, ArtifactId, ArtifactKind, ArtifactStatus, Checkpoint, CheckpointSource, Decision,
@@ -382,6 +382,53 @@ impl Engine {
             .get_worktree(worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
         self.git.list_files(&worktree.path)
+    }
+
+    /// The files and folders `@` offers in a chat: those of the folder its agent works in, by
+    /// relative path, then those of the other repositories of its workspace, by absolute path
+    /// (the agent only reaches them that way).
+    pub fn session_paths(&self, session_id: SessionId) -> Result<Vec<MentionPath>> {
+        let session = self
+            .db
+            .get_session(session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let mut worktrees = vec![session.worktree_id];
+        worktrees.extend(self.db.session_worktrees(session_id)?);
+        let mut paths = Vec::new();
+        for (index, id) in worktrees.into_iter().enumerate() {
+            let Some(worktree) = self.db.get_worktree(id)? else {
+                continue;
+            };
+            let Ok(files) = self.git.list_files(&worktree.path) else {
+                continue;
+            };
+            let own = index == 0;
+            let repository = if own {
+                None
+            } else {
+                self.db
+                    .get_repository(worktree.repository_id)?
+                    .map(|repository| repository.name)
+            };
+            let prefix = if own {
+                String::new()
+            } else {
+                format!("{}/", worktree.path.to_string_lossy().trim_end_matches('/'))
+            };
+            if !own {
+                paths.push(MentionPath {
+                    path: prefix.clone(),
+                    dir: true,
+                    repository: repository.clone(),
+                });
+            }
+            paths.extend(mention_paths(&files, &prefix, repository.as_deref()));
+            if paths.len() >= MAX_MENTION_PATHS {
+                paths.truncate(MAX_MENTION_PATHS);
+                break;
+            }
+        }
+        Ok(paths)
     }
 
     pub fn code_read(&self, worktree_id: WorktreeId, path: &str) -> Result<FileContent> {
@@ -805,5 +852,71 @@ impl Engine {
         };
         self.db.add_review_comment(&comment)?;
         Ok(comment)
+    }
+}
+
+/// Most paths one chat offers to `@`; a huge repository is cut here rather than sent whole.
+const MAX_MENTION_PATHS: usize = 60_000;
+
+/// The folders above every file, then the files, each under `prefix`.
+fn mention_paths(files: &[String], prefix: &str, repository: Option<&str>) -> Vec<MentionPath> {
+    let mut dirs = std::collections::BTreeSet::new();
+    for file in files {
+        let mut end = 0;
+        while let Some(slash) = file[end..].find('/') {
+            end += slash + 1;
+            dirs.insert(file[..end].to_string());
+        }
+    }
+    let make = |path: String, dir: bool| MentionPath {
+        path: format!("{prefix}{path}"),
+        dir,
+        repository: repository.map(str::to_string),
+    };
+    dirs.into_iter()
+        .map(|dir| make(dir, true))
+        .chain(files.iter().map(|file| make(file.clone(), false)))
+        .collect()
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn every_folder_above_a_file_is_offered_once_before_the_files() {
+        let files = vec![
+            "README.md".to_string(),
+            "src/app/main.rs".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let paths = mention_paths(&files, "", None);
+        let listed: Vec<(&str, bool)> = paths
+            .iter()
+            .map(|item| (item.path.as_str(), item.dir))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("src/", true),
+                ("src/app/", true),
+                ("README.md", false),
+                ("src/app/main.rs", false),
+                ("src/lib.rs", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn another_repository_is_reached_by_its_absolute_path_and_named() {
+        let files = vec!["a/b.rs".to_string()];
+        let paths = mention_paths(&files, "/work/other/", Some("other"));
+        assert_eq!(paths[0].path, "/work/other/a/");
+        assert_eq!(paths[1].path, "/work/other/a/b.rs");
+        assert!(
+            paths
+                .iter()
+                .all(|item| item.repository.as_deref() == Some("other"))
+        );
     }
 }

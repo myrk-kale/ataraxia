@@ -23,6 +23,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (9, include_str!("../../../migrations/009_api_audit.sql")),
     (10, include_str!("../../../migrations/010_workspaces.sql")),
+    (
+        11,
+        include_str!("../../../migrations/011_session_conversation.sql"),
+    ),
 ];
 
 fn io(error: rusqlite::Error) -> Error {

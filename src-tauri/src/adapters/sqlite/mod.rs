@@ -501,6 +501,30 @@ impl Store for SqliteStore {
         })
     }
 
+    fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT agent_ref FROM chat_sessions WHERE id = ?1",
+                params![id.0.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        })
+    }
+
+    fn set_session_agent_ref(&self, id: SessionId, agent_ref: Option<&str>) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE chat_sessions SET agent_ref = ?2 WHERE id = ?1",
+                params![id.0.to_string(), agent_ref],
+            )
+            .map(|_| ())
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        })
+    }
+
     fn update_session_provider(
         &self,
         id: SessionId,
@@ -512,7 +536,8 @@ impl Store for SqliteStore {
             let updated = conn
                 .execute(
                     "UPDATE chat_sessions
-                     SET provider = ?2, model = NULL, effort = NULL, agent = NULL, updated_at = ?3
+                     SET provider = ?2, model = NULL, effort = NULL, agent = NULL, agent_ref = NULL,
+                         updated_at = ?3
                      WHERE id = ?1",
                     params![id.0.to_string(), provider.as_str(), updated_at],
                 )

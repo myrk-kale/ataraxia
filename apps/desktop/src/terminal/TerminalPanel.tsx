@@ -1,5 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { registerTerminalSelection } from "../app/contextMenu";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
@@ -103,6 +104,8 @@ export function TerminalPanel({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // The right-click menu reads what is selected from the terminal, which draws it itself.
+    const forgetSelection = registerTerminalSelection(host, () => term.getSelection());
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
@@ -176,6 +179,7 @@ export function TerminalPanel({
       observer.disconnect();
       unlistenOutput?.();
       unlistenExit?.();
+      forgetSelection();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

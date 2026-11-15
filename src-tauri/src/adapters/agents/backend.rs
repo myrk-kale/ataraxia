@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::domain::agent::SessionOptions;
+use crate::domain::agent::{SessionOptions, SlashCommand};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::{
     PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId, UsageWindow,
@@ -44,6 +44,8 @@ pub enum BackendEvent {
         request_id: PermissionRequestId,
         tool_name: String,
         detail: String,
+        /// Questions the tool puts to the person; empty for an ordinary permission.
+        questions: Vec<crate::domain::PermissionQuestion>,
     },
     TurnDone {
         turn_id: TurnId,
@@ -92,6 +94,10 @@ pub struct BackendContext {
     pub effort: Option<String>,
     /// Named agent to run as (`None` = the provider's default agent).
     pub agent: Option<String>,
+    /// The harness's own id of the conversation this chat kept, to pick it up again instead of
+    /// beginning a new one. A harness that cannot find it begins a new one (see
+    /// [`BackendSession::resumed`]).
+    pub resume: Option<String>,
     /// The session only investigates: provider-side sandboxing keeps it from writing.
     pub read_only: bool,
     /// Where the agent finds Ataraxia's local API, with a token for this process only.
@@ -201,6 +207,16 @@ pub trait BackendSession: Send + Sync {
     /// Must lead to exactly one `TurnDone { ok: false }` for the active turn.
     fn cancel(&self) -> Result<()>;
     fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()>;
+    /// The harness's own id of the conversation this process holds, kept so the chat can pick it
+    /// up after a restart. `None` for a harness with nothing to resume.
+    fn conversation(&self) -> Option<String> {
+        None
+    }
+    /// True when the conversation asked for in `BackendContext::resume` was picked up, so the
+    /// agent still has everything said before; false when this process begins a new one.
+    fn resumed(&self) -> bool {
+        false
+    }
     /// False once the underlying process is gone; the host then restarts the session on demand.
     fn is_alive(&self) -> bool {
         true
@@ -232,7 +248,29 @@ pub trait BackendSession: Send + Sync {
     fn options(&self) -> SessionOptions {
         SessionOptions::default()
     }
+    /// The commands and skills the harness runs when a message begins with `/name`, as far as it
+    /// has said. The message itself goes through `prompt` as typed; a harness that needs it in
+    /// another form (Codex) rewrites it there.
+    fn commands(&self) -> Vec<SlashCommand> {
+        Vec::new()
+    }
     fn shutdown(&self);
+}
+
+/// The command a message begins with and what follows it (`/review main` is `review` and
+/// `main`). Only at the very start does a harness run one, and a path such as `/etc/hosts` is not
+/// one.
+pub fn split_command(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim_start().strip_prefix('/')?;
+    let (name, args) = match rest.find(char::is_whitespace) {
+        Some(end) => (&rest[..end], rest[end..].trim()),
+        None => (rest, ""),
+    };
+    let valid = name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_:.".contains(c));
+    valid.then_some((name, args))
 }
 
 const MAX_OUTPUT_CHARS: usize = 20_000;
@@ -249,6 +287,30 @@ pub fn truncate_output(mut text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_is_a_name_at_the_start_of_the_message_with_what_follows() {
+        assert_eq!(split_command("/review main"), Some(("review", "main")));
+        assert_eq!(split_command("  /review"), Some(("review", "")));
+        assert_eq!(
+            split_command("/figma:implement   <url> now "),
+            Some(("figma:implement", "<url> now"))
+        );
+        assert_eq!(
+            split_command("/code-review\nmore"),
+            Some(("code-review", "more"))
+        );
+    }
+
+    #[test]
+    fn a_path_or_plain_text_is_no_command() {
+        assert_eq!(split_command("/etc/hosts is odd"), None);
+        assert_eq!(split_command("/"), None);
+        assert_eq!(split_command("/ review"), None);
+        assert_eq!(split_command("/1"), None);
+        assert_eq!(split_command("run /review"), None);
+        assert_eq!(split_command("review"), None);
+    }
 
     #[test]
     fn the_api_variables_name_the_address_the_token_and_the_session() {

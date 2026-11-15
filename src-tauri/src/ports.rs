@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::agent::{CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions};
+use crate::domain::agent::{
+    CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions, SlashCommand,
+};
 use crate::domain::ids::{
     CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId,
 };
@@ -121,6 +123,11 @@ pub trait AgentRuntime: Send + Sync {
     fn stop_session(&self, session_id: &SessionId);
     /// Models, efforts and agents the live session offers.
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions>;
+    /// The commands and skills the live session's harness runs from a `/name` message.
+    fn session_commands(&self, session_id: &SessionId) -> Result<Vec<SlashCommand>> {
+        let _ = session_id;
+        Ok(Vec::new())
+    }
 }
 
 /// Outbound channel for agent events (Tauri `emit` in production, a recorder in tests).
@@ -367,7 +374,12 @@ pub trait Store: Send + Sync {
         agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()>;
-    /// Changes the harness of a chat; model, effort and agent reset with it.
+    /// The harness's own id of the conversation this chat keeps, if it has one to pick up.
+    fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>>;
+    /// Remembers that conversation; `None` makes the next start begin a new one.
+    fn set_session_agent_ref(&self, id: SessionId, agent_ref: Option<&str>) -> Result<()>;
+    /// Changes the harness of a chat; model, effort and agent reset with it, and so does the
+    /// conversation it kept.
     fn update_session_provider(
         &self,
         id: SessionId,

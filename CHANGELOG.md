@@ -6,6 +6,47 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
+### Added
+
+- A chat picks its conversation up again. Reopening a chat under the same model now goes on with
+  what the agent already knows, so the "agent starts fresh" notice no longer shows. Claude Code
+  resumes its session, Codex its thread and OpenCode its session; when the harness no longer has it,
+  a new one begins and the notice shows. Changing the model, even back to an earlier one, begins a
+  new conversation and keeps the old messages as reference; effort and agent never do.
+- New chats start with the model and effort last chosen for their harness.
+- `/` and `@` in the message field, the same for every harness. `/` runs an action of the agent,
+  a command or a skill, and only counts at the very start of the message (Claude Code and OpenCode
+  list their commands, Codex its skills and custom prompts). `@` points at something for the agent
+  to look at: a file or folder of the chat's repositories (those of the other repositories of a
+  workspace by absolute path, which is how the agent reaches them) or one of the harness's agents.
+  The list opens above the field; the arrows, Enter or Tab and Esc work it, and choosing a folder
+  goes on inside it. A message that starts with a command goes out as typed, so Ataraxia's own
+  introduction waits for the next message.
+- Taking a message out of the queue with its X puts the words back in the message field when the
+  field is empty, so you can edit it or send it again. With something typed there, the message is
+  only removed. Pictures are not brought back.
+
+- Right-click opens the app's menu instead of the webview's (Reload, Inspect…). In a text field it
+  offers Undo, Redo, Cut, Copy, Paste and Select All; on selected text, Copy; on a web link, Open
+  Link and Copy Link Address; on a picture, Copy Image; in the terminal, Copy (what is selected
+  there) and Paste. Elsewhere nothing opens. The code editor keeps its own menu, and in development
+  Shift + right-click still opens the webview's, for the inspector.
+
+### Fixed
+
+- Changing the model no longer shows "claude exited": the old process being stopped was reported as
+  a failure of the new one.
+- The agent's questions (Claude Code's AskUserQuestion) are shown and answered. Before, the dialog
+  only said "Allow AskUserQuestion" and answering ended in an error. Questions, and permissions to
+  run something, now take the place of the message field instead of a dialog, as in Claude Code:
+  numbered options you can pick with the arrows, Enter or a number key, several ticked at once when
+  the question allows it, and a line to answer in your own words. Esc skips (declines) it, and the
+  field comes back, with what you had typed, once it is settled.
+- The animated background no longer rises when the message field grows with what is typed in it
+  (the field keeps its cap).
+
 ## [0.4.0] - 2026-11-14
 
 ### Added
@@ -222,7 +263,9 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/myrk-kale/ataraxia/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/myrk-kale/ataraxia/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/myrk-kale/ataraxia/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/myrk-kale/ataraxia/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/myrk-kale/ataraxia/compare/v0.1.0...v0.1.1

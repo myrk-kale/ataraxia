@@ -55,6 +55,16 @@ def run_plain():
     complete()
 
 
+def run_echo(items):
+    """Says what it was given, so a test can see how the message reached the agent."""
+    start_turn()
+    said = json.dumps(items, sort_keys=True)
+    notify("item/started", turnId=TURN, item={"type": "agentMessage", "id": "msg1", "text": ""})
+    notify("item/agentMessage/delta", turnId=TURN, itemId="msg1", delta=said)
+    notify("item/completed", turnId=TURN, item={"type": "agentMessage", "id": "msg1", "text": said})
+    complete()
+
+
 def run_tool():
     start_turn()
     item = {"type": "commandExecution", "id": "cmd1", "command": "touch probe.txt",
@@ -145,6 +155,12 @@ def main():
             send({"id": frame["id"], "result": {"userAgent": "mock-codex"}})
         elif method == "thread/start":
             send({"id": frame["id"], "result": {"thread": {"id": THREAD}, "model": "mock"}})
+        elif method == "skills/list":
+            send({"id": frame["id"], "result": {"data": [{"cwd": "/work", "skills": [
+                {"name": "review-mock", "description": "Review things", "path": "/skills/review-mock/SKILL.md",
+                 "scope": "user", "enabled": True},
+                {"name": "off-mock", "description": "Disabled", "path": "/skills/off/SKILL.md",
+                 "scope": "user", "enabled": False}]}]}})
         elif method == "model/list":
             effort = lambda name: {"reasoningEffort": name, "description": name}
             send({"id": frame["id"], "result": {"nextCursor": None, "data": [
@@ -168,6 +184,10 @@ def main():
                      "status": "completed", "aggregatedOutput": "diff --git", "exitCode": 0},
                     {"type": "agentMessage", "id": "rm1", "text": "All good."}]}]}}})
         elif method == "thread/resume":
+            if frame["params"]["threadId"].startswith("gone"):
+                send({"id": frame["id"], "error": {"code": -32600,
+                      "message": "no rollout found for thread id " + frame["params"]["threadId"]}})
+                continue
             send({"id": frame["id"], "result": {"thread": {"id": frame["params"]["threadId"]}}})
         elif method == "turn/start" and frame["params"]["threadId"] == CHILD:
             text = frame["params"]["input"][0]["text"]
@@ -180,7 +200,9 @@ def main():
         elif method == "turn/start":
             send({"id": frame["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}})
             text = frame["params"]["input"][0]["text"]
-            if text.startswith("tool"):
+            if text.startswith(("echo", "$", "/")):
+                run_echo(frame["params"]["input"])
+            elif text.startswith("tool"):
                 run_tool()
             elif text.startswith("spawnquiet"):
                 run_spawnquiet()

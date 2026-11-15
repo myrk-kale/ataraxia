@@ -15,8 +15,8 @@ pub mod usage;
 
 pub use chat::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSnapshot, ImageAttachment, ImageUpload,
-    PendingPermission, PermissionDecision, PermissionRequestId, SubagentRecord, SubagentStatus,
-    SubagentUpdate, ToolCallId, ToolCallRecord, ToolStatus,
+    PendingPermission, PermissionDecision, PermissionQuestion, PermissionRequestId, QuestionOption,
+    SubagentRecord, SubagentStatus, SubagentUpdate, ToolCallId, ToolCallRecord, ToolStatus,
 };
 pub use error::{Error, ErrorCode, Result};
 pub use insight::{
