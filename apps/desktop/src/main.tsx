@@ -3,6 +3,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { AppShell } from "./app/AppShell";
 import { AppearanceProvider } from "./app/appearance/store";
+import { installContextMenu } from "./app/contextMenuTauri";
 import { Intro } from "./intro/Intro";
 import { introEnabled } from "./intro/timeline";
 import "./styles/index.css";
@@ -14,6 +15,7 @@ async function start() {
   if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
     await import("./dev/tauriMock");
   }
+  installContextMenu();
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <I18nProvider locale="en-US">

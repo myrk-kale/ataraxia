@@ -39,11 +39,21 @@ export type ToolItem = {
 
 export type ChatItem = ChatMessage | ToolItem;
 
+/** A question the agent puts to the person, with the answers it suggests. */
+export type PermissionQuestion = {
+  question: string;
+  header: string;
+  options: { label: string; description: string }[];
+  multiSelect: boolean;
+};
+
 export type PendingPermission = {
   requestId: string;
   turnId: string;
   toolName: string;
   detail: string;
+  /** Empty for an ordinary permission; set when the agent is asking something. */
+  questions?: PermissionQuestion[];
 };
 
 export type SubagentStatus = "running" | "done" | "failed";
@@ -118,6 +128,7 @@ type AgentEventBody =
       requestId: string;
       toolName: string;
       detail: string;
+      questions?: PermissionQuestion[];
     }
   | { type: "turnDone"; sessionId: SessionId; turnId: string; ok: boolean }
   | {
@@ -160,6 +171,25 @@ export type SessionOptions = {
   agents: AgentChoice[];
 };
 
+/** An action the agent runs when a message begins with `/name`: one of its commands or skills. */
+export type SlashCommand = {
+  name: string;
+  description: string;
+  /** What follows the name, when the agent says (`[branch]`). */
+  hint: string | null;
+  /** Where it comes from, when the agent says (user, project, a plugin). */
+  source: string | null;
+};
+
+/** A file or folder of the chat's repositories that `@` can point at. */
+export type MentionPath = {
+  /** What goes after the `@`. A folder ends with a slash. */
+  path: string;
+  dir: boolean;
+  /** The repository, when it is not the one the agent works in. */
+  repository: string | null;
+};
+
 export type ProviderSettings = {
   /** False when Ataraxia cannot change model or effort for this provider. */
   configurable: boolean;
@@ -183,6 +213,14 @@ export type ProviderDescriptor = {
   detail: string | null;
   settings: ProviderSettings;
 };
+
+export function agentListCommands(sessionId: SessionId) {
+  return invoke<SlashCommand[]>("agent_list_commands", { sessionId });
+}
+
+export function sessionPaths(sessionId: SessionId) {
+  return invoke<MentionPath[]>("session_paths", { sessionId });
+}
 
 export function agentListProviders() {
   return invoke<ProviderDescriptor[]>("agent_list_providers");
@@ -290,11 +328,13 @@ export function agentResolvePermission(
   sessionId: SessionId,
   requestId: string,
   allow: boolean,
+  answers?: Record<string, string>,
 ) {
   return invoke<void>("agent_resolve_permission", {
     sessionId,
     requestId,
     allow,
+    answers: answers ?? null,
   });
 }
 
@@ -623,6 +663,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               turnId: event.turnId,
               toolName: event.toolName,
               detail: event.detail,
+              questions: event.questions ?? [],
             },
           };
         case "turnDone":
