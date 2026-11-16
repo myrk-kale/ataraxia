@@ -18,7 +18,6 @@ use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, ImageFile, Launch,
     SubagentRoute, api_env, compose_env, profile_args, profile_program, truncate_output,
 };
-use super::definitions::claude_agents;
 use super::process::{ExitInfo, ManagedProcess, SpawnSpec, resolve_binary};
 use super::subagent_tail::{TailSpec, spawn_tail};
 use crate::domain::agent::{ModelChoice, SessionOptions, SlashCommand};
@@ -70,6 +69,7 @@ impl ClaudeBackend {
         conversation: &Conversation,
         read_only: bool,
         extra_dirs: &[PathBuf],
+        mcp_config: Option<&Path>,
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
@@ -84,7 +84,18 @@ impl ClaudeBackend {
                     permission_mode()
                 };
                 let mut args = launch_args(mode.as_deref(), model, effort, agent, conversation);
-                // Other repositories of the workspace. The flag takes a list, so it goes
+                // Keep provider tools and settings out without disabling slash-command handling:
+                // Ataraxia's /compact still needs Claude's native command handler.
+                args.extend(["--disallowedTools".into(), "Skill".into()]);
+                args.extend(["--setting-sources".into(), "".into()]);
+                if let Some(path) = mcp_config {
+                    args.extend([
+                        "--strict-mcp-config".into(),
+                        "--mcp-config".into(),
+                        path.to_string_lossy().into_owned(),
+                    ]);
+                }
+                // Workspace and Ataraxia skill directories. The flag takes a list, so it goes
                 // last, after every other option.
                 for dir in extra_dirs {
                     args.push("--add-dir".into());
@@ -115,6 +126,18 @@ fn claude_env(
     }
     env.extend(api_env(session_id, api));
     env
+}
+
+/// Keep Claude's own skills and instruction files out while retaining built-in commands.
+fn claude_isolation_env() -> Vec<(String, String)> {
+    [
+        ("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", "1"),
+        ("CLAUDE_CODE_DISABLE_POLICY_SKILLS", "1"),
+        ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value.into()))
+    .collect()
 }
 
 /// Permission mode passed to `claude --permission-mode`. Defaults to `auto`; set
@@ -248,22 +271,27 @@ impl Default for ClaudeBackend {
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
         let conversation = Conversation::New(String::new());
-        self.command(None, None, None, None, &conversation, false, &[])
+        self.command(None, None, None, None, &conversation, false, &[], None)
             .map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let conversation =
             Conversation::choose(ctx.resume.as_deref(), &ctx.cwd, ctx.launch.as_ref());
+        let mut accessible_dirs = ctx.extra_dirs.clone();
+        accessible_dirs.extend(ctx.config.skill_roots.iter().cloned());
+        accessible_dirs.sort();
+        accessible_dirs.dedup();
         let (program, args) = self
             .command(
                 ctx.launch.as_ref(),
                 ctx.model.as_deref(),
                 ctx.effort.as_deref(),
-                ctx.agent.as_deref(),
+                None,
                 &conversation,
                 ctx.read_only,
-                &ctx.extra_dirs,
+                &accessible_dirs,
+                ctx.config.mcp_config_path.as_deref(),
             )
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(ClaudeShared {
@@ -274,15 +302,21 @@ impl AgentBackend for ClaudeBackend {
         });
         let line_shared = Arc::clone(&shared);
         let exit_shared = Arc::clone(&shared);
+        let mut env = compose_env(
+            claude_env(ctx.session_id, ctx.api.as_ref()),
+            ctx.launch.as_ref(),
+        );
+        // These enforce the raw-provider contract even if a launch profile sets them.
+        for (key, value) in claude_isolation_env() {
+            env.retain(|(existing, _)| existing != &key);
+            env.push((key, value));
+        }
         let process = ManagedProcess::spawn(
             &SpawnSpec {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: compose_env(
-                    claude_env(ctx.session_id, ctx.api.as_ref()),
-                    ctx.launch.as_ref(),
-                ),
+                env,
                 // A parent Claude Code session marks its children; strip it so we can nest.
                 env_remove: vec!["CLAUDECODE".into(), "CLAUDE_CODE_ENTRYPOINT".into()],
             },
@@ -301,7 +335,6 @@ impl AgentBackend for ClaudeBackend {
         );
         Ok(Arc::new(ClaudeSession {
             shared,
-            cwd: ctx.cwd,
             conversation,
         }))
     }
@@ -953,7 +986,6 @@ impl ClaudeShared {
 
 struct ClaudeSession {
     shared: Arc<ClaudeShared>,
-    cwd: PathBuf,
     conversation: Conversation,
 }
 
@@ -1051,7 +1083,7 @@ impl BackendSession for ClaudeSession {
                 .iter()
                 .map(|level| (*level).to_string())
                 .collect(),
-            agents: claude_agents(&self.cwd),
+            agents: Vec::new(),
         }
     }
 
@@ -1134,6 +1166,10 @@ impl BackendSession for ClaudeSession {
             .process
             .get()
             .is_some_and(|process| process.is_alive())
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        self.shared.process.get().map(|process| process.pid())
     }
 
     fn shutdown(&self) {
@@ -1539,6 +1575,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_isolation_keeps_compact_and_limits_mcp_to_ataraxia_config() {
+        let launch = Launch {
+            program: Some(PathBuf::from("/bin/true")),
+            ..Launch::default()
+        };
+        let mcp_config = Path::new("/tmp/ataraxia.mcp.json");
+        let (_, args) = ClaudeBackend::new()
+            .command(
+                Some(&launch),
+                None,
+                None,
+                None,
+                &Conversation::New("session".into()),
+                false,
+                &[],
+                Some(mcp_config),
+            )
+            .expect("build Claude command");
+
+        assert!(args.contains(&"--disallowedTools".into()));
+        let denied_tool = args
+            .iter()
+            .position(|argument| argument == "--disallowedTools")
+            .expect("deny the provider skill tool");
+        assert_eq!(args[denied_tool + 1], "Skill");
+        assert!(!args.contains(&"--disable-slash-commands".into()));
+        assert!(args.contains(&"--strict-mcp-config".into()));
+        let mcp_argument = args
+            .iter()
+            .position(|argument| argument == "--mcp-config")
+            .expect("load Ataraxia MCP config");
+        assert_eq!(
+            args[mcp_argument + 1],
+            mcp_config.to_string_lossy().as_ref()
+        );
+    }
+
     struct Harness {
         session: Arc<dyn BackendSession>,
         events: Receiver<BackendEvent>,
@@ -1563,6 +1637,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1621,6 +1696,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1666,6 +1742,7 @@ mod tests {
                     agent: None,
                     resume,
                     api: None,
+                    config: super::super::config::AgentConfiguration::default(),
                     emit: Arc::new(move |event| {
                         let _ = sender.lock().send(event);
                     }),
@@ -1730,6 +1807,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1756,6 +1834,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),

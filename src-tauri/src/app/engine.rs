@@ -161,11 +161,22 @@ impl Engine {
     /// Before a chat is deleted: its agent and those of the helper sessions under it end, and
     /// what it had queued is dropped.
     pub fn stop_session_for_delete(&self, session_id: SessionId) {
-        for helper in self.db.list_child_sessions(session_id).unwrap_or_default() {
-            self.runtime.stop_session(&helper.id);
+        let mut pending = vec![session_id];
+        let mut sessions = Vec::new();
+        while let Some(parent) = pending.pop() {
+            sessions.push(parent);
+            pending.extend(
+                self.db
+                    .list_child_sessions(parent)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|child| child.id),
+            );
         }
-        self.runtime.stop_session(&session_id);
-        self.runtime.forget_session(&session_id);
+        for id in sessions.into_iter().rev() {
+            self.runtime.stop_session(&id);
+            self.runtime.forget_session(&id);
+        }
         self.queues.lock().remove(&session_id);
     }
 

@@ -74,6 +74,10 @@ impl RpcClient {
         self.process.is_alive()
     }
 
+    pub fn pid(&self) -> u32 {
+        self.process.pid()
+    }
+
     pub fn kill(&self) {
         self.process.kill();
     }

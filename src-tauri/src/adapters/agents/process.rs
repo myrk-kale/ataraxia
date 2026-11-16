@@ -7,12 +7,13 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use command_group::{CommandGroup, GroupChild};
 use parking_lot::Mutex;
 
 use crate::domain::{Error, ErrorCode, Result};
@@ -151,9 +152,11 @@ impl ExitInfo {
 
 pub struct ManagedProcess {
     program: PathBuf,
-    child: Mutex<Child>,
+    child: Mutex<GroupChild>,
     stdin: Mutex<Option<ChildStdin>>,
+    pid: u32,
     alive: Arc<AtomicBool>,
+    closing: Arc<AtomicBool>,
 }
 
 impl ManagedProcess {
@@ -178,21 +181,22 @@ impl ManagedProcess {
         for (key, value) in &spec.env {
             command.env(key, value);
         }
-        let mut child = command.spawn().map_err(|error| {
+        let mut child = command.group_spawn().map_err(|error| {
             Error::new(
                 ErrorCode::Agent,
                 format!("could not start {}: {error}", spec.program.display()),
             )
         })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::new(ErrorCode::Agent, "child stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Error::new(ErrorCode::Agent, "child stderr unavailable"))?;
-        let stdin = child.stdin.take();
+        let pid = child.inner().id();
+        let Some(stdout) = child.inner().stdout.take() else {
+            let _ = child.kill();
+            return Err(Error::new(ErrorCode::Agent, "child stdout unavailable"));
+        };
+        let Some(stderr) = child.inner().stderr.take() else {
+            let _ = child.kill();
+            return Err(Error::new(ErrorCode::Agent, "child stderr unavailable"));
+        };
+        let stdin = child.inner().stdin.take();
 
         let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_tail = Arc::clone(&tail);
@@ -210,7 +214,35 @@ impl ManagedProcess {
             program: spec.program.clone(),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
+            pid,
             alive: Arc::new(AtomicBool::new(true)),
+            closing: Arc::new(AtomicBool::new(false)),
+        });
+
+        // MCP servers inherit the harness pipes. If the harness exits on its own, stop its
+        // remaining process group so those pipes close and the session can be retired.
+        let monitor = Arc::clone(&process);
+        thread::spawn(move || {
+            loop {
+                if monitor.closing.load(Ordering::SeqCst) {
+                    break;
+                }
+                let outcome = {
+                    let mut child = monitor.child.lock();
+                    if monitor.closing.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    child.inner().try_wait()
+                };
+                match outcome {
+                    Ok(Some(_)) | Err(_) => {
+                        monitor.closing.store(true, Ordering::SeqCst);
+                        let _ = monitor.child.lock().kill();
+                        break;
+                    }
+                    Ok(None) => thread::sleep(Duration::from_millis(20)),
+                }
+            }
         });
 
         let watcher = Arc::clone(&process);
@@ -243,6 +275,10 @@ impl ManagedProcess {
         self.alive.load(Ordering::SeqCst)
     }
 
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
     pub fn write_line(&self, line: &str) -> Result<()> {
         debug_frame('>', &self.program, line);
         let mut guard = self.stdin.lock();
@@ -258,8 +294,9 @@ impl ManagedProcess {
             })
     }
 
-    /// Closes stdin and kills the child. Idempotent.
+    /// Closes stdin and kills the child process group. Idempotent.
     pub fn kill(&self) {
+        self.closing.store(true, Ordering::SeqCst);
         self.stdin.lock().take();
         let _ = self.child.lock().kill();
     }
@@ -267,6 +304,7 @@ impl ManagedProcess {
 
 impl Drop for ManagedProcess {
     fn drop(&mut self) {
+        self.closing.store(true, Ordering::SeqCst);
         self.stdin.get_mut().take();
         let _ = self.child.get_mut().kill();
     }

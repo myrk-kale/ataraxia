@@ -6,12 +6,14 @@ Frame shapes follow Codex's app-server protocol: thread/start, turn/start, `item
 prompt selects the scenario: tool | spawn | spawnfirst | spawnquiet | hang | crash | anything else.
 """
 import json
+import os
 import sys
 import time
 
 THREAD = "thr_mock"
 CHILD = "thr_child"
 TURN = "turn_mock"
+COMPACT_TURN = "turn_compact"
 
 
 def send(frame):
@@ -145,6 +147,15 @@ def run_hang():
     complete("interrupted")
 
 
+def run_compact(frame):
+    send({"id": frame["id"], "result": {}})
+    notify("turn/started", turn={"id": COMPACT_TURN, "status": "inProgress"})
+    interrupt = wait_for(lambda f: f.get("method") == "turn/interrupt")
+    assert interrupt["params"]["turnId"] == COMPACT_TURN
+    send({"id": interrupt["id"], "result": {}})
+    notify("turn/completed", turn={"id": COMPACT_TURN, "status": "interrupted"})
+
+
 def main():
     while True:
         frame = read_frame()
@@ -156,11 +167,13 @@ def main():
         elif method == "thread/start":
             send({"id": frame["id"], "result": {"thread": {"id": THREAD}, "model": "mock"}})
         elif method == "skills/list":
-            send({"id": frame["id"], "result": {"data": [{"cwd": "/work", "skills": [
+            send({"id": frame["id"], "result": {"data": [{"cwd": os.getcwd(), "skills": [
                 {"name": "review-mock", "description": "Review things", "path": "/skills/review-mock/SKILL.md",
                  "scope": "user", "enabled": True},
                 {"name": "off-mock", "description": "Disabled", "path": "/skills/off/SKILL.md",
                  "scope": "user", "enabled": False}]}]}})
+        elif method == "skills/config/write":
+            send({"id": frame["id"], "result": {"effectiveEnabled": frame["params"]["enabled"]}})
         elif method == "model/list":
             effort = lambda name: {"reasoningEffort": name, "description": name}
             send({"id": frame["id"], "result": {"nextCursor": None, "data": [
@@ -189,6 +202,8 @@ def main():
                       "message": "no rollout found for thread id " + frame["params"]["threadId"]}})
                 continue
             send({"id": frame["id"], "result": {"thread": {"id": frame["params"]["threadId"]}}})
+        elif method == "thread/compact/start":
+            run_compact(frame)
         elif method == "turn/start" and frame["params"]["threadId"] == CHILD:
             text = frame["params"]["input"][0]["text"]
             send({"id": frame["id"], "result": {"turn": {"id": "child_turn_2", "status": "inProgress"}}})

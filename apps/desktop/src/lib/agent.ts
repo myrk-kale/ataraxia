@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ProviderUsage } from "./usage";
-import type { ChatSession, ProviderKind, SessionId, SessionStatus } from "./workspace";
+import type { ChatSession, ProviderKind, SessionId, SessionStatus, WorkspaceId } from "./workspace";
 
 export type ChatRole = "user" | "assistant" | "system";
 export type ToolStatus = "running" | "done" | "failed";
@@ -209,9 +209,53 @@ export type ProviderSettings = {
 export type ProviderDescriptor = {
   kind: ProviderKind;
   display_name: string;
+  capabilities: CapabilityMatrix;
   available: boolean;
   detail: string | null;
   settings: ProviderSettings;
+};
+
+export type RepositoryMcpServer = {
+  name: string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  cwd: string | null;
+  environment: string[];
+  headers: string[];
+};
+
+export type RepositoryMcpApproval = {
+  repository: string;
+  fingerprint: string;
+  servers: RepositoryMcpServer[];
+};
+
+export type McpProcessStatus = "running" | "notDetected" | "remote" | "unidentified";
+
+export type McpProcessInfo = {
+  sessionId: SessionId;
+  workspaceId: WorkspaceId | null;
+  workspaceName: string | null;
+  sessionTitle: string;
+  provider: ProviderKind;
+  serverName: string;
+  status: McpProcessStatus;
+  pid: number | null;
+  processStartedAt: number | null;
+};
+
+export type CapabilityMatrix = {
+  rewind: boolean;
+  fork: "none" | "checkpoint" | "tip";
+  compact: boolean;
+  compact_instructions: boolean;
+  thread_goal: boolean;
+  context_usage: boolean;
+  image_prompts: boolean;
+  steering: "none" | "inject" | "queue";
+  approval_enforcement: "provider" | "host";
+  child_sessions: boolean;
 };
 
 export function agentListCommands(sessionId: SessionId) {
@@ -224,6 +268,30 @@ export function sessionPaths(sessionId: SessionId) {
 
 export function agentListProviders() {
   return invoke<ProviderDescriptor[]>("agent_list_providers");
+}
+
+export function agentListMcpProcesses() {
+  return invoke<McpProcessInfo[]>("agent_list_mcp_processes");
+}
+
+export function agentStopMcpProcess(process: McpProcessInfo) {
+  if (process.status !== "running" || process.pid === null || process.processStartedAt === null) {
+    return Promise.reject(new Error("This MCP process cannot be stopped safely."));
+  }
+  return invoke<void>("agent_stop_mcp_process", {
+    sessionId: process.sessionId,
+    serverName: process.serverName,
+    pid: process.pid,
+    processStartedAt: process.processStartedAt,
+  });
+}
+
+export function agentRepositoryMcpApproval(sessionId: SessionId) {
+  return invoke<RepositoryMcpApproval | null>("agent_repository_mcp_approval", { sessionId });
+}
+
+export function agentTrustRepositoryMcp(sessionId: SessionId, fingerprint: string) {
+  return invoke<void>("agent_trust_repository_mcp", { sessionId, fingerprint });
 }
 
 export function agentStartSession(sessionId: SessionId) {

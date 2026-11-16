@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::config::AgentConfiguration;
 use crate::domain::agent::{SessionOptions, SlashCommand};
 use crate::domain::ids::{SessionId, TurnId};
 use crate::domain::{
@@ -102,6 +103,8 @@ pub struct BackendContext {
     pub read_only: bool,
     /// Where the agent finds Ataraxia's local API, with a token for this process only.
     pub api: Option<ApiAccess>,
+    /// Skills, MCP servers, and AGENTS.md instructions owned and selected by Ataraxia.
+    pub config: AgentConfiguration,
     /// How the chosen launch profile starts the harness; `None` is the default way.
     pub launch: Option<Launch>,
     pub emit: Emitter,
@@ -221,6 +224,10 @@ pub trait BackendSession: Send + Sync {
     fn is_alive(&self) -> bool {
         true
     }
+    /// Operating-system process id for the harness held by this session.
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
     /// Applies a new model/effort to the running session. Returns `false` when the provider can
     /// only pick them up on a fresh process, in which case the host restarts the session.
     fn apply_settings(
@@ -248,18 +255,15 @@ pub trait BackendSession: Send + Sync {
     fn options(&self) -> SessionOptions {
         SessionOptions::default()
     }
-    /// The commands and skills the harness runs when a message begins with `/name`, as far as it
-    /// has said. The message itself goes through `prompt` as typed; a harness that needs it in
-    /// another form (Codex) rewrites it there.
+    /// Commands the harness reports. Ataraxia's command picker uses its own catalog instead.
     fn commands(&self) -> Vec<SlashCommand> {
         Vec::new()
     }
     fn shutdown(&self);
 }
 
-/// The command a message begins with and what follows it (`/review main` is `review` and
-/// `main`). Only at the very start does a harness run one, and a path such as `/etc/hosts` is not
-/// one.
+/// Parses a slash-command token at the start of a message. The host validates its name against
+/// Ataraxia's catalog before forwarding it; a path such as `/etc/hosts` is not a command.
 pub fn split_command(text: &str) -> Option<(&str, &str)> {
     let rest = text.trim_start().strip_prefix('/')?;
     let (name, args) = match rest.find(char::is_whitespace) {

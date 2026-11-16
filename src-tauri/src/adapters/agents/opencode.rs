@@ -11,12 +11,13 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, Launch, SubagentRoute,
     api_env, compose_env, profile_args, profile_program, truncate_output,
 };
+use super::config::prepare_private_dir;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
 use crate::domain::agent::{AgentChoice, ModelChoice, SessionOptions, SlashCommand};
@@ -96,16 +97,69 @@ impl AgentBackend for OpenCodeBackend {
             state: Mutex::new(AcpState::default()),
         });
         let handler_shared = Arc::clone(&shared);
+        let mut env = compose_env(
+            api_env(ctx.session_id, ctx.api.as_ref()),
+            ctx.launch.as_ref(),
+        );
+        env.retain(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "OPENCODE_CONFIG"
+                    | "OPENCODE_CONFIG_CONTENT"
+                    | "OPENCODE_CONFIG_DIR"
+                    | "OPENCODE_PERMISSION"
+            )
+        });
+        if let Some(config_path) = &ctx.config.mcp_config_path {
+            if let Some(config_root) = config_path
+                .parent()
+                .map(|path| path.join(ctx.session_id.0.to_string()).join("opencode-xdg"))
+            {
+                let opencode_config_dir = config_root.join("opencode");
+                prepare_private_dir(&opencode_config_dir)?;
+                env.extend([
+                    (
+                        "XDG_CONFIG_HOME".into(),
+                        config_root.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "OPENCODE_CONFIG_DIR".into(),
+                        opencode_config_dir.to_string_lossy().into_owned(),
+                    ),
+                    ("OPENCODE_DISABLE_PROJECT_CONFIG".into(), "1".into()),
+                    ("OPENCODE_DISABLE_CLAUDE_CODE".into(), "1".into()),
+                    ("OPENCODE_DISABLE_EXTERNAL_SKILLS".into(), "1".into()),
+                    ("OPENCODE_PURE".into(), "1".into()),
+                ]);
+            }
+        }
+        let skill_roots: Vec<String> = ctx
+            .config
+            .skill_roots
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let mcp_servers = opencode_config_mcp_servers(&ctx.config.mcp_servers)?;
+        let mut config = json!({
+            "skills": skill_roots,
+            "permissions": opencode_skill_permissions(&ctx.config.skills)
+        });
+        if !mcp_servers.is_empty() {
+            config["mcp"] = json!({ "servers": mcp_servers });
+        }
+        env.push(("OPENCODE_CONFIG_CONTENT".into(), config.to_string()));
         let client = RpcClient::spawn(
             &SpawnSpec {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: compose_env(
-                    api_env(ctx.session_id, ctx.api.as_ref()),
-                    ctx.launch.as_ref(),
-                ),
-                env_remove: Vec::new(),
+                env,
+                env_remove: vec![
+                    "OPENCODE_CONFIG".into(),
+                    "OPENCODE_CONFIG_CONTENT".into(),
+                    "OPENCODE_CONFIG_DIR".into(),
+                    "OPENCODE_PERMISSION".into(),
+                ],
             },
             true,
             move |incoming| handler_shared.on_incoming(incoming),
@@ -135,16 +189,35 @@ impl AgentBackend for OpenCodeBackend {
             let can_resume = hello
                 .pointer("/agentCapabilities/sessionCapabilities/resume")
                 .is_some_and(|value| !value.is_null());
+            let agent_capabilities = hello.get("agentCapabilities");
+            let supports_http = agent_capabilities
+                .and_then(|value| value.pointer("/mcpCapabilities/http"))
+                .is_some_and(|value| value == true);
+            let supports_sse = agent_capabilities
+                .and_then(|value| value.pointer("/mcpCapabilities/sse"))
+                .is_some_and(|value| value == true);
+            let mcp_servers =
+                acp_mcp_servers(&ctx.config.mcp_servers, supports_http, supports_sse)?;
+            let supports_additional_directories = agent_capabilities
+                .and_then(|value| value.pointer("/sessionCapabilities/additionalDirectories"))
+                .is_some_and(|value| !value.is_null() && value != false);
+            let additional_directories = if supports_additional_directories {
+                session_directories(&ctx.cwd, &ctx.extra_dirs, &ctx.config.skill_roots)
+            } else {
+                Vec::new()
+            };
             if let (true, Some(wanted)) = (can_resume, ctx.resume.as_deref()) {
-                if let Ok(picked) = client.request(
-                    "session/resume",
-                    json!({
-                        "sessionId": wanted,
-                        "cwd": ctx.cwd.to_string_lossy(),
-                        "mcpServers": []
-                    }),
-                    Some(HANDSHAKE_TIMEOUT),
-                ) {
+                let mut params = json!({
+                    "sessionId": wanted,
+                    "cwd": ctx.cwd.to_string_lossy(),
+                    "mcpServers": mcp_servers.clone()
+                });
+                if !additional_directories.is_empty() {
+                    params["additionalDirectories"] = json!(additional_directories);
+                }
+                if let Ok(picked) =
+                    client.request("session/resume", params, Some(HANDSHAKE_TIMEOUT))
+                {
                     let _ = shared.acp_session_id.set(wanted.to_string());
                     if let Some(options) = picked.get("configOptions") {
                         shared.remember_config(parse_config_options(options), true);
@@ -153,11 +226,14 @@ impl AgentBackend for OpenCodeBackend {
                     return Ok(());
                 }
             }
-            let created = client.request(
-                "session/new",
-                json!({ "cwd": ctx.cwd.to_string_lossy(), "mcpServers": [] }),
-                Some(HANDSHAKE_TIMEOUT),
-            )?;
+            let mut params = json!({
+                "cwd": ctx.cwd.to_string_lossy(),
+                "mcpServers": mcp_servers
+            });
+            if !additional_directories.is_empty() {
+                params["additionalDirectories"] = json!(additional_directories);
+            }
+            let created = client.request("session/new", params, Some(HANDSHAKE_TIMEOUT))?;
             let session_id = created
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -185,10 +261,194 @@ impl AgentBackend for OpenCodeBackend {
     }
 }
 
+fn opencode_skill_permissions(skills: &[super::config::SkillDefinition]) -> Vec<Value> {
+    let mut permissions = vec![json!({
+        "action": "skill",
+        "resource": "*",
+        "effect": "deny"
+    })];
+    permissions.extend(skills.iter().map(|skill| {
+        json!({
+            "action": "skill",
+            "resource": skill.id,
+            "effect": "allow"
+        })
+    }));
+    permissions
+}
+
+/// OpenCode ACP's MCP entry omits `cwd`, so entries with an explicit working directory use its
+/// native config format instead.
+fn opencode_config_mcp_servers(servers: &Map<String, Value>) -> Result<Map<String, Value>> {
+    let mut configured = Map::new();
+    for (name, config) in servers {
+        if config.get("command").is_none() || config.get("cwd").is_none() {
+            continue;
+        }
+        let command = config
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|command| !command.is_empty())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} command must be a non-empty string"),
+                )
+            })?;
+        let cwd = config
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|cwd| !cwd.is_empty())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} cwd must be a non-empty string"),
+                )
+            })?;
+        let mut command_args = vec![Value::String(command.to_string())];
+        if let Some(args) = config.get("args") {
+            let args = args.as_array().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} args must be an array of strings"),
+                )
+            })?;
+            if args.iter().any(|arg| !arg.is_string()) {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} args must be an array of strings"),
+                ));
+            }
+            command_args.extend(args.iter().cloned());
+        }
+        let mut server = json!({
+            "type": "local",
+            "command": command_args,
+            "cwd": cwd
+        });
+        if let Some(environment) = config.get("env") {
+            if !environment
+                .as_object()
+                .is_some_and(|values| values.values().all(Value::is_string))
+            {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} env must be an object of strings"),
+                ));
+            }
+            server["environment"] = environment.clone();
+        }
+        configured.insert(name.clone(), server);
+    }
+    Ok(configured)
+}
+
 #[derive(Debug, Clone)]
 struct AcpOption {
     id: String,
     kind: String,
+}
+
+/// Translates portable MCP entries into the active ACP v1 transport shapes.
+fn acp_mcp_servers(
+    servers: &Map<String, Value>,
+    supports_http: bool,
+    supports_sse: bool,
+) -> Result<Vec<Value>> {
+    servers
+        .iter()
+        .filter(|(_, config)| !(config.get("command").is_some() && config.get("cwd").is_some()))
+        .map(|(name, config)| {
+            let mut entry = Map::new();
+            entry.insert("name".into(), Value::String(name.clone()));
+            if let Some(command) = config.get("command").and_then(Value::as_str) {
+                entry.insert("command".into(), Value::String(command.to_string()));
+                if let Some(args) = config.get("args").and_then(Value::as_array) {
+                    entry.insert("args".into(), Value::Array(args.clone()));
+                }
+                if let Some(env) = config.get("env") {
+                    entry.insert("env".into(), acp_pairs(env, "env", name)?);
+                }
+            } else if let Some(url) = config.get("url").and_then(Value::as_str) {
+                let transport = config
+                    .get("type")
+                    .or_else(|| config.get("transport"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("http");
+                match transport {
+                    "http" if supports_http => {
+                        entry.insert("type".into(), Value::String("http".into()));
+                    }
+                    "sse" if supports_sse => {
+                        entry.insert("type".into(), Value::String("sse".into()));
+                    }
+                    "http" | "sse" => {
+                        return Err(Error::new(
+                            ErrorCode::Unsupported,
+                            format!("OpenCode ACP does not support the {transport} MCP transport"),
+                        ));
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            ErrorCode::Invalid,
+                            format!("MCP server {name} has an unsupported transport"),
+                        ));
+                    }
+                }
+                entry.insert("url".into(), Value::String(url.to_string()));
+                if let Some(headers) = config.get("headers") {
+                    entry.insert("headers".into(), acp_pairs(headers, "headers", name)?);
+                }
+            } else {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {name} needs either command or url"),
+                ));
+            }
+            Ok(Value::Object(entry))
+        })
+        .collect()
+}
+
+fn acp_pairs(value: &Value, key: &str, server: &str) -> Result<Value> {
+    let values = value.as_object().ok_or_else(|| {
+        Error::new(
+            ErrorCode::Invalid,
+            format!("MCP server {server} {key} must be an object"),
+        )
+    })?;
+    values
+        .iter()
+        .map(|(name, value)| {
+            let value = value.as_str().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("MCP server {server} {key}.{name} must be a string"),
+                )
+            })?;
+            Ok(json!({ "name": name, "value": value }))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Value::Array)
+}
+
+fn session_directories(
+    cwd: &std::path::Path,
+    extra_dirs: &[PathBuf],
+    skill_roots: &[PathBuf],
+) -> Vec<String> {
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut directories: Vec<String> = extra_dirs
+        .iter()
+        .chain(skill_roots)
+        .filter_map(|path| {
+            let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            (path.is_dir() && path != cwd).then(|| path.to_string_lossy().into_owned())
+        })
+        .collect();
+    directories.sort();
+    directories.dedup();
+    directories
 }
 
 struct QueuedPermission {
@@ -979,6 +1239,10 @@ impl BackendSession for AcpSession {
             .is_some_and(|client| client.is_alive())
     }
 
+    fn process_id(&self) -> Option<u32> {
+        self.shared.client.get().map(|client| client.pid())
+    }
+
     fn shutdown(&self) {
         if let Some(client) = self.shared.client.get() {
             client.kill();
@@ -1076,6 +1340,56 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn opencode_skill_permissions_deny_native_skills_and_allow_only_ataraxia_skills() {
+        let skills = vec![super::super::config::SkillDefinition {
+            id: "selected-skill".into(),
+            name: "selected-skill".into(),
+            description: "Selected by Ataraxia".into(),
+            path: PathBuf::from("/ataraxia/skills/selected-skill/SKILL.md"),
+        }];
+
+        let permissions = opencode_skill_permissions(&skills);
+
+        assert_eq!(permissions.len(), 2);
+        assert_eq!(permissions[0]["action"], "skill");
+        assert_eq!(permissions[0]["resource"], "*");
+        assert_eq!(permissions[0]["effect"], "deny");
+        assert_eq!(permissions[1]["resource"], "selected-skill");
+        assert_eq!(permissions[1]["effect"], "allow");
+        assert_eq!(opencode_skill_permissions(&[]).len(), 1);
+    }
+
+    #[test]
+    fn local_mcp_servers_with_a_cwd_use_native_config_and_keep_their_arguments() {
+        let servers = json!({
+            "local": {
+                "command": "node",
+                "args": ["server.js", "--quiet"],
+                "cwd": "tools/mcp",
+                "env": { "TOKEN": "secret" }
+            },
+            "default-cwd": { "command": "python", "args": ["server.py"] }
+        });
+        let servers = servers.as_object().expect("MCP server map");
+
+        let native = opencode_config_mcp_servers(servers).expect("native config");
+        assert_eq!(
+            native["local"],
+            json!({
+                "type": "local",
+                "command": ["node", "server.js", "--quiet"],
+                "cwd": "tools/mcp",
+                "environment": { "TOKEN": "secret" }
+            })
+        );
+        assert_eq!(native.get("default-cwd"), None);
+
+        let acp = acp_mcp_servers(servers, true, true).expect("ACP config");
+        assert_eq!(acp.len(), 1);
+        assert_eq!(acp[0]["name"], "default-cwd");
+    }
+
     fn mock_backend() -> OpenCodeBackend {
         OpenCodeBackend::with_command(
             PathBuf::from("python3"),
@@ -1122,6 +1436,7 @@ mod tests {
                 agent: agent.map(str::to_string),
                 resume: resume.map(str::to_string),
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1474,6 +1789,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(|_| {}),
             })
             .err()

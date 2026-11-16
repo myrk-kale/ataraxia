@@ -18,11 +18,11 @@ use super::backend::{
     SubagentRoute, api_env, compose_env, profile_args, profile_program, split_command,
     truncate_output,
 };
-use super::codex_commands;
+use super::config::prepare_isolated_home;
 use super::definitions::codex_agents;
 use super::process::{ExitInfo, SpawnSpec, resolve_binary};
 use super::rpc::{Incoming, RpcClient};
-use crate::domain::agent::{ModelChoice, SessionOptions, SlashCommand};
+use crate::domain::agent::{ModelChoice, SessionOptions};
 use crate::domain::ids::TurnId;
 use crate::domain::{
     Error, ErrorCode, PermissionDecision, PermissionRequestId, Result, SubagentUpdate, ToolCallId,
@@ -159,15 +159,37 @@ impl AgentBackend for CodexBackend {
         });
         let _ = shared.me.set(Arc::downgrade(&shared));
         let handler_shared = Arc::clone(&shared);
+        let mut env = compose_env(
+            api_env(ctx.session_id, ctx.api.as_ref()),
+            ctx.launch.as_ref(),
+        );
+        let mut has_isolated_home = false;
+        if let Some(config_path) = &ctx.config.mcp_config_path {
+            if let Some(root) = config_path.parent() {
+                let source_home = ctx
+                    .launch
+                    .as_ref()
+                    .and_then(|launch| launch.env.iter().rev().find(|(key, _)| key == "CODEX_HOME"))
+                    .map(|(_, value)| PathBuf::from(value))
+                    .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+                    .or_else(|| {
+                        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
+                    });
+                let auth_file = source_home.map(|home| home.join("auth.json"));
+                let isolated = prepare_isolated_home(
+                    &root.join(ctx.session_id.0.to_string()).join("codex-home"),
+                    auth_file.as_deref(),
+                )?;
+                env.push(("CODEX_HOME".into(), isolated.to_string_lossy().into_owned()));
+                has_isolated_home = true;
+            }
+        }
         let client = RpcClient::spawn(
             &SpawnSpec {
                 program,
                 args,
                 cwd: ctx.cwd.clone(),
-                env: compose_env(
-                    api_env(ctx.session_id, ctx.api.as_ref()),
-                    ctx.launch.as_ref(),
-                ),
+                env,
                 env_remove: Vec::new(),
             },
             false,
@@ -189,13 +211,30 @@ impl AgentBackend for CodexBackend {
                 Some(HANDSHAKE_TIMEOUT),
             )?;
             client.notify_bare("initialized")?;
-            let params = thread_start_params(
+            if !ctx.config.skill_roots.is_empty() {
+                let roots: Vec<String> = ctx
+                    .config
+                    .skill_roots
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                client.request(
+                    "skills/extraRoots/set",
+                    json!({ "extraRoots": roots }),
+                    Some(COMMANDS_TIMEOUT),
+                )?;
+            }
+            if has_isolated_home {
+                restrict_codex_skills(&client, &ctx.cwd, &ctx.config.skills)?;
+            }
+            let mut params = thread_start_params(
                 &ctx.cwd,
                 approvals_reviewer().as_deref(),
                 ctx.model.as_deref(),
                 ctx.read_only,
                 &ctx.extra_dirs,
             );
+            params["config"]["mcp_servers"] = json!(ctx.config.mcp_servers);
             // The thread of the last run, if Codex still has it; a thread that never got a
             // message has nothing saved, and then a new one begins.
             if let Some(wanted) = ctx.resume.as_deref() {
@@ -245,6 +284,102 @@ impl AgentBackend for CodexBackend {
             resumed,
         }))
     }
+}
+
+/// Restricts Codex's process-wide skill catalog to the paths Ataraxia selected for this session.
+/// Codex discovers system and project skills on its own, so adding Ataraxia roots alone is not an
+/// allowlist. The isolated CODEX_HOME keeps these enablement rules out of the user's Codex config.
+fn restrict_codex_skills(
+    client: &RpcClient,
+    cwd: &Path,
+    selected: &[super::config::SkillDefinition],
+) -> Result<()> {
+    let selected_paths: HashSet<PathBuf> = selected
+        .iter()
+        .map(|skill| canonical_skill_path(&skill.path))
+        .collect();
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let catalog = client.request(
+        "skills/list",
+        json!({ "cwds": [cwd.to_string_lossy()], "forceReload": true }),
+        Some(COMMANDS_TIMEOUT),
+    )?;
+    let updates = codex_skill_updates(&catalog, &cwd, &selected_paths)?;
+    for (path, enabled) in updates {
+        let result = client.request(
+            "skills/config/write",
+            json!({ "path": path, "name": null, "enabled": enabled }),
+            Some(COMMANDS_TIMEOUT),
+        )?;
+        if result.get("effectiveEnabled").and_then(Value::as_bool) != Some(enabled) {
+            return Err(Error::new(
+                ErrorCode::Agent,
+                format!("Codex could not apply the Ataraxia skill selection for {path}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn canonical_skill_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn codex_skill_updates(
+    catalog: &Value,
+    cwd: &Path,
+    selected_paths: &HashSet<PathBuf>,
+) -> Result<Vec<(String, bool)>> {
+    let data = catalog
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new(ErrorCode::Agent, "Codex returned an invalid skill catalog"))?;
+    let cwd = canonical_skill_path(cwd);
+    let entry = data
+        .iter()
+        .find(|entry| {
+            entry
+                .get("cwd")
+                .and_then(Value::as_str)
+                .is_some_and(|path| canonical_skill_path(Path::new(path)) == cwd)
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Agent,
+                "Codex returned no skill catalog for this workspace",
+            )
+        })?;
+    let skills = entry
+        .get("skills")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new(ErrorCode::Agent, "Codex returned an invalid skill list"))?;
+    let mut observed_selected = HashSet::new();
+    let mut updates = Vec::new();
+    for skill in skills {
+        let path = skill
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| Error::new(ErrorCode::Agent, "Codex returned a skill without a path"))?;
+        let selected = selected_paths.contains(&canonical_skill_path(Path::new(path)));
+        if selected {
+            observed_selected.insert(canonical_skill_path(Path::new(path)));
+        }
+        let enabled = skill
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if enabled != selected {
+            updates.push((path.to_string(), selected));
+        }
+    }
+    if &observed_selected != selected_paths {
+        return Err(Error::new(
+            ErrorCode::Agent,
+            "Codex did not discover every skill selected by Ataraxia",
+        ));
+    }
+    Ok(updates)
 }
 
 struct QueuedPermission {
@@ -365,6 +500,25 @@ impl CodexShared {
             return;
         };
         match method {
+            "turn/started" => {
+                state.codex_turn = params
+                    .pointer("/turn/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let cancel_now = state.cancel_requested && state.codex_turn.is_some();
+                let shared = self.me.get().cloned();
+                drop(state);
+                if cancel_now {
+                    if let Some(shared) = shared {
+                        thread::spawn(move || {
+                            if let Some(shared) = shared.upgrade() {
+                                shared.interrupt();
+                            }
+                        });
+                    }
+                }
+                return;
+            }
             "item/agentMessage/delta" => {
                 let text = params
                     .get("delta")
@@ -1010,50 +1164,37 @@ impl CodexSession {
             state.cancel_requested = false;
             state.last_error = None;
         }
-        // A command is not run from the text: Codex takes a skill by name with an attached item,
-        // and a custom prompt is filled in here.
-        let (text, extra) = match split_command(text) {
-            Some((command, args)) => {
-                let (skills, prompts) = (self.skills(), self.prompts());
-                match codex_commands::invocation(command, args, &skills, &prompts) {
-                    Some(run) => (run.text, run.items),
-                    None => (text.to_string(), Vec::new()),
-                }
+        if let Some(("compact", _)) = split_command(text) {
+            let Some(thread_id) = self.shared.thread_id.get() else {
+                return Err(Error::new(
+                    ErrorCode::Agent,
+                    "Codex thread is not available",
+                ));
+            };
+            let result = self
+                .shared
+                .client
+                .get()
+                .ok_or_else(|| Error::new(ErrorCode::Agent, "Codex is not running"))?
+                .request(
+                    "thread/compact/start",
+                    json!({ "threadId": thread_id }),
+                    Some(COMMANDS_TIMEOUT),
+                );
+            if let Err(error) = result {
+                self.shared.state.lock().turn = None;
+                return Err(error);
             }
-            None => (text.to_string(), Vec::new()),
-        };
+            return Ok(());
+        }
         let shared = Arc::clone(&self.shared);
-        thread::spawn(move || shared.run_turn_start(turn_id, text, images, extra));
+        let text = text.to_string();
+        thread::spawn(move || shared.run_turn_start(turn_id, text, images, Vec::new()));
         Ok(())
-    }
-
-    /// The skills Codex has for this folder; none when it does not answer.
-    fn skills(&self) -> Vec<codex_commands::Skill> {
-        let Some(client) = self.shared.client.get() else {
-            return Vec::new();
-        };
-        client
-            .request(
-                "skills/list",
-                json!({ "cwds": [self.cwd.to_string_lossy()] }),
-                Some(COMMANDS_TIMEOUT),
-            )
-            .map(|answer| codex_commands::parse_skills(&answer))
-            .unwrap_or_default()
-    }
-
-    fn prompts(&self) -> Vec<codex_commands::CustomPrompt> {
-        codex_commands::prompts_dir()
-            .map(|dir| codex_commands::read_prompts(&dir))
-            .unwrap_or_default()
     }
 }
 
 impl BackendSession for CodexSession {
-    fn commands(&self) -> Vec<SlashCommand> {
-        codex_commands::commands(&self.skills(), &self.prompts())
-    }
-
     fn conversation(&self) -> Option<String> {
         self.shared.thread_id.get().cloned()
     }
@@ -1175,6 +1316,10 @@ impl BackendSession for CodexSession {
             .client
             .get()
             .is_some_and(|client| client.is_alive())
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        self.shared.client.get().map(|client| client.pid())
     }
 
     fn shutdown(&self) {
@@ -1411,6 +1556,56 @@ fn usage_from_snapshot(snapshot: &Value) -> Option<(Option<String>, Vec<UsageWin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_skills_are_enabled_only_when_their_paths_are_selected() {
+        let root = std::env::temp_dir().join(format!(
+            "ataraxia-codex-skill-selection-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let selected_path = root.join("selected/SKILL.md");
+        std::fs::create_dir_all(selected_path.parent().expect("skill directory"))
+            .expect("create skill directory");
+        std::fs::write(&selected_path, "selected").expect("write selected skill");
+        let selected_path_text = selected_path.to_string_lossy().into_owned();
+        let selected_paths = HashSet::from([canonical_skill_path(&selected_path)]);
+        let system_path = "/system/imagegen/SKILL.md";
+        let user_path = "/user/unselected/SKILL.md";
+        let catalog = json!({
+            "data": [{
+                "cwd": root.to_string_lossy().into_owned(),
+                "skills": [
+                    { "name": "imagegen", "path": system_path, "enabled": true, "scope": "system" },
+                    { "name": "selected", "path": selected_path_text.clone(), "enabled": false, "scope": "user" },
+                    { "name": "unselected", "path": user_path, "enabled": true, "scope": "user" }
+                ]
+            }]
+        });
+
+        let updates = codex_skill_updates(&catalog, &root, &selected_paths)
+            .expect("calculate skill allowlist");
+
+        assert_eq!(
+            updates,
+            vec![
+                (system_path.to_string(), false),
+                (selected_path_text, true),
+                (user_path.to_string(), false),
+            ]
+        );
+        assert_eq!(
+            codex_skill_updates(&catalog, &root, &HashSet::new())
+                .expect("calculate empty skill allowlist"),
+            vec![
+                (system_path.to_string(), false),
+                (user_path.to_string(), false),
+            ]
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary skill root");
+    }
+
     #[test]
     fn the_two_windows_of_a_snapshot_are_told_apart_by_their_length() {
         let snapshot = json!({
@@ -1782,6 +1977,7 @@ mod tests {
                 agent: None,
                 resume: resume.map(str::to_string),
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -1797,28 +1993,20 @@ mod tests {
     }
 
     #[test]
-    fn the_skills_codex_has_are_offered_as_commands() {
+    fn codex_does_not_offer_provider_commands() {
         let h = start();
         let commands = h.session.commands();
         h.session.shutdown();
-        let skill = commands
-            .iter()
-            .find(|item| item.name == "review-mock")
-            .expect("the enabled skill");
-        assert_eq!(skill.description, "Review things");
-        assert_eq!(skill.source.as_deref(), Some("user"));
-        assert!(!commands.iter().any(|item| item.name == "off-mock"));
+        assert!(commands.is_empty());
     }
 
     #[test]
-    fn a_skill_typed_as_a_command_reaches_codex_named_and_attached() {
+    fn a_provider_command_typed_as_a_message_is_not_rewritten() {
         let h = start();
         let input = said(&h, "/review-mock the diff");
         h.session.shutdown();
-        assert_eq!(input[0]["text"], "$review-mock the diff");
-        assert_eq!(input[1]["type"], "skill");
-        assert_eq!(input[1]["name"], "review-mock");
-        assert_eq!(input[1]["path"], "/skills/review-mock/SKILL.md");
+        assert_eq!(input[0]["text"], "/review-mock the diff");
+        assert_eq!(input.as_array().map(Vec::len), Some(1));
     }
 
     #[test]
@@ -1851,6 +2039,7 @@ mod tests {
                 agent: None,
                 resume: None,
                 api: None,
+                config: super::super::config::AgentConfiguration::default(),
                 emit: Arc::new(move |event| {
                     let _ = sender.lock().send(event);
                 }),
@@ -2007,6 +2196,20 @@ mod tests {
                 turn_id: turn,
                 ok: false
             })
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn interrupt_stops_a_compaction_turn() {
+        let h = start();
+        let turn_id = TurnId::new();
+        h.session.prompt(turn_id, "/compact").expect("compact");
+        h.session.cancel().expect("cancel compact");
+        let seen = h.until("compact turn done", is_turn_done);
+        assert_eq!(
+            seen.last(),
+            Some(&BackendEvent::TurnDone { turn_id, ok: false })
         );
         h.session.shutdown();
     }

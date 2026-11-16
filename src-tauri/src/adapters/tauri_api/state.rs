@@ -65,6 +65,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         host.with_insights(sqlite.clone())
             .with_handoff_dir(data_dir.join("handoffs"))
             .with_attachment_dir(data_dir.join("attachments"))
+            .with_config_dir(data_dir.clone())
             .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
             .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
             .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()))
