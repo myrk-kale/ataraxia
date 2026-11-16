@@ -1,6 +1,5 @@
 import { type KeyboardEvent, useId, useLayoutEffect, useMemo, useState } from "react";
 import {
-  type AgentChoice,
   type MentionPath,
   type SlashCommand,
   agentListCommands,
@@ -18,7 +17,7 @@ import { pickerOptionId } from "./ComposerPicker";
 
 /**
  * The `/` and `@` pickers of the message field. The field keeps the focus and the caret; this
- * works out what is being typed, what to offer, and what a choice does to the text.
+ * works out what is being typed, what Ataraxia offers, and what a choice does to the text.
  */
 export function useComposerPicker({
   sessionId,
@@ -26,15 +25,13 @@ export function useComposerPicker({
   onDraft,
   field,
   commands: commandsOn,
-  agents,
 }: {
   sessionId: SessionId;
   draft: string;
   onDraft: (text: string) => void;
   field: { current: HTMLTextAreaElement | null };
-  /** `/` runs an action of the agent; off where a message does not go to the main agent. */
+  /** `/` runs Ataraxia or harness commands; off outside the main conversation. */
   commands: boolean;
-  agents: AgentChoice[];
 }) {
   const listId = useId();
   const [caret, setCaret] = useState(0);
@@ -54,10 +51,10 @@ export function useComposerPicker({
     }
     return trigger.kind === "command"
       ? commandItems(commands, trigger.query)
-      : mentionItems(paths, agents, trigger.query);
+      : mentionItems(paths, trigger.query);
     // `trigger` is rebuilt each render; what it holds is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trigger?.kind, trigger?.query, commands, paths, agents]);
+  }, [trigger?.kind, trigger?.query, commands, paths]);
 
   const active = cursor.for === query ? Math.min(cursor.index, Math.max(items.length - 1, 0)) : 0;
   const open = trigger !== null && items.length > 0;
@@ -144,7 +141,7 @@ export function useComposerPicker({
     items,
     active,
     activeId: open ? pickerOptionId(listId, items[active]) : undefined,
-    label: trigger?.kind === "command" ? "Commands" : "Files and agents",
+    label: trigger?.kind === "command" ? "Commands" : "Files",
     pick,
     hover: (index: number) => setCursor({ for: query, index }),
     onKeyDown,

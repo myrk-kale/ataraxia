@@ -3,6 +3,7 @@ import type { MentionPath, SlashCommand } from "../lib/agent";
 import {
   applyChoice,
   commandItems,
+  expandGlobMentions,
   findTrigger,
   mentionItems,
   mentionText,
@@ -122,6 +123,17 @@ describe("commandItems", () => {
 });
 
 describe("mentionItems", () => {
+  it("filters file paths using glob wildcards", () => {
+    const paths = [
+      { path: "src/main.ts", dir: false, repository: null },
+      { path: "src/deep/test.ts", dir: false, repository: null },
+      { path: "src/main.rs", dir: false, repository: null },
+    ];
+    expect(mentionItems(paths, "src/**/*.ts").map((item) => item.label)).toEqual([
+      "src/main.ts", "src/deep/test.ts",
+    ]);
+    expect(mentionItems(paths, "src/*.ts").map((item) => item.label)).toEqual(["src/main.ts"]);
+  });
   const paths = [
     file("src/", { dir: true }),
     file("src/main.rs"),
@@ -131,39 +143,32 @@ describe("mentionItems", () => {
   ];
 
   it("finds a file by its name before its folder", () => {
-    const items = mentionItems(paths, [], "main");
+    const items = mentionItems(paths, "main");
     expect(items.map((item) => item.label)).toEqual(["src/main.rs", "src/app/main_window.rs"]);
   });
 
-  it("offers a folder that keeps the picker going, and a file that closes it", () => {
-    const items = mentionItems(paths, [], "src");
-    const folder = items.find((item) => item.kind === "dir");
-    expect(folder?.insert).toBe("@src/");
-    expect(folder?.continues).toBe(true);
+  it("offers only file references", () => {
+    const items = mentionItems(paths, "src");
+    expect(items.every((item) => item.kind === "file")).toBe(true);
     const found = items.find((item) => item.label === "src/main.rs");
     expect(found?.insert).toBe("@src/main.rs ");
     expect(found?.continues).toBe(false);
   });
 
   it("narrows to what is inside a folder once its path is typed", () => {
-    const items = mentionItems(paths, [], "src/app/");
+    const items = mentionItems(paths, "src/app/");
     expect(items.map((item) => item.label)).toEqual(["src/app/main_window.rs"]);
   });
 
   it("names the repository of a path that is in another one", () => {
-    const [item] = mentionItems(paths, [], "lib");
+    const [item] = mentionItems(paths, "lib");
     expect(item.label).toBe("lib.rs");
     expect(item.aside).toBe("other");
     expect(item.insert).toBe("@/work/other/lib.rs ");
   });
 
-  it("offers the agents of the harness, first", () => {
-    const items = mentionItems(
-      paths,
-      [{ id: "reviewer", label: "reviewer", description: "Reviews code" }],
-      "re",
-    );
-    expect(items[0]).toMatchObject({ kind: "agent", label: "reviewer", insert: "@reviewer " });
+  it("does not offer agents", () => {
+    const items = mentionItems(paths, "re");
     expect(items.some((item) => item.label === "README.md")).toBe(true);
   });
 
@@ -174,7 +179,7 @@ describe("mentionItems", () => {
 
   it("never lists more than a screen of choices", () => {
     const many = Array.from({ length: 500 }, (_, i) => file(`dir/file${i}.ts`));
-    expect(mentionItems(many, [], "file").length).toBeLessThanOrEqual(40);
+    expect(mentionItems(many, "file").length).toBeLessThanOrEqual(40);
   });
 });
 
@@ -195,5 +200,20 @@ describe("applyChoice", () => {
       throw new Error("no trigger");
     }
     expect(applyChoice("/rev", trigger, "/review ")).toEqual({ text: "/review ", caret: 8 });
+  });
+});
+
+describe("expandGlobMentions", () => {
+  it("expands file globs only when @ starts a mention token", () => {
+    const paths = [file("src/a.ts"), file("src/b.ts")];
+    expect(expandGlobMentions("Use @src/*.ts", paths)).toBe("Use @src/a.ts @src/b.ts");
+    expect(expandGlobMentions("mail me@src/*.ts", paths)).toBe("mail me@src/*.ts");
+  });
+
+  it("keeps trailing prose punctuation after a matching glob", () => {
+    const paths = [file("src/a.ts"), file("src/b.ts")];
+    expect(expandGlobMentions("Use @src/*.ts, then @src/*.tsx.", paths)).toBe(
+      "Use @src/a.ts @src/b.ts, then @src/*.tsx.",
+    );
   });
 });

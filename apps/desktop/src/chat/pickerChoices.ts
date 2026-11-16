@@ -1,12 +1,10 @@
-import type { AgentChoice, MentionPath, SlashCommand } from "../lib/agent";
+import type { MentionPath, SlashCommand } from "../lib/agent";
 
 /**
  * The two pickers of the message field, the same for every agent:
- * - `/` runs an action, a command or a skill of the agent. It only counts at the very start of
- *   the message, which is the only place the agents run one.
- * - `@` points at something for the agent to look at: a file or folder of the repositories, or
- *   one of its agents. What goes into the message is plain text (`@src/main.rs`), which every
- *   agent reads with its own tools.
+ * - `/` runs one of Ataraxia's commands. It only counts at the very start of the message.
+ * - `@` points at a file in one of the repositories. What goes into the message is plain text,
+ *   which every agent reads with its own tools.
  */
 export type Trigger = {
   kind: "command" | "mention";
@@ -19,7 +17,7 @@ export type Trigger = {
 
 export type PickerItem = {
   id: string;
-  kind: "command" | "file" | "dir" | "agent";
+  kind: "command" | "file";
   /** The name shown. */
   label: string;
   /** A second line, muted: what it does or where it is. */
@@ -28,7 +26,7 @@ export type PickerItem = {
   aside: string;
   /** What replaces the typed text. */
   insert: string;
-  /** Keeps the picker open after choosing (a folder: go on typing inside it). */
+  /** Keeps the picker open after choosing. */
   continues: boolean;
 };
 
@@ -57,6 +55,28 @@ export function findTrigger(text: string, caret: number, commands: boolean): Tri
 export function score(text: string, query: string): number | null {
   if (query === "") {
     return 0;
+  }
+  if (/[*?]/.test(query)) {
+    let pattern = "";
+    for (let i = 0; i < query.length; i++) {
+      const char = query[i];
+      if (char === "*" && query[i + 1] === "*") {
+        if (query[i + 2] === "/") {
+          pattern += "(?:.*/)?";
+          i += 2;
+        } else {
+          pattern += ".*";
+          i++;
+        }
+      } else if (char === "*") {
+        pattern += "[^/]*";
+      } else if (char === "?") {
+        pattern += "[^/]";
+      } else {
+        pattern += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+    }
+    return new RegExp(`^${pattern}$`).test(text) ? 1000 - text.length : null;
   }
   const hay = text.toLowerCase();
   const needle = query.toLowerCase();
@@ -111,7 +131,9 @@ export function commandItems(commands: SlashCommand[], query: string): PickerIte
 
 /** A path that has a space in it is quoted so the agent reads it as one. */
 export function mentionText(path: string): string {
-  return /\s/.test(path) ? `@"${path}"` : `@${path}`;
+  return /[\s"\\]/.test(path)
+    ? `@"${path.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`
+    : `@${path}`;
 }
 
 function baseName(path: string): string {
@@ -121,44 +143,90 @@ function baseName(path: string): string {
 
 export function mentionItems(
   paths: MentionPath[],
-  agents: AgentChoice[],
   query: string,
 ): PickerItem[] {
-  const named = ranked(agents, (agent) => score(agent.id, query), MAX_SHOWN).map(
-    (agent): PickerItem => ({
-      id: `agent:${agent.id}`,
-      kind: "agent",
-      label: agent.id,
-      detail: agent.description ?? "Agent",
-      aside: "agent",
-      insert: `@${agent.id} `,
-      continues: false,
-    }),
-  );
-  // A file is found by its name first, then by where it is; folders come before files that tie.
+  // Search only files. Directories and provider agents do not have reference semantics in Ataraxia.
   const found = ranked(
-    paths,
+    paths.filter((item) => !item.dir),
     (item) => {
       const byName = score(baseName(item.path), query);
       const byPath = score(item.path, query);
       if (byName === null && byPath === null) {
         return null;
       }
-      return Math.max(byName === null ? -1 : byName + 50, byPath ?? -1) - (item.dir ? 0 : 1);
+      return Math.max(byName === null ? -1 : byName + 50, byPath ?? -1) - 1;
     },
     MAX_SHOWN,
   ).map(
     (item): PickerItem => ({
       id: `path:${item.path}`,
-      kind: item.dir ? "dir" : "file",
-      label: item.repository ? baseName(item.path) + (item.dir ? "/" : "") : item.path,
+      kind: "file",
+      label: item.repository ? baseName(item.path) : item.path,
       detail: item.repository ? item.path : "",
       aside: item.repository ?? "",
-      insert: item.dir ? mentionText(item.path) : `${mentionText(item.path)} `,
-      continues: item.dir,
+      insert: `${mentionText(item.path)} `,
+      continues: false,
     }),
   );
-  return [...named, ...found].slice(0, MAX_SHOWN);
+  return found;
+}
+
+function matchingGlobFiles(pattern: string, files: string[]): string[] {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*" && pattern[index + 1] === "*") {
+      if (pattern[index + 2] === "/") {
+        source += "(?:.*/)?";
+        index += 2;
+      } else {
+        source += ".*";
+        index += 1;
+      }
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  const matcher = new RegExp(`^${source}$`);
+  return files.filter((path) => matcher.test(path));
+}
+
+/** Expands each @glob reference against the file list supplied by the active workspace. */
+export function expandGlobMentions(text: string, paths: MentionPath[]): string {
+  const files = paths.filter((item) => !item.dir).map((item) => item.path);
+  return text.replace(
+    /(^|\s)@(?:"((?:\\.|[^"])*)"|([^\s]+))/g,
+    (reference, prefix: string, quoted: string | undefined, bare: string | undefined) => {
+      const pattern = (quoted ?? bare ?? "").replace(/\\(["\\])/g, "$1");
+      if (!/[*?]/.test(pattern)) {
+        return reference;
+      }
+      let matches = matchingGlobFiles(pattern, files);
+      let suffix = "";
+      if (matches.length === 0 && bare !== undefined) {
+        const punctuation = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}"]);
+        let end = pattern.length;
+        while (end > 0 && punctuation.has(pattern[end - 1])) {
+          end -= 1;
+          const candidate = pattern.slice(0, end);
+          if (/[*?]/.test(candidate)) {
+            matches = matchingGlobFiles(candidate, files);
+            if (matches.length > 0) {
+              suffix = pattern.slice(end);
+              break;
+            }
+          }
+        }
+      }
+      return matches.length > 0
+        ? `${prefix}${matches.map(mentionText).join(" ")}${suffix}`
+        : reference;
+    },
+  );
 }
 
 /** The message with the typed `/…` or `@…` replaced by what was chosen, and where the caret goes. */

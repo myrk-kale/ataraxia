@@ -7,6 +7,7 @@ function provider(settings: Partial<ProviderDescriptor["settings"]>): ProviderDe
   return {
     kind: "claude",
     display_name: "Claude Code",
+    capabilities: { rewind: true, fork: "checkpoint", compact: true, compact_instructions: true, thread_goal: false, context_usage: true, image_prompts: true, steering: "inject", approval_enforcement: "provider", child_sessions: true },
     available: true,
     detail: null,
     settings: {

@@ -19,21 +19,26 @@ import {
   agentPrompt,
   agentQueueRemove,
   agentQueueSendNow,
+  agentRepositoryMcpApproval,
   agentResolvePermission,
   agentStartSession,
+  agentTrustRepositoryMcp,
   chatReducer,
   initialChatState,
   listenAgentEvents,
   PROVIDER_LABELS,
   scheduleCancel,
+  sessionPaths,
   waitingFor,
   withLocal,
   type ImageAttachment,
   type ProviderDescriptor,
   type QueuedLocally,
+  type RepositoryMcpApproval,
   type SessionOptions,
 } from "../lib/agent";
-import type { ChatSession } from "../lib/workspace";
+import type { ChatSession, WorkspaceSnapshot } from "../lib/workspace";
+import { workspaceCreateSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
 import { toRows } from "./rows";
 import { AsciiMark } from "./AsciiMark";
@@ -64,6 +69,8 @@ import { takesBack, withTakenBack } from "./takeBack";
 import { useComposerPicker } from "./useComposerPicker";
 import { useMessageQueue } from "./useMessageQueue";
 import { useSchedules } from "./useSchedules";
+import { expandGlobMentions } from "./pickerChoices";
+import { Dialog } from "../ui/Overlay";
 
 const STICK_THRESHOLD_PX = 80;
 const MAX_COMPOSER_PX = 160;
@@ -94,6 +101,7 @@ export function ChatPanel({
   contextLabel,
   bare = false,
   onSessionChange,
+  onNewSession,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
@@ -101,12 +109,16 @@ export function ChatPanel({
   /** No agent mark or name beside the composer. */
   bare?: boolean;
   onSessionChange: (session: ChatSession) => void;
+  onNewSession?: (workspace: WorkspaceSnapshot) => void;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [draft, setDraft] = useState("");
   const [atBottom, setAtBottom] = useState(true);
   const [options, setOptions] = useState<SessionOptions | null>(null);
+  const [repositoryMcpApproval, setRepositoryMcpApproval] = useState<RepositoryMcpApproval | null>(null);
+  const [repositoryMcpApprovalOpen, setRepositoryMcpApprovalOpen] = useState(false);
+  const [trustingRepositoryMcp, setTrustingRepositoryMcp] = useState(false);
   // The subagent whose conversation is on screen; null shows the main conversation.
   const [view, setView] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -143,6 +155,8 @@ export function ChatPanel({
     let disposed = false;
     let unlisten: (() => void) | null = null;
     async function connect() {
+      setRepositoryMcpApproval(null);
+      setRepositoryMcpApprovalOpen(false);
       unlisten = await listenAgentEvents((event) => {
         if (event.type !== "usage" && event.sessionId === sessionId) {
           if (event.type === "delta" && event.role === "user") {
@@ -156,6 +170,14 @@ export function ChatPanel({
         return;
       }
       try {
+        const approval = await agentRepositoryMcpApproval(sessionId);
+        if (approval) {
+          if (!disposed) {
+            setRepositoryMcpApproval(approval);
+            setRepositoryMcpApprovalOpen(true);
+          }
+          return;
+        }
         await agentStartSession(sessionId);
         const snapshot = await agentGetSnapshot(sessionId);
         if (!disposed) {
@@ -163,7 +185,13 @@ export function ChatPanel({
         }
       } catch (err) {
         if (!disposed) {
-          dispatch({ type: "failed", message: errorText(err) });
+          const approval = await agentRepositoryMcpApproval(sessionId).catch(() => null);
+          if (approval) {
+            setRepositoryMcpApproval(approval);
+            setRepositoryMcpApprovalOpen(true);
+          } else {
+            dispatch({ type: "failed", message: errorText(err) });
+          }
         }
       }
     }
@@ -173,6 +201,30 @@ export function ChatPanel({
       unlisten?.();
     };
   }, [sessionId]);
+
+  async function trustRepositoryMcp() {
+    if (!repositoryMcpApproval || trustingRepositoryMcp) {
+      return;
+    }
+    setTrustingRepositoryMcp(true);
+    try {
+      await agentTrustRepositoryMcp(sessionId, repositoryMcpApproval.fingerprint);
+      setRepositoryMcpApproval(null);
+      setRepositoryMcpApprovalOpen(false);
+      await agentStartSession(sessionId);
+      dispatch({ type: "loaded", snapshot: await agentGetSnapshot(sessionId) });
+    } catch (err) {
+      const approval = await agentRepositoryMcpApproval(sessionId).catch(() => null);
+      if (approval) {
+        setRepositoryMcpApproval(approval);
+        setRepositoryMcpApprovalOpen(true);
+      } else {
+        dispatch({ type: "failed", message: errorText(err) });
+      }
+    } finally {
+      setTrustingRepositoryMcp(false);
+    }
+  }
 
   async function loadOptions() {
     try {
@@ -231,15 +283,13 @@ export function ChatPanel({
 
   const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
   const canWrite = activeSubagent === null || provider?.settings.subagent_messages === true;
-  // `/` runs an action of the main agent and `@` points at a file or an agent, the same for every
-  // harness; what a message to a subagent can use of it is only the `@`.
+  // Slash actions belong to Ataraxia; references name files in the workspace.
   const picker = useComposerPicker({
     sessionId,
     draft,
     onDraft: setDraft,
     field: composerRef,
-    commands: activeSubagent === null,
-    agents: provider?.settings.agents ? (options?.agents ?? []) : [],
+    commands: activeSubagent === null && onNewSession !== undefined,
   });
 
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
@@ -358,8 +408,98 @@ export function ChatPanel({
   }
 
   async function send() {
-    const text = draft.trim();
+    let text = draft.trim();
     const sending = activeSubagent ? [] : attachments;
+    const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
+    if (commandName && (activeSubagent !== null || onNewSession === undefined)) {
+      setAttachNotice("Ataraxia commands are available only in the main chat.");
+      return;
+    }
+    if (commandName === "help" && text !== "/help") {
+      setAttachNotice("Use /help without arguments.");
+      return;
+    }
+    if (commandName === "help") {
+      setDraft("");
+      setAttachNotice(
+        [
+          "/help — list Ataraxia commands (available)",
+          `/new — create a new chat and keep this one (${onNewSession ? "available" : "unavailable here"})`,
+          `/compact${provider?.capabilities.compact_instructions ? " [instructions]" : ""} — compact this conversation (${provider?.capabilities.compact ? "available" : "unavailable"})`,
+          `/stop — stop the current run (${busy ? "available" : "no run active"})`,
+        ].join("\n"),
+      );
+      return;
+    }
+    if (commandName === "compact") {
+      const compactCommand = /^\/compact(?:\s+([\s\S]+))?$/.exec(text);
+      if (!compactCommand) {
+        setAttachNotice("Use /compact with optional instructions.");
+        return;
+      }
+      if (!provider?.capabilities.compact) {
+        setAttachNotice("Compaction is unavailable for this agent.");
+        return;
+      }
+      if (compactCommand[1]?.trim() && !provider.capabilities.compact_instructions) {
+        setAttachNotice(`${provider.display_name} does not accept instructions for compaction.`);
+        return;
+      }
+    }
+    if (commandName === "stop" && text !== "/stop") {
+      setAttachNotice("Use /stop without arguments.");
+      return;
+    }
+    if (commandName === "stop") {
+      setDraft("");
+      setAttachNotice(null);
+      if (!busy) {
+        setAttachNotice("There is no run to stop.");
+        return;
+      }
+      try {
+        await agentCancel(sessionId);
+      } catch (err) {
+        dispatch({ type: "failed", message: errorText(err) });
+      }
+      return;
+    }
+    if (commandName === "new" && text !== "/new") {
+      setAttachNotice("Use /new without arguments.");
+      return;
+    }
+    if (commandName === "new") {
+      if (!onNewSession) {
+        setAttachNotice("Creating a new chat is unavailable here.");
+        return;
+      }
+      try {
+        const workspace = await workspaceCreateSession(
+          session.repository_id,
+          session.worktree_id,
+          undefined,
+          session.provider,
+        );
+        onNewSession(workspace);
+        setDraft("");
+        setAttachNotice(null);
+      } catch (err) {
+        dispatch({ type: "failed", message: errorText(err) });
+      }
+      return;
+    }
+    if (commandName && commandName !== "compact") {
+      setAttachNotice(`Unknown Ataraxia command /${commandName}. Use /help to list commands.`);
+      return;
+    }
+    if (/@(?:"[^\"]*[*?][^\"]*"|[^\s]*[*?][^\s]*)/.test(text)) {
+      try {
+        text = expandGlobMentions(text, await sessionPaths(sessionId));
+      } catch (err) {
+        dispatch({ type: "failed", message: errorText(err) });
+        return;
+      }
+    }
     if ((!text && sending.length === 0) || (busy && !queues)) {
       return;
     }
@@ -609,7 +749,20 @@ export function ChatPanel({
               </div>
             ) : null}
 
-            {!state.loaded ? (
+            {!state.loaded && repositoryMcpApproval && !repositoryMcpApprovalOpen ? (
+              <div className="mx-auto flex max-w-lg flex-col items-center gap-3 py-16 text-center" role="status">
+                <p className="text-small text-cg-muted-strong">
+                  This chat has not started because its repository MCP servers need approval.
+                </p>
+                <button
+                  className="rounded-cg-md border border-cg-line px-3 py-2 text-small text-cg-muted-strong hover:text-cg-ink"
+                  type="button"
+                  onClick={() => setRepositoryMcpApprovalOpen(true)}
+                >
+                  Review servers
+                </button>
+              </div>
+            ) : !state.loaded ? (
               <p className="py-16 text-center text-small text-cg-muted">
                 Starting {providerLabel}…
               </p>
@@ -682,6 +835,74 @@ export function ChatPanel({
         </div>
       ) : null}
 
+      <Dialog
+        isOpen={repositoryMcpApprovalOpen}
+        label="Trust repository MCP servers"
+        onClose={() => {
+          if (!trustingRepositoryMcp) {
+            setRepositoryMcpApprovalOpen(false);
+          }
+        }}
+      >
+        {repositoryMcpApproval ? (
+          <div className="flex flex-col gap-4 p-5">
+            <div>
+              <h2 className="text-heading font-semibold">Trust repository MCP servers?</h2>
+              <p className="mt-2 break-all text-small text-cg-muted">{repositoryMcpApproval.repository}</p>
+              <p className="mt-3 text-small text-cg-muted-strong">
+                These servers come from the repository and will start with the harness. Review each
+                command, URL, and working directory before trusting this configuration.
+              </p>
+            </div>
+            <ul className="flex max-h-64 flex-col gap-3 overflow-y-auto rounded-cg-md border border-cg-line p-3">
+              {repositoryMcpApproval.servers.map((server) => (
+                <li key={server.name} className="min-w-0 text-small">
+                  <strong className="text-cg-ink">{server.name}</strong>
+                  <code className="mt-1 block break-all text-cg-muted-strong">
+                    {server.command
+                      ? [server.command, ...server.args].join(" ")
+                      : server.url}
+                  </code>
+                  {server.cwd ? (
+                    <span className="mt-1 block break-all text-cg-muted">
+                      Working directory: {server.cwd}
+                    </span>
+                  ) : null}
+                  {server.environment.length > 0 ? (
+                    <span className="mt-1 block text-cg-muted">
+                      Environment variables: {server.environment.join(", ")}
+                    </span>
+                  ) : null}
+                  {server.headers.length > 0 ? (
+                    <span className="mt-1 block text-cg-muted">
+                      Headers: {server.headers.join(", ")}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded-cg-md border border-cg-line px-3 py-2 text-small text-cg-muted-strong hover:text-cg-ink"
+                disabled={trustingRepositoryMcp}
+                type="button"
+                onClick={() => setRepositoryMcpApprovalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-cg-md bg-cg-accent px-3 py-2 text-small font-semibold text-white disabled:opacity-60"
+                disabled={trustingRepositoryMcp}
+                type="button"
+                onClick={() => void trustRepositoryMcp()}
+              >
+                {trustingRepositoryMcp ? "Starting…" : "Trust repository and start"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
+
       <SubagentBar
         busy={busy && view !== null}
         mainLabel={MAIN_AGENT}
@@ -736,7 +957,7 @@ export function ChatPanel({
             onPick={picker.pick}
           />
           {attachNotice ? (
-            <p className="mb-2 text-small text-cg-del-fg" role="status">
+            <p className="mb-2 whitespace-pre-line text-small text-cg-del-fg" role="status">
               {attachNotice}
             </p>
           ) : null}

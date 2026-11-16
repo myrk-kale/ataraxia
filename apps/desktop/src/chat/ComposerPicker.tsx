@@ -1,12 +1,10 @@
-import { AtSign, File, Folder, Slash, Users } from "lucide-react";
+import { File, Slash } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { PickerItem } from "./pickerChoices";
 
 const ICONS = {
   command: Slash,
   file: File,
-  dir: Folder,
-  agent: Users,
 } as const;
 
 /** The id of one row, which the message field names as its active descendant. */
@@ -51,7 +49,7 @@ export function ComposerPicker({
       role="listbox"
     >
       {items.map((item, index) => {
-        const Icon = ICONS[item.kind] ?? AtSign;
+        const Icon = ICONS[item.kind];
         const selected = index === active;
         return (
           <li
