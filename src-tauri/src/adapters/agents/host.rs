@@ -1039,6 +1039,17 @@ impl AgentHost {
                 name: image.attachment.name.clone(),
             })
             .collect();
+        let link = self.inner.links.lock().get(session_id).cloned();
+        if let Some(link) = link {
+            self.inner.handle_event(
+                link.parent,
+                BackendEvent::Subagent {
+                    id: session_id.0.to_string(),
+                    title: link.title,
+                    update: SubagentUpdate::Started,
+                },
+            );
+        }
         let delivered = if files.is_empty() {
             backend.prompt(turn_id, &sent)
         } else {
@@ -1065,17 +1076,6 @@ impl AgentHost {
                 },
             );
             return Err(error);
-        }
-        let link = self.inner.links.lock().get(session_id).cloned();
-        if let Some(link) = link {
-            self.inner.handle_event(
-                link.parent,
-                BackendEvent::Subagent {
-                    id: session_id.0.to_string(),
-                    title: link.title,
-                    update: SubagentUpdate::Started,
-                },
-            );
         }
         Ok(turn_id)
     }
