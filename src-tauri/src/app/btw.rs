@@ -633,9 +633,14 @@ impl Engine {
         let Ok(Some(task)) = self.db.btw_task_for_session(session_id) else {
             return;
         };
-        let (question, answer) = self
+        let (latest_question, answer) = self
             .last_interaction(&session_id)
             .unwrap_or_else(|| (String::new(), String::new()));
+        let question = if task.status == ArtifactStatus::Running {
+            task.question.as_str()
+        } else {
+            latest_question.as_str()
+        };
         let (text, found) = split_actions(&answer);
         let mut done: Vec<String> = self
             .db
@@ -697,7 +702,7 @@ impl Engine {
             status,
         });
         if ok && let Some(summary) = turn_summary.as_deref() {
-            if let Err(error) = self.queue_btw_result(&task, &question, summary) {
+            if let Err(error) = self.queue_btw_result(&task, question, summary) {
                 eprintln!("ataraxia: could not queue the BTW summary: {error}");
             }
         }

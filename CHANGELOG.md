@@ -6,6 +6,27 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
+### Added
+
+- The chat's `/` picker now offers the active provider's commands, Ataraxia skills and configured
+  MCP servers in one list.
+- BTW conversations stay available as subagents for follow-up messages. Their chips can be hidden
+  from the chat view without deleting the conversation.
+
+### Changed
+
+- Each completed BTW interaction adds a short summary of its latest question and answer to the
+  main chat queue. The main agent treats it as a parallel update, not a new request to act.
+- The workspace checks Git status on every refresh so externally changed files appear sooner.
+
+### Fixed
+
+- Provider slash commands can receive arguments without being checked against `/compact` rules.
+- Codex sends configured HTTP MCP headers using its `http_headers` setting.
+- The built-in terminal inherits the enriched `PATH` used to find agent CLIs.
+
 ## [0.7.0] - 2026-11-16
 
 ### Added
@@ -326,7 +347,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/myrk-kale/ataraxia/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...v0.5.1
