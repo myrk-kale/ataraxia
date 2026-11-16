@@ -106,6 +106,8 @@ impl NativePtyHost {
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
 
         let mut cmd = default_shell_command();
+        #[cfg(unix)]
+        cmd.env("PATH", crate::adapters::agents::process::enriched_path());
         cmd.cwd(cwd);
 
         let child = pair

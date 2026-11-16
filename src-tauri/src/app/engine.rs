@@ -266,8 +266,6 @@ impl Engine {
                 if let Err(error) = self.record_turn_checkpoint(&session, turn_id) {
                     eprintln!("ataraxia: checkpoint failed: {error}");
                 }
-                // A BTW that finished while this turn ran could not tell the agent then.
-                self.btw_deliver(session_id);
                 // The next message the user queued goes out now that the agent is free.
                 self.queue_advance(session_id, ok);
             }
@@ -538,6 +536,11 @@ impl Engine {
 
     /// The assistant text of the last turn of a session.
     pub(crate) fn last_answer(&self, session_id: &SessionId) -> Option<String> {
+        self.last_interaction(session_id).map(|(_, answer)| answer)
+    }
+
+    /// The developer's latest message and the assistant text that answers it.
+    pub(crate) fn last_interaction(&self, session_id: &SessionId) -> Option<(String, String)> {
         let items = self
             .runtime
             .snapshot(session_id)
@@ -547,9 +550,12 @@ impl Engine {
             .or_else(|| self.db.list_chat_items(*session_id).ok())?;
         let last_user = items.iter().rposition(
             |item| matches!(item, ChatItem::Message(message) if message.role == ChatRole::User),
-        );
-        let start = last_user.map_or(0, |index| index + 1);
-        let text: Vec<String> = items[start..]
+        )?;
+        let question = match &items[last_user] {
+            ChatItem::Message(message) => message.text.clone(),
+            _ => return None,
+        };
+        let answer = items[last_user + 1..]
             .iter()
             .filter_map(|item| match item {
                 ChatItem::Message(message) if message.role == ChatRole::Assistant => {
@@ -557,8 +563,9 @@ impl Engine {
                 }
                 _ => None,
             })
-            .collect();
-        Some(text.join("\n\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Some((question, answer))
     }
 }
 

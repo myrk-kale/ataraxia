@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MentionPath, SlashCommand } from "../lib/agent";
+import type { ComposerResource, MentionPath } from "../lib/agent";
 import {
   applyChoice,
   commandItems,
@@ -10,7 +10,8 @@ import {
   score,
 } from "./pickerChoices";
 
-const command = (name: string, description = "", extra: Partial<SlashCommand> = {}) => ({
+const command = (name: string, description = "", extra: Partial<ComposerResource> = {}) => ({
+  kind: "command" as const,
   name,
   description,
   hint: null,

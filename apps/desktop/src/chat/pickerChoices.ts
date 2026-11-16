@@ -1,8 +1,8 @@
-import type { MentionPath, SlashCommand } from "../lib/agent";
+import type { ComposerResource, MentionPath } from "../lib/agent";
 
 /**
- * The two pickers of the message field, the same for every agent:
- * - `/` runs one of Ataraxia's commands. It only counts at the very start of the message.
+ * The two pickers of the message field:
+ * - `/` offers commands, skills and MCP servers at the very start of the message.
  * - `@` points at a file in one of the repositories. What goes into the message is plain text,
  *   which every agent reads with its own tools.
  */
@@ -17,7 +17,7 @@ export type Trigger = {
 
 export type PickerItem = {
   id: string;
-  kind: "command" | "file";
+  kind: ComposerResource["kind"] | "file";
   /** The name shown. */
   label: string;
   /** A second line, muted: what it does or where it is. */
@@ -117,14 +117,19 @@ function ranked<T>(items: T[], rate: (item: T) => number | null, limit: number):
   return scored.slice(0, limit).map((entry) => entry.item);
 }
 
-export function commandItems(commands: SlashCommand[], query: string): PickerItem[] {
-  return ranked(commands, (command) => score(command.name, query), MAX_SHOWN).map((command) => ({
-    id: `command:${command.name}`,
-    kind: "command",
-    label: `/${command.name}`,
-    detail: command.description,
-    aside: command.hint ?? command.source ?? "",
-    insert: `/${command.name} `,
+export function commandItems(resources: ComposerResource[], query: string): PickerItem[] {
+  return ranked(resources, (resource) => score(resource.name, query), MAX_SHOWN).map((resource) => ({
+    id: `${resource.kind}:${resource.name}`,
+    kind: resource.kind,
+    label: `/${resource.name}`,
+    detail: resource.description,
+    aside: resource.hint ?? resource.source ?? "",
+    insert:
+      resource.kind === "command"
+        ? `/${resource.name} `
+        : resource.kind === "skill"
+          ? `Use the ${resource.name} skill for this task: `
+          : `Use the ${resource.name} MCP server for this task: `,
     continues: false,
   }));
 }

@@ -134,18 +134,18 @@ describe("Toast", () => {
   });
 });
 
-describe("BTW tells the main chat", () => {
+describe("BTW summary queue status", () => {
   const task = (over: Record<string, unknown>) =>
     ({ status: "ready", updated_at: "2026-01-01T00:00:10Z", returned_at: null, ...over }) as never;
 
-  it("says the main chat was told once the note went out after the last answer", () => {
+  it("shows when the latest summary reached the main chat queue", () => {
     const html = renderToStaticMarkup(<MainChatNote task={task({ returned_at: "2026-01-01T00:00:10Z" })} />);
-    expect(html).toContain("The main chat was told");
+    expect(html).toContain("Latest summary queued for the main chat");
   });
 
-  it("says the note is waiting when the main agent is busy, and says nothing while BTW still works", () => {
-    expect(renderToStaticMarkup(<MainChatNote task={task({})} />)).toContain("It is told as soon as its turn ends");
-    expect(renderToStaticMarkup(<MainChatNote task={task({ returned_at: "2026-01-01T00:00:05Z" })} />)).toContain("busy");
+  it("shows an unqueued summary and says nothing while BTW still works", () => {
+    expect(renderToStaticMarkup(<MainChatNote task={task({})} />)).toContain("has not reached the main chat queue");
+    expect(renderToStaticMarkup(<MainChatNote task={task({ returned_at: "2026-01-01T00:00:05Z" })} />)).toContain("has not reached the main chat queue");
     expect(renderToStaticMarkup(<MainChatNote task={task({ status: "running" })} />)).toBe("");
   });
 });

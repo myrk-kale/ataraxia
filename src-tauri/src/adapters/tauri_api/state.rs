@@ -124,9 +124,9 @@ impl AppState {
 /// of worktrees (which costs a process).
 const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
 const REDISCOVER_EVERY: u32 = 6;
-/// How many looks go by between two reads of `git status` when nothing moved in `HEAD` or the
-/// index (a file made or deleted by a program that does not touch git, say): about 3 seconds.
-const STATUS_EVERY: u32 = 4;
+/// Read `git status` on every look. File edits do not move `HEAD` or the index, so a longer
+/// interval here leaves the project tree and open file stale after an outside edit.
+const STATUS_EVERY: u32 = 1;
 
 /// Whether the window is on screen. A hidden or minimized window has nobody to show changes to,
 /// and the files are read again as soon as it is back.

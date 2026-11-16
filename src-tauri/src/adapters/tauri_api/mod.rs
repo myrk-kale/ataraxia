@@ -7,7 +7,10 @@ mod state;
 use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::agent::{McpProcessInfo, ProviderDescriptor, ProviderKind, SessionOptions};
+use crate::domain::agent::{
+    ComposerResource, ComposerResourceKind, McpProcessInfo, ProviderDescriptor, ProviderKind,
+    SessionOptions,
+};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId};
 use crate::domain::{
     ChatSession, ChatSnapshot, Error, ErrorCode, ImageUpload, MessageQueue, PermissionDecision,
@@ -455,12 +458,12 @@ pub fn agent_message_subagent(
         .map_err(map_error)
 }
 
-/// What `/` offers in a chat: Ataraxia's own command catalog.
+/// What `/` offers in a chat: Ataraxia commands and the live harness resources.
 #[tauri::command(async)]
-pub fn agent_list_commands(
+pub fn agent_list_composer_resources(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
-) -> std::result::Result<Vec<crate::domain::agent::SlashCommand>, String> {
+) -> std::result::Result<Vec<ComposerResource>, String> {
     let session = state
         .store
         .get_session(session_id)
@@ -470,11 +473,17 @@ pub fn agent_list_commands(
         .agent_runtime()
         .capabilities(session.provider)
         .map_err(map_error)?;
-    let mut commands = crate::domain::agent::ataraxia_commands();
-    if let Some(compact) = commands
-        .iter_mut()
-        .find(|command| command.name == "compact")
-    {
+    let mut resources: Vec<ComposerResource> = crate::domain::agent::ataraxia_commands()
+        .into_iter()
+        .map(|command| ComposerResource {
+            kind: ComposerResourceKind::Command,
+            name: command.name,
+            description: command.description,
+            hint: command.hint,
+            source: command.source,
+        })
+        .collect();
+    if let Some(compact) = resources.iter_mut().find(|item| item.name == "compact") {
         if !capabilities.compact {
             compact.description = "Unavailable for this session".into();
         }
@@ -482,7 +491,17 @@ pub fn agent_list_commands(
             .compact_instructions
             .then(|| "[instructions]".to_string());
     }
-    Ok(commands)
+    let mut names: std::collections::HashSet<String> =
+        resources.iter().map(|item| item.name.clone()).collect();
+    resources.extend(
+        state
+            .agent_runtime()
+            .session_composer_resources(&session_id)
+            .map_err(map_error)?
+            .into_iter()
+            .filter(|resource| names.insert(resource.name.clone())),
+    );
+    Ok(resources)
 }
 
 #[tauri::command(async)]

@@ -390,7 +390,6 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
       return ok(task);
     }
     case "btw_list": return ok(btwTasks.map((item) => ({ ...item })));
-    case "btw_return": return ok(null);
     case "btw_session": return ok({ id: "btw-0", repository_id: "r1", worktree_id: "w1", provider: "fake", title: "BTW: " + String(btwTasks[0]?.question ?? ""), status: "ready", model: null, effort: null, agent: null, kind: "btw", parent_session_id: sessionId, created_at: now, updated_at: now, last_opened_at: null });
     case "flow_presets": return ok(presets);
     case "flow_save_preset": {

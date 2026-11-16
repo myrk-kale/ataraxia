@@ -513,7 +513,7 @@ fn a_selection_is_told_to_the_agent_as_what_the_user_has_selected_and_in_which_f
 }
 
 #[test]
-fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
+fn btw_is_read_only_by_default_and_queues_each_reply_for_the_main_chat() {
     let w = world();
     let context = BtwContext {
         space: "code".into(),
@@ -611,7 +611,7 @@ fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
     assert_eq!(
         task.return_policy,
         ReturnPolicy::OnCompletion,
-        "the main agent is always told when BTW is done"
+        "each completed BTW interaction is added to the main chat queue"
     );
     let done = wait_for("btw answer", || {
         let task = w.db.get_btw_task(task.id).unwrap().unwrap();
@@ -621,17 +621,16 @@ fn btw_is_read_only_by_default_and_never_reaches_the_main_chat_on_its_own() {
     let hidden = w.db.get_session(done.session_id).unwrap().unwrap();
     assert_eq!(hidden.kind, SessionKind::Btw);
     assert_eq!(hidden.parent_session_id, Some(w.session.id));
-    // The main conversation was told, once, in words that say it is for awareness only.
+    // The main chat receives a compact update, marked as a parallel BTW conversation.
     let heard = format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items);
-    assert!(heard.contains("[BTW report, for your awareness"), "{heard}");
-    assert!(heard.contains("What does this file say?"));
-    assert_eq!(heard.matches("[BTW report").count(), 1);
+    assert!(heard.contains("[BTW subagent update"), "{heard}");
+    assert!(heard.contains("Developer asked: What does this file say?"));
+    assert_eq!(heard.matches("[BTW subagent update").count(), 1);
     assert_eq!(w.engine.btw_tasks(w.session.id).unwrap().len(), 1);
-    // Nothing is sent twice: the note is only for what the main agent has not heard.
-    w.engine.btw_deliver(w.session.id);
+    // A completed BTW interaction is queued only once.
     std::thread::sleep(Duration::from_millis(200));
     let again = format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items);
-    assert_eq!(again.matches("[BTW report").count(), 1);
+    assert_eq!(again.matches("[BTW subagent update").count(), 1);
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 
@@ -761,9 +760,9 @@ fn btw_does_what_it_was_asked_in_ataraxia_and_the_main_agent_hears_what_was_done
     assert_eq!(flows.len(), 1);
     assert_eq!(flows[0].provenance["extra"], "the entry point");
 
-    // And the main agent was told all of it, as a note for awareness.
+    // And the main chat received the summary, including what Ataraxia did.
     let heard = format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items);
-    assert!(heard.contains("[BTW report, for your awareness"), "{heard}");
+    assert!(heard.contains("[BTW subagent update"), "{heard}");
     assert!(heard.contains("Done in Ataraxia:"), "{heard}");
     assert!(heard.contains("Set the priority of"), "{heard}");
     let _ = std::fs::remove_dir_all(&w.repo);
@@ -931,7 +930,7 @@ fn a_btw_from_the_chat_is_a_fork_of_the_conversation() {
 }
 
 #[test]
-fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends() {
+fn a_btw_that_finishes_while_the_main_agent_is_busy_is_queued_without_waiting() {
     let w = world();
     // The main agent is in the middle of a turn.
     w.host.start_session(&w.session).unwrap();
@@ -955,25 +954,23 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends()
             false,
         )
         .unwrap();
-    wait_for("btw answer", || {
+    let done = wait_for("btw answer", || {
         let task = w.db.get_btw_task(task.id).unwrap().unwrap();
-        (task.status == ArtifactStatus::Ready).then_some(())
+        (task.status == ArtifactStatus::Ready && task.returned_at.is_some()).then_some(task)
     });
-    // The main agent is still in its turn (it is waiting for a permission), so the note is held,
-    // not lost and not forced into the middle of the turn.
+    // The parent is still waiting for permission. The BTW turn finishes and leaves its update
+    // in the queue without starting or waiting on the parent turn.
     std::thread::sleep(Duration::from_millis(900));
+    assert!(done.returned_at.is_some());
+    assert!(w.engine.queue(w.session.id).items.iter().any(|item| {
+        item.text.contains("[BTW subagent update") && item.text.contains("what is a token?")
+    }));
     assert!(
-        w.db.get_btw_task(task.id)
-            .unwrap()
-            .unwrap()
-            .returned_at
-            .is_none()
-    );
-    assert!(
-        !format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items).contains("[BTW report")
+        !format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items)
+            .contains("[BTW subagent update")
     );
 
-    // The turn ends: the note arrives, once.
+    // The main turn ends: its queue sends the update, once.
     let request_id = wait_for("the permission request", || {
         w.host
             .snapshot(&w.session.id)
@@ -991,13 +988,11 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_told_when_its_turn_ends()
             },
         )
         .unwrap();
-    let done = wait_for("the main agent hears it", || {
-        let task = w.db.get_btw_task(task.id).unwrap().unwrap();
-        task.returned_at.is_some().then_some(task)
+    let heard = wait_for("the main agent hears it", || {
+        let heard = format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items);
+        heard.contains("[BTW subagent update").then_some(heard)
     });
-    assert!(done.returned_at.is_some());
-    let heard = format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items);
-    assert_eq!(heard.matches("[BTW report").count(), 1, "{heard}");
+    assert_eq!(heard.matches("[BTW subagent update").count(), 1, "{heard}");
     assert!(heard.contains("what is a token?"));
     let _ = std::fs::remove_dir_all(&w.repo);
 }

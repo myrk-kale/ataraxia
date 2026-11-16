@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{
-    CapabilityMatrix, McpProcessInfo, ProviderDescriptor, ProviderKind, SessionOptions,
-    SlashCommand,
+    CapabilityMatrix, ComposerResource, McpProcessInfo, ProviderDescriptor, ProviderKind,
+    SessionOptions, SlashCommand,
 };
 use crate::domain::ids::{
     CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId,
@@ -152,6 +152,11 @@ pub trait AgentRuntime: Send + Sync {
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions>;
     /// The commands and skills the live session's harness runs from a `/name` message.
     fn session_commands(&self, session_id: &SessionId) -> Result<Vec<SlashCommand>> {
+        let _ = session_id;
+        Ok(Vec::new())
+    }
+    /// Provider commands, Ataraxia skills and MCP servers available to the chat composer.
+    fn session_composer_resources(&self, session_id: &SessionId) -> Result<Vec<ComposerResource>> {
         let _ = session_id;
         Ok(Vec::new())
     }

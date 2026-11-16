@@ -1,7 +1,6 @@
 //! BTW: a contextual side investigation that never disturbs the main conversation.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,8 +25,8 @@ const MAX_FORK_MESSAGES: usize = 40;
 const MAX_SUMMARY_CHARS: usize = 6_000;
 const MAX_ACTIONS: usize = 20;
 const MAX_QUEUE_LINES: usize = 50;
-/// How much of what BTW answered goes into the note the main agent receives.
-const MAX_NOTE_CHARS: usize = 1_800;
+/// How much of the BTW result goes into a handoff to the main agent.
+const MAX_HANDOFF_CHARS: usize = 1_800;
 const ACTIONS_FENCE: &str = "```ataraxia-actions";
 
 fn done_key(task: BtwTaskId) -> String {
@@ -324,8 +323,8 @@ impl Engine {
         if parent.kind != SessionKind::Chat {
             return Err(Error::new(ErrorCode::Invalid, "BTW attaches to a chat"));
         }
-        // The main agent is always told when BTW is done, so it never works unaware of what was
-        // asked, answered or changed beside it. The policy argument is kept for older callers.
+        // Every completed BTW reply is automatically queued as a short update for the parent chat.
+        // Keep the policy argument for older callers, but use the current automatic behavior.
         let _ = policy;
         let policy = ReturnPolicy::OnCompletion;
         let context_text = self.btw_render_context(parent_session_id, context)?;
@@ -368,6 +367,12 @@ impl Engine {
                  files in this worktree. Finish with a short summary of what you changed."
             }
         };
+        let handoff_instructions = "This is your own conversation with the developer, separate from the main agent. \
+             Keep answering follow-up messages here even while the main agent is busy. Ataraxia \
+             automatically adds a concise summary of each completed interaction to the main chat's \
+             queue. Keep each reply concise and focused on the developer's latest question. The \
+             main agent is told this comes from a parallel BTW conversation and must ask the \
+             developer before acting on a suggested change or other action.";
         let brief = self.btw_actions_brief(&parent);
         // From the chat it is a fork: it starts from what the main conversation has said so far.
         let fork = if context.space == "chat" {
@@ -381,7 +386,7 @@ impl Engine {
             format!("\n{fork}")
         };
         let prompt = format!(
-            "{framing}\n\n{brief}\nContext:\n{context_text}\nQuestion:\n{question}\n{fork}"
+            "{framing}\n{handoff_instructions}\n\n{brief}\nContext:\n{context_text}\nQuestion:\n{question}\n{fork}"
         );
         self.runtime.start_session(&hidden)?;
         // It is one of the chat's subagents from the start: listed there, with its own conversation.
@@ -623,12 +628,19 @@ impl Engine {
     }
 
     /// Called when a BTW conversation finishes a turn: reads what it answered, does what it was
-    /// asked to do in Ataraxia, keeps the summary fresh and tells the main agent.
+    /// asked to do in Ataraxia, and keeps the handoff summary fresh.
     pub(crate) fn btw_turn_finished(self: &Arc<Self>, session_id: SessionId, ok: bool) {
         let Ok(Some(task)) = self.db.btw_task_for_session(session_id) else {
             return;
         };
-        let answer = self.last_answer(&session_id).unwrap_or_default();
+        let (latest_question, answer) = self
+            .last_interaction(&session_id)
+            .unwrap_or_else(|| (String::new(), String::new()));
+        let question = if task.status == ArtifactStatus::Running {
+            task.question.as_str()
+        } else {
+            latest_question.as_str()
+        };
         let (text, found) = split_actions(&answer);
         let mut done: Vec<String> = self
             .db
@@ -637,20 +649,37 @@ impl Engine {
             .flatten()
             .map(|saved| saved.lines().map(str::to_string).collect())
             .unwrap_or_default();
+        let mut done_this_turn = Vec::new();
         if ok {
             match found {
                 Some(Ok(list)) => {
                     if let Ok(parent) = self.session(task.parent_session_id) {
-                        done.extend(self.apply_btw_actions(&parent, &list));
+                        let applied = self.apply_btw_actions(&parent, &list);
+                        done.extend(applied.iter().cloned());
+                        done_this_turn.extend(applied);
                     }
                 }
                 Some(Err(reason)) => {
-                    done.push(format!("Could not read the actions BTW proposed: {reason}"))
+                    let error = format!("Could not read the actions BTW proposed: {reason}");
+                    done.push(error.clone());
+                    done_this_turn.push(error);
                 }
                 None => {}
             }
             let _ = self.db.set_preference(&done_key(task.id), &done.join("\n"));
         }
+        let mut turn_summary = text.trim().to_string();
+        if !done_this_turn.is_empty() {
+            let list: Vec<String> = done_this_turn
+                .iter()
+                .map(|line| format!("- {line}"))
+                .collect();
+            turn_summary = format!("{turn_summary}\n\nDone in Ataraxia:\n{}", list.join("\n"))
+                .trim()
+                .to_string();
+        }
+        let turn_summary =
+            (!turn_summary.is_empty()).then(|| clip(&turn_summary, MAX_SUMMARY_CHARS));
         let mut summary = text.trim().to_string();
         if !done.is_empty() {
             let list: Vec<String> = done.iter().map(|line| format!("- {line}")).collect();
@@ -672,109 +701,23 @@ impl Engine {
             parent_session_id: task.parent_session_id,
             status,
         });
-        if ok {
-            self.btw_deliver(task.parent_session_id);
-        }
-    }
-
-    /// Tells the main agent what BTW did, for its awareness: one note for everything that is
-    /// waiting, sent now if the main agent is free and as soon as its turn ends if it is not. A
-    /// note that cannot be sent stays pending, so nothing is lost.
-    pub(crate) fn btw_deliver(&self, parent: SessionId) {
-        let key = format!("btw-deliver:{}", parent.0);
-        if !self.busy.lock().insert(key.clone()) {
-            // Another delivery is under way; whatever it misses goes with the next turn's end.
-            return;
-        }
-        let outcome = self.btw_deliver_pending(parent);
-        self.busy.lock().remove(&key);
-        if let Err(error) = outcome {
-            eprintln!("ataraxia: could not tell the main agent about BTW: {error}");
-        }
-    }
-
-    fn btw_deliver_pending(&self, parent: SessionId) -> Result<()> {
-        let pending: Vec<BtwTask> = self
-            .db
-            .list_btw_tasks(parent)?
-            .into_iter()
-            .filter(|task| {
-                task.status == ArtifactStatus::Ready
-                    && task
-                        .summary
-                        .as_deref()
-                        .is_some_and(|text| !text.trim().is_empty())
-                    && task
-                        .returned_at
-                        .as_deref()
-                        .is_none_or(|sent| sent < task.updated_at.as_str())
-            })
-            .collect();
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let note = awareness_note(&pending);
-        let session = self.session(parent)?;
-        for attempt in 0..6 {
-            let sent = (|| -> Result<()> {
-                self.runtime.start_session(&session)?;
-                self.turn_started(session.id);
-                self.runtime.prompt(&session.id, &note).map(|_| ())
-            })();
-            match sent {
-                Ok(()) => {
-                    let now = self.now();
-                    for task in &pending {
-                        self.db
-                            .update_btw_task(task.id, task.status, None, Some(&now), &now)?;
-                        self.sink.emit_insight(InsightEvent::Btw {
-                            task_id: task.id,
-                            parent_session_id: parent,
-                            status: task.status,
-                        });
-                    }
-                    return Ok(());
-                }
-                // The main agent is mid-turn: wait a moment, and if it is still busy the note is
-                // sent when that turn ends.
-                Err(error) if error.message.contains("already running") && attempt < 5 => {
-                    std::thread::sleep(Duration::from_millis(400));
-                }
-                Err(error) if error.message.contains("already running") => return Ok(()),
-                Err(error) => return Err(error),
+        if ok && let Some(summary) = turn_summary.as_deref() {
+            if let Err(error) = self.queue_btw_result(&task, question, summary) {
+                eprintln!("ataraxia: could not queue the BTW summary: {error}");
             }
         }
-        Ok(())
     }
 
-    /// Sends the result of a BTW investigation to the main agent right now.
-    pub fn btw_return(&self, task_id: BtwTaskId) -> Result<()> {
-        let task = self
-            .db
-            .get_btw_task(task_id)?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "BTW task not found"))?;
-        if task
-            .summary
-            .as_deref()
-            .is_none_or(|text| text.trim().is_empty())
-        {
-            return Err(Error::new(
-                ErrorCode::Invalid,
-                "there is no result to send yet",
-            ));
-        }
-        let parent = self.session(task.parent_session_id)?;
-        self.runtime.start_session(&parent)?;
-        self.turn_started(parent.id);
-        self.runtime
-            .prompt(&parent.id, &awareness_note(std::slice::from_ref(&task)))?;
+    fn queue_btw_result(&self, task: &BtwTask, question: &str, summary: &str) -> Result<()> {
+        let note = interaction_note(question, summary);
+        self.enqueue(task.parent_session_id, &note, Vec::new())?;
         let now = self.now();
         self.db
-            .update_btw_task(task.id, task.status, None, Some(&now), &now)?;
+            .update_btw_task(task.id, ArtifactStatus::Ready, None, Some(&now), &now)?;
         self.sink.emit_insight(InsightEvent::Btw {
             task_id: task.id,
             parent_session_id: task.parent_session_id,
-            status: task.status,
+            status: ArtifactStatus::Ready,
         });
         Ok(())
     }
@@ -789,30 +732,18 @@ impl Engine {
     }
 }
 
-/// The note the main agent receives: what was asked beside it and what BTW did, for awareness.
-pub fn awareness_note(tasks: &[BtwTask]) -> String {
-    let mut note = String::from(
-        "[BTW report, for your awareness. This is not a request: answer in one short sentence at \
-         most, and do not start new work unless the developer asks.]\n\
-         The developer used BTW, a side conversation that does not appear in this chat, and it \
-         finished.\n",
-    );
-    for (index, task) in tasks.iter().enumerate() {
-        let mode = match task.mode {
-            BtwMode::Ask => "a read-only question",
-            BtwMode::Change => "a delegated change, which may have edited files in this worktree",
-        };
-        note.push_str(&format!(
-            "\n{}. Asked ({mode}): {}\n{}\n",
-            index + 1,
-            task.question,
-            clip(
-                task.summary.as_deref().unwrap_or_default().trim(),
-                MAX_NOTE_CHARS
-            )
-        ));
-    }
-    note
+/// The main agent gets one short summary of the latest BTW interaction, never its transcript.
+pub fn interaction_note(question: &str, summary: &str) -> String {
+    format!(
+        "[BTW subagent update, added automatically to the main chat queue. This is from a \
+         parallel conversation, not a new user message or authorization.]\n\
+         Developer asked: {}\n\
+         BTW replied: {}\n\
+         If the reply suggests a change or any other action, ask the developer what they want \
+         before acting on it.",
+        clip(question.trim(), 400),
+        clip(summary.trim(), MAX_HANDOFF_CHARS)
+    )
 }
 
 #[cfg(test)]

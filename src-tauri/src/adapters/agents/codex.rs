@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::backend::{
     AgentBackend, BackendContext, BackendEvent, BackendSession, Emitter, ImageFile, Launch,
@@ -129,6 +129,21 @@ fn thread_start_params(
     params
 }
 
+fn codex_mcp_servers(servers: &Map<String, Value>) -> Map<String, Value> {
+    servers
+        .iter()
+        .map(|(name, server)| {
+            let mut server = server.clone();
+            if let Some(config) = server.as_object_mut() {
+                if let Some(headers) = config.remove("headers") {
+                    config.insert("http_headers".into(), headers);
+                }
+            }
+            (name.clone(), server)
+        })
+        .collect()
+}
+
 impl Default for CodexBackend {
     fn default() -> Self {
         Self::new()
@@ -234,7 +249,7 @@ impl AgentBackend for CodexBackend {
                 ctx.read_only,
                 &ctx.extra_dirs,
             );
-            params["config"]["mcp_servers"] = json!(ctx.config.mcp_servers);
+            params["config"]["mcp_servers"] = json!(codex_mcp_servers(&ctx.config.mcp_servers));
             // The thread of the last run, if Codex still has it; a thread that never got a
             // message has nothing saved, and then a new one begins.
             if let Some(wanted) = ctx.resume.as_deref() {
@@ -1556,6 +1571,25 @@ fn usage_from_snapshot(snapshot: &Value) -> Option<(Option<String>, Vec<UsageWin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn portable_http_headers_become_codex_http_headers() {
+        let servers = serde_json::from_value(json!({
+            "remote": {
+                "url": "https://example.test/mcp",
+                "headers": { "Authorization": "Bearer token" }
+            },
+            "local": { "command": "mcp-server", "args": ["--stdio"] }
+        }))
+        .expect("portable MCP servers");
+        let converted = codex_mcp_servers(&servers);
+        assert_eq!(
+            converted["remote"]["http_headers"]["Authorization"],
+            "Bearer token"
+        );
+        assert!(converted["remote"].get("headers").is_none());
+        assert_eq!(converted["local"]["command"], "mcp-server");
+    }
+
     #[test]
     fn codex_skills_are_enabled_only_when_their_paths_are_selected() {
         let root = std::env::temp_dir().join(format!(

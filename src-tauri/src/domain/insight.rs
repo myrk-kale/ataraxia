@@ -436,13 +436,13 @@ impl BtwMode {
     }
 }
 
-/// When a BTW result goes back to the main agent.
+/// How a BTW result is returned to the main chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReturnPolicy {
     /// Only when the user sends it.
     Manual,
-    /// Once a delegated change finishes (never for read-only questions).
+    /// Automatically queue a summary after each completed BTW interaction.
     OnCompletion,
 }
 
@@ -476,6 +476,7 @@ pub struct BtwTask {
     pub context_text: String,
     pub return_policy: ReturnPolicy,
     pub summary: Option<String>,
+    /// When the latest interaction summary was added to the parent chat queue.
     pub returned_at: Option<String>,
     pub status: ArtifactStatus,
     pub created_at: String,

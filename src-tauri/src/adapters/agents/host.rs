@@ -22,12 +22,12 @@ use super::process_tree::{ProcessDiscovery, ProcessIdentity, ProcessSnapshot};
 use super::registry::ProviderRegistry;
 use super::{
     attachments,
-    config::{self, AgentConfiguration},
+    config::{self, AgentConfiguration, SkillDefinition},
     guide, handoff,
 };
 use crate::domain::agent::{
-    CapabilityMatrix, McpProcessInfo, McpProcessStatus, ProviderDescriptor, ProviderKind,
-    RepositoryMcpApproval, SessionOptions, SlashCommand,
+    CapabilityMatrix, ComposerResource, ComposerResourceKind, McpProcessInfo, McpProcessStatus,
+    ProviderDescriptor, ProviderKind, RepositoryMcpApproval, SessionOptions, SlashCommand,
 };
 use crate::domain::ids::{SessionId, TurnId, WorkspaceId};
 use crate::domain::time::now_rfc3339;
@@ -51,6 +51,7 @@ struct TrustedRepositoryMcpConfig {
 struct Live {
     backend: Arc<dyn BackendSession>,
     mcp_servers: Map<String, Value>,
+    skills: Vec<SkillDefinition>,
     status: SessionStatus,
     transcript: Vec<ChatItem>,
     subagents: Vec<SubagentRecord>,
@@ -928,29 +929,38 @@ impl AgentHost {
             return Err(Error::new(ErrorCode::Invalid, "prompt is empty"));
         }
         if let Some((command, args)) = split_command(text) {
-            if command != "compact" {
+            let backend = self
+                .inner
+                .sessions
+                .lock()
+                .get(session_id)
+                .map(|live| Arc::clone(&live.backend));
+            let provider_command = backend
+                .is_some_and(|backend| backend.commands().iter().any(|item| item.name == command));
+            if command != "compact" && !provider_command {
                 return Err(Error::new(
                     ErrorCode::Invalid,
-                    format!("unknown Ataraxia command /{command}; use /help"),
+                    format!("unknown slash command /{command}"),
                 ));
             }
-            let session = self
-                .inner
-                .store
-                .get_session(*session_id)?
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not found"))?;
-            let capabilities = self.capabilities(session.provider)?;
-            if !capabilities.compact {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "compaction is unavailable for this agent",
-                ));
-            }
-            if !args.is_empty() && !capabilities.compact_instructions {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "this agent does not accept compaction instructions",
-                ));
+            if command == "compact" {
+                let session =
+                    self.inner.store.get_session(*session_id)?.ok_or_else(|| {
+                        Error::new(ErrorCode::NotFound, "agent session not found")
+                    })?;
+                let capabilities = self.capabilities(session.provider)?;
+                if !capabilities.compact {
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        "compaction is unavailable for this agent",
+                    ));
+                }
+                if !args.is_empty() && !capabilities.compact_instructions {
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        "this agent does not accept compaction instructions",
+                    ));
+                }
             }
         }
         let images = self.store_images(session_id, &uploads)?;
@@ -1029,6 +1039,17 @@ impl AgentHost {
                 name: image.attachment.name.clone(),
             })
             .collect();
+        let link = self.inner.links.lock().get(session_id).cloned();
+        if let Some(link) = link {
+            self.inner.handle_event(
+                link.parent,
+                BackendEvent::Subagent {
+                    id: session_id.0.to_string(),
+                    title: link.title,
+                    update: SubagentUpdate::Started,
+                },
+            );
+        }
         let delivered = if files.is_empty() {
             backend.prompt(turn_id, &sent)
         } else {
@@ -1055,17 +1076,6 @@ impl AgentHost {
                 },
             );
             return Err(error);
-        }
-        let link = self.inner.links.lock().get(session_id).cloned();
-        if let Some(link) = link {
-            self.inner.handle_event(
-                link.parent,
-                BackendEvent::Subagent {
-                    id: session_id.0.to_string(),
-                    title: link.title,
-                    update: SubagentUpdate::Started,
-                },
-            );
         }
         Ok(turn_id)
     }
@@ -1576,6 +1586,7 @@ impl AgentRuntime for AgentHost {
         };
         let agent_config_preamble = agent_config.preamble.clone();
         let mcp_servers = agent_config.mcp_servers.clone();
+        let skills = agent_config.skills.clone();
 
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
         let session_id = session.id;
@@ -1667,6 +1678,7 @@ impl AgentRuntime for AgentHost {
             Live {
                 backend: started,
                 mcp_servers,
+                skills,
                 status: SessionStatus::Ready,
                 // A resumed agent still has all of it; only a new one is shown the old messages
                 // as reference.
@@ -1981,6 +1993,48 @@ impl AgentRuntime for AgentHost {
         Ok(backend
             .map(|backend| backend.commands())
             .unwrap_or_default())
+    }
+
+    fn session_composer_resources(&self, session_id: &SessionId) -> Result<Vec<ComposerResource>> {
+        let session = {
+            let sessions = self.inner.sessions.lock();
+            sessions.get(session_id).map(|live| {
+                (
+                    Arc::clone(&live.backend),
+                    live.skills.clone(),
+                    live.mcp_servers.keys().cloned().collect::<Vec<_>>(),
+                )
+            })
+        };
+        let Some((backend, skills, mcp_servers)) = session else {
+            return Ok(Vec::new());
+        };
+        let mut resources: Vec<ComposerResource> = backend
+            .commands()
+            .into_iter()
+            .map(|command| ComposerResource {
+                kind: ComposerResourceKind::Command,
+                name: command.name,
+                description: command.description,
+                hint: command.hint,
+                source: command.source,
+            })
+            .collect();
+        resources.extend(skills.iter().map(|skill| ComposerResource {
+            kind: ComposerResourceKind::Skill,
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            hint: None,
+            source: None,
+        }));
+        resources.extend(mcp_servers.iter().map(|name| ComposerResource {
+            kind: ComposerResourceKind::Mcp,
+            name: name.clone(),
+            description: "MCP server".into(),
+            hint: None,
+            source: None,
+        }));
+        Ok(resources)
     }
 
     fn session_options(&self, session_id: &SessionId) -> Result<SessionOptions> {
@@ -3287,7 +3341,7 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_command_is_rejected_before_the_harness_receives_it() {
+    fn a_command_missing_from_the_provider_catalog_is_rejected() {
         let mut h = harness();
         let prompts = Arc::new(Mutex::new(Vec::new()));
         h.host
@@ -3301,8 +3355,8 @@ mod tests {
         let error = h
             .host
             .prompt(&h.session.id, "/review the staged changes")
-            .expect_err("provider commands belong to the harness, not Ataraxia");
-        assert!(error.message.contains("unknown Ataraxia command"));
+            .expect_err("unlisted slash commands are rejected");
+        assert!(error.message.contains("unknown slash command"));
         h.host
             .prompt(&h.session.id, "now the tests")
             .expect("prompt");
@@ -3327,6 +3381,46 @@ mod tests {
         assert!(sent[0].contains("Never generate"), "{}", sent[0]);
         assert!(sent[0].ends_with("now the tests"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn provider_command_arguments_are_not_checked_as_compaction_instructions() {
+        struct Commands(Arc<dyn BackendSession>);
+        impl BackendSession for Commands {
+            fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                self.0.prompt(turn_id, text)
+            }
+            fn cancel(&self) -> Result<()> {
+                self.0.cancel()
+            }
+            fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                self.0.resolve_permission(decision)
+            }
+            fn commands(&self) -> Vec<SlashCommand> {
+                vec![SlashCommand {
+                    name: "review".into(),
+                    description: "Review a target".into(),
+                    hint: Some("target".into()),
+                    source: None,
+                }]
+            }
+            fn shutdown(&self) {
+                self.0.shutdown()
+            }
+        }
+
+        let h = harness();
+        let mut sessions = h.host.inner.sessions.lock();
+        let live = sessions.get_mut(&h.session.id).expect("live session");
+        live.backend = Arc::new(Commands(Arc::clone(&live.backend)));
+        drop(sessions);
+
+        h.host
+            .prompt(&h.session.id, "/review the staged changes")
+            .expect("provider command with arguments");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
     }
 
     #[test]

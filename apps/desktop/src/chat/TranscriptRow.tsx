@@ -25,10 +25,10 @@ function BtwReport({ text }: { text: string }) {
   }
   return (
     <section
-      aria-label="BTW report"
+      aria-label="BTW update"
       className="flex max-w-[680px] min-w-0 flex-col gap-3 rounded-cg-lg border border-cg-line px-5 py-4"
     >
-      <h4 className="text-small font-semibold text-cg-muted-strong">BTW finished</h4>
+      <h4 className="text-small font-semibold text-cg-muted-strong">BTW update</h4>
       {report.map((entry, index) => (
         <div key={`${index}:${entry.asked}`} className="flex min-w-0 flex-col gap-1.5">
           <p className="text-ui font-medium break-words text-cg-ink [overflow-wrap:anywhere]">{entry.asked}</p>

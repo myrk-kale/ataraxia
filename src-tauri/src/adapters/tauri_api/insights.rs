@@ -345,11 +345,6 @@ pub fn btw_list(state: tauri::State<'_, AppState>, session_id: SessionId) -> Res
 }
 
 #[tauri::command(async)]
-pub fn btw_return(state: tauri::State<'_, AppState>, task_id: BtwTaskId) -> Res<()> {
-    state.engine.btw_return(task_id).map_err(map_error)
-}
-
-#[tauri::command(async)]
 pub fn btw_session(state: tauri::State<'_, AppState>, task_id: BtwTaskId) -> Res<ChatSession> {
     state.engine.btw_session(task_id).map_err(map_error)
 }

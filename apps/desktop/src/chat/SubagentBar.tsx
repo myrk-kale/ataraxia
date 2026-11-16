@@ -22,8 +22,8 @@ const STATUS_LABEL: Record<SubagentView["status"], string> = {
 };
 
 /**
- * A minimal switcher between the main conversation and the subagents it started. Subagent
- * conversations are read-only; the main chip brings the composer back.
+ * A minimal switcher between the main conversation and its subagents. BTW keeps its own writable
+ * conversation; the main chip brings the composer back.
  */
 export function SubagentBar({
   subagents,
@@ -32,6 +32,7 @@ export function SubagentBar({
   provider,
   busy,
   onSelect,
+  onClose,
   onStop,
 }: {
   subagents: SubagentView[];
@@ -42,6 +43,7 @@ export function SubagentBar({
   provider?: ProviderKind;
   busy: boolean;
   onSelect: (id: string | null) => void;
+  onClose: (id: string) => void;
   onStop: () => void;
 }) {
   if (subagents.length === 0) {
@@ -68,17 +70,34 @@ export function SubagentBar({
         <span className="truncate">{mainLabel}</span>
       </button>
       {subagents.map((item) => (
-        <button
+        <div
           key={item.id}
-          aria-current={selected === item.id ? "true" : undefined}
-          className={chip(selected === item.id)}
-                    type="button"
-          onClick={() => onSelect(item.id)}
+          className={`flex max-w-[240px] flex-none items-center rounded-full border px-1 py-0.5 ${
+            selected === item.id
+              ? "border-cg-line-strong bg-cg-tint text-cg-ink"
+              : "border-transparent text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink"
+          }`}
         >
-          <StatusGlyph status={item.status} />
-          <span className="truncate">{item.title}</span>
-          <span className="sr-only">{STATUS_LABEL[item.status]}</span>
-        </button>
+          <button
+            aria-current={selected === item.id ? "true" : undefined}
+            className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-small"
+            type="button"
+            onClick={() => onSelect(item.id)}
+          >
+            <StatusGlyph status={item.status} />
+            <span className="truncate">{item.title}</span>
+            <span className="sr-only">{STATUS_LABEL[item.status]}</span>
+          </button>
+          <button
+            aria-label={`Close ${item.title}`}
+            className="grid h-6 w-6 flex-none place-items-center rounded-full text-cg-muted hover:bg-cg-line hover:text-cg-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-cg-accent"
+            title={`Close ${item.title}`}
+            type="button"
+            onClick={() => onClose(item.id)}
+          >
+            <X aria-hidden="true" size={12} />
+          </button>
+        </div>
       ))}
       {busy ? (
         <button
