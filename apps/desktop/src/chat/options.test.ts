@@ -6,6 +6,7 @@ function provider(dynamic: boolean, efforts: string[] = []): ProviderDescriptor 
   return {
     kind: "codex",
     display_name: "Codex",
+    capabilities: { rewind: true, fork: "checkpoint", compact: true, compact_instructions: false, thread_goal: true, context_usage: true, image_prompts: true, steering: "inject", approval_enforcement: "provider", child_sessions: true },
     available: true,
     detail: null,
     settings: {

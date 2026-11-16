@@ -153,10 +153,10 @@ if (mode === "subagents") {
 
 const m = (id: string, label: string, efforts: string[] = []) => ({ id, label, efforts });
 const providers = [
-  { kind: "fake", display_name: "Fake", available: true, detail: null, settings: { configurable: true, models: [m("fake-fast", "Fake fast")], efforts: ["low", "medium", "high"], custom_model: false, dynamic: false, agents: true, subagent_messages: true } },
-  { kind: "claude", display_name: "Claude Code", available: true, detail: null, settings: { configurable: true, models: [m("sonnet", "Sonnet"), m("opus", "Opus"), m("haiku", "Haiku"), m("fable", "Fable")], efforts: ["low", "medium", "high", "xhigh", "max"], custom_model: true, dynamic: false, agents: true, subagent_messages: true } },
-  { kind: "codex", display_name: "Codex", available: true, detail: null, settings: { configurable: true, models: [], efforts: ["low", "medium", "high", "xhigh"], custom_model: true, dynamic: true, agents: true, subagent_messages: true } },
-  { kind: "opencode", display_name: "OpenCode", available: true, detail: null, settings: { configurable: true, models: [], efforts: [], custom_model: false, dynamic: true, agents: true, subagent_messages: true } },
+  { kind: "fake", display_name: "Fake", capabilities: { rewind: false, fork: "none", compact: false, compact_instructions: false, thread_goal: false, context_usage: false, image_prompts: false, steering: "none", approval_enforcement: "host", child_sessions: false }, available: true, detail: null, settings: { configurable: true, models: [m("fake-fast", "Fake fast")], efforts: ["low", "medium", "high"], custom_model: false, dynamic: false, agents: true, subagent_messages: true } },
+  { kind: "claude", display_name: "Claude Code", capabilities: { rewind: true, fork: "checkpoint", compact: true, compact_instructions: true, thread_goal: false, context_usage: true, image_prompts: true, steering: "inject", approval_enforcement: "provider", child_sessions: true }, available: true, detail: null, settings: { configurable: true, models: [m("sonnet", "Sonnet"), m("opus", "Opus"), m("haiku", "Haiku"), m("fable", "Fable")], efforts: ["low", "medium", "high", "xhigh", "max"], custom_model: true, dynamic: false, agents: true, subagent_messages: true } },
+  { kind: "codex", display_name: "Codex", capabilities: { rewind: true, fork: "checkpoint", compact: true, compact_instructions: false, thread_goal: true, context_usage: true, image_prompts: true, steering: "inject", approval_enforcement: "provider", child_sessions: true }, available: true, detail: null, settings: { configurable: true, models: [], efforts: ["low", "medium", "high", "xhigh"], custom_model: true, dynamic: true, agents: true, subagent_messages: true } },
+  { kind: "opencode", display_name: "OpenCode", capabilities: { rewind: false, fork: "tip", compact: true, compact_instructions: false, thread_goal: false, context_usage: true, image_prompts: true, steering: "queue", approval_enforcement: "host", child_sessions: true }, available: true, detail: null, settings: { configurable: true, models: [], efforts: [], custom_model: false, dynamic: true, agents: true, subagent_messages: true } },
 ];
 
 // What each live session would report; Codex and OpenCode discover theirs from the provider.
@@ -347,13 +347,24 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       return null;
     }
     case "agent_get_snapshot": return chat;
-    case "agent_list_commands":
+    case "agent_repository_mcp_approval": return null;
+    case "agent_trust_repository_mcp": return null;
+    case "agent_start_session": return null;
+    case "agent_list_commands": {
+      const activeSession = sessions.find((item) => item.id === args?.sessionId) ?? session;
+      const capabilities = providers.find((item) => item.kind === activeSession.provider)?.capabilities;
       return [
-        { name: "review", description: "Review the changes in the working tree", hint: "[branch]", source: "user" },
-        { name: "compact", description: "Compact the conversation", hint: null, source: null },
-        { name: "figma:implement-design", description: "Build the screen from a Figma design", hint: "<url>", source: "plugin" },
-        { name: "init", description: "Set up the AGENTS.md of this project", hint: null, source: "project" },
+        { name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
+        { name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
+        {
+          name: "compact",
+          description: capabilities?.compact ? "Compact this conversation" : "Unavailable for this session",
+          hint: capabilities?.compact_instructions ? "[instructions]" : null,
+          source: "Ataraxia",
+        },
+        { name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
       ];
+    }
     case "session_paths":
       return [
         { path: "src/", dir: true, repository: null },
@@ -559,6 +570,8 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return queueOf(sessionId);
     }
+    case "agent_list_mcp_processes": return [];
+    case "agent_stop_mcp_process": return null;
     case "terminal_ensure": return { sessionId: "p1", created: true };
     default: {
       const result = handleInsights(cmd, args, emit);

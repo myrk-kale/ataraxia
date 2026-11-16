@@ -22,7 +22,6 @@ function Harness({ commands = true, onKey }: { commands?: boolean; onKey?: () =>
     onDraft: setDraft,
     field,
     commands,
-    agents: [{ id: "reviewer", label: "reviewer", description: "Reviews" }],
   });
   return (
     <div style={{ position: "relative" }}>
@@ -87,8 +86,10 @@ beforeEach(() => {
   // jsdom does not scroll.
   Element.prototype.scrollIntoView = vi.fn();
   api.commands.mockResolvedValue([
-    { name: "review", description: "Review the changes", hint: "[branch]", source: null },
-    { name: "compact", description: "Compact it", hint: null, source: "user" },
+    { name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
+    { name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
+    { name: "compact", description: "Compact this conversation", hint: null, source: "Ataraxia" },
+    { name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
   ]);
   api.paths.mockResolvedValue([
     { path: "src/", dir: true, repository: null },
@@ -107,24 +108,24 @@ afterEach(() => {
 });
 
 describe("the / and @ pickers of the message field", () => {
-  it("opens the agent's commands on a slash and narrows them as the name is typed", async () => {
+  it("opens Ataraxia's commands on a slash and narrows them as the name is typed", async () => {
     act(() => root.render(<Harness />));
     await type("/");
     expect(api.commands).toHaveBeenCalledTimes(1);
-    expect(rows()).toHaveLength(2);
+    expect(rows()).toHaveLength(4);
     await type("/comp");
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toContain("/compact");
     expect(field().getAttribute("aria-activedescendant")).toBeTruthy();
   });
 
-  it("completes the command with Enter and leaves the message for the next Enter", async () => {
+  it("completes an Ataraxia command and leaves the message for the next Enter", async () => {
     const onKey = vi.fn();
     act(() => root.render(<Harness onKey={onKey} />));
-    await type("/rev");
+    await type("/new");
     const event = press("Enter");
     expect(event.defaultPrevented).toBe(true);
-    expect(field().value).toBe("/review ");
+    expect(field().value).toBe("/new ");
     expect(host.querySelector('[role="listbox"]')).toBeNull();
     expect(onKey).not.toHaveBeenCalled();
     press("Enter");
@@ -135,18 +136,18 @@ describe("the / and @ pickers of the message field", () => {
     act(() => root.render(<Harness />));
     await type("/");
     press("ArrowDown");
-    expect(host.querySelectorAll('[aria-selected="true"]')[0].textContent).toContain("/compact");
+    expect(host.querySelectorAll('[aria-selected="true"]')[0].textContent).toContain("/new");
     press("ArrowDown");
-    expect(host.querySelectorAll('[aria-selected="true"]')[0].textContent).toContain("/review");
+    expect(host.querySelectorAll('[aria-selected="true"]')[0].textContent).toContain("/compact");
     press("ArrowUp");
     press("Tab");
-    expect(field().value).toBe("/compact ");
+    expect(field().value).toBe("/new ");
   });
 
   it("closes on Escape without taking the key from the rest of the panel's handlers", async () => {
     act(() => root.render(<Harness />));
     await type("/");
-    expect(rows()).toHaveLength(2);
+    expect(rows()).toHaveLength(4);
     const event = press("Escape");
     expect(event.defaultPrevented).toBe(true);
     expect(rows()).toHaveLength(0);
@@ -155,11 +156,11 @@ describe("the / and @ pickers of the message field", () => {
     expect(rows()).toHaveLength(0);
   });
 
-  it("offers the files, folders and agents on an at sign anywhere in the message", async () => {
+  it("offers files but not folders or agents on an at sign anywhere in the message", async () => {
     act(() => root.render(<Harness />));
     await type("look at @");
     expect(api.paths).toHaveBeenCalledTimes(1);
-    expect(rows().some((row) => row.includes("reviewer"))).toBe(true);
+    expect(rows().some((row) => row.includes("reviewer"))).toBe(false);
     expect(rows().some((row) => row.includes("src/main.rs"))).toBe(true);
     await type("look at @main");
     expect(rows()).toHaveLength(1);
@@ -167,12 +168,14 @@ describe("the / and @ pickers of the message field", () => {
     expect(field().value).toBe("look at @src/main.rs ");
   });
 
-  it("goes on inside a folder once it is chosen", async () => {
+  it("selects a matching file directly instead of navigating into a folder", async () => {
     act(() => root.render(<Harness />));
     await type("@sr");
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toContain("src/main.rs");
     press("Enter");
-    expect(field().value).toBe("@src/");
-    expect(rows().some((row) => row.includes("src/main.rs"))).toBe(true);
+    expect(field().value).toBe("@src/main.rs ");
+    expect(rows()).toHaveLength(0);
   });
 
   it("does not offer commands where the message is not for the main agent", async () => {
