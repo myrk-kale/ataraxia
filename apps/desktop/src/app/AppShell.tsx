@@ -5,6 +5,7 @@ import {
   MessageCircle,
   Moon,
   Plus,
+  Server,
   Settings,
   ShieldAlert,
   Sun,
@@ -36,6 +37,7 @@ import { QuietSelect } from "../ui/QuietSelect";
 import { ReferenceSelect } from "./ReferenceSelect";
 import { RepositorySelect } from "./RepositorySelect";
 import { WorkspaceDialog } from "./WorkspaceDialog";
+import { McpServersDialog } from "./McpServersDialog";
 import { Tip } from "../ui/Overlay";
 import { StateMessage, type LoadState } from "../ui/State";
 import {
@@ -151,6 +153,7 @@ export function AppShell() {
   }, [space]);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const [btwOpen, setBtwOpen] = useState(false);
   const [btwResume, setBtwResume] = useState<BtwTask | null>(null);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -221,7 +224,7 @@ export function AppShell() {
     setVisited((current) => (current.has(space) ? current : new Set([...current, space])));
   }, [space]);
 
-  const overlayOpen = sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen;
+  const overlayOpen = sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen || mcpOpen;
   // A dialog a view opens by itself (a diagram full screen) owns the keyboard as well.
   const anOverlay = () => overlayOpen || document.querySelector("dialog[open]") !== null;
   const hasChat = workspace.sessions.some((item) => item.id === workspace.selected_session_id);
@@ -323,6 +326,11 @@ export function AppShell() {
       ) ?? null,
     [workspace],
   );
+
+  async function openMcpSession(sessionId: string) {
+    setWorkspace(await workspaceOpenSession(sessionId));
+    setSpace("chat");
+  }
 
   const choices = useMemo(
     () => visibleProviders(providers ?? [], selectedSession?.provider ?? null, import.meta.env.DEV),
@@ -569,6 +577,7 @@ export function AppShell() {
           contextLabel={contextLabel}
           provider={providers?.find((item) => item.kind === selectedSession.provider) ?? null}
           session={selectedSession}
+          onNewSession={setWorkspace}
           onSessionChange={(updated) =>
             setWorkspace((current) => ({
               ...current,
@@ -723,6 +732,17 @@ export function AppShell() {
               void onProviderSwitch(value as ProviderKind);
             }}
           />
+
+          <Tip label="MCP servers">
+            <Button
+              aria-label="MCP servers"
+              aria-pressed={mcpOpen}
+              variant="icon"
+              onClick={() => setMcpOpen(true)}
+            >
+              <Server aria-hidden="true" size={16} />
+            </Button>
+          </Tip>
 
           <Tip label="New chat">
             <Button
@@ -905,6 +925,11 @@ export function AppShell() {
         isOpen={settingsOpen}
         provider={selectedSession?.provider ?? null}
         onClose={() => setSettingsOpen(false)}
+      />
+      <McpServersDialog
+        isOpen={mcpOpen}
+        onClose={() => setMcpOpen(false)}
+        onOpenSession={openMcpSession}
       />
       <WorkspaceDialog
         isOpen={workspaceDialog !== null}

@@ -1,4 +1,51 @@
+use crate::domain::ids::{SessionId, WorkspaceId};
 use serde::{Deserialize, Serialize};
+
+/// A repository-owned MCP server shown before Ataraxia lets a harness start it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryMcpServer {
+    pub name: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// Optional working directory used to launch a local MCP server.
+    pub cwd: Option<String>,
+    /// Names only; environment values and headers may contain secrets.
+    pub environment: Vec<String>,
+    pub headers: Vec<String>,
+}
+
+/// Repository MCPs that need a user's explicit trust decision before session start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryMcpApproval {
+    pub repository: String,
+    pub fingerprint: String,
+    pub servers: Vec<RepositoryMcpServer>,
+}
+
+/// A local or remote MCP server associated with a currently running agent session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProcessInfo {
+    pub session_id: SessionId,
+    pub workspace_id: Option<WorkspaceId>,
+    pub workspace_name: Option<String>,
+    pub session_title: String,
+    pub provider: ProviderKind,
+    pub server_name: String,
+    pub status: McpProcessStatus,
+    pub pid: Option<u32>,
+    pub process_started_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum McpProcessStatus {
+    Running,
+    NotDetected,
+    Remote,
+    Unidentified,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -112,18 +159,40 @@ pub struct AgentChoice {
     pub description: Option<String>,
 }
 
-/// An action the harness runs when a message begins with `/name`: one of its commands or skills.
+/// An action in Ataraxia's fixed command catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlashCommand {
     pub name: String,
     pub description: String,
-    /// What follows the name, when the harness says (`[branch]`, `<file>`).
+    /// Optional arguments accepted by the command, such as `[instructions]`.
     pub hint: Option<String>,
     /// Where it comes from, when the harness says (user, project, a plugin).
     pub source: Option<String>,
 }
 
-/// A file or folder of the chat's repositories that `@` can point at.
+/// Commands whose names and meanings belong to Ataraxia, regardless of the active harness.
+pub fn ataraxia_commands() -> Vec<SlashCommand> {
+    [
+        ("help", "List Ataraxia commands", None),
+        ("new", "Create a new chat and keep this one", None),
+        (
+            "compact",
+            "Compact this conversation",
+            Some("[instructions]"),
+        ),
+        ("stop", "Stop the current run", None),
+    ]
+    .into_iter()
+    .map(|(name, description, hint)| SlashCommand {
+        name: name.into(),
+        description: description.into(),
+        hint: hint.map(str::to_string),
+        source: Some("Ataraxia".into()),
+    })
+    .collect()
+}
+
+/// A repository entry returned by the file picker. Directories are filtered before insertion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MentionPath {
     /// What goes after the `@`: relative to the folder the agent works in, or absolute for

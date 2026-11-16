@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use super::backend::{
@@ -16,12 +18,18 @@ use super::backend::{
     split_command,
 };
 use super::process::resolve_program;
+use super::process_tree::{ProcessDiscovery, ProcessIdentity, ProcessSnapshot};
 use super::registry::ProviderRegistry;
-use super::{attachments, guide, handoff};
-use crate::domain::agent::{
-    CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions, SlashCommand,
+use super::{
+    attachments,
+    config::{self, AgentConfiguration},
+    guide, handoff,
 };
-use crate::domain::ids::{SessionId, TurnId};
+use crate::domain::agent::{
+    CapabilityMatrix, McpProcessInfo, McpProcessStatus, ProviderDescriptor, ProviderKind,
+    RepositoryMcpApproval, SessionOptions, SlashCommand,
+};
+use crate::domain::ids::{SessionId, TurnId, WorkspaceId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSession, ChatSnapshot, Error, ErrorCode,
@@ -31,8 +39,18 @@ use crate::domain::{
 };
 use crate::ports::{AgentRuntime, ApiGateway, EventSink, InsightStore, Store};
 
+const TRUSTED_REPOSITORY_MCP_KEY: &str = "trusted_repository_mcp_configs";
+static TRUSTED_REPOSITORY_MCP_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrustedRepositoryMcpConfig {
+    repository: String,
+    fingerprint: String,
+}
+
 struct Live {
     backend: Arc<dyn BackendSession>,
+    mcp_servers: Map<String, Value>,
     status: SessionStatus,
     transcript: Vec<ChatItem>,
     subagents: Vec<SubagentRecord>,
@@ -46,6 +64,9 @@ struct Live {
     chat: bool,
     /// Whether this agent process has been told about Ataraxia yet.
     introduced: bool,
+    /// Ataraxia-selected AGENTS.md instructions and portable skill catalog.
+    agent_config_preamble: String,
+    config_introduced: bool,
     /// The local API token this process runs with, revoked when the process is retired.
     api_token: Option<String>,
     /// The launch profile this process was started with (`None`: the default way). When the
@@ -74,6 +95,8 @@ struct Inner {
     handoff_dir: Mutex<Option<PathBuf>>,
     /// Where the pictures attached to messages are kept.
     attachment_dir: Mutex<Option<PathBuf>>,
+    /// App data root for per-session provider config files.
+    config_dir: Mutex<Option<PathBuf>>,
     /// Chats whose next prompt must tell the new agent about the record (the file's path).
     handoffs: Mutex<HashMap<SessionId, PathBuf>>,
     /// The page of the guide that a chat's agent is pointed at, when there is one.
@@ -101,6 +124,7 @@ impl AgentHost {
                 links: Mutex::new(HashMap::new()),
                 handoff_dir: Mutex::new(None),
                 attachment_dir: Mutex::new(None),
+                config_dir: Mutex::new(None),
                 handoffs: Mutex::new(HashMap::new()),
                 guide: Mutex::new(None),
                 api: Mutex::new(None),
@@ -125,6 +149,12 @@ impl AgentHost {
     /// Where to write the conversation when the user switches a chat to another harness.
     pub fn with_attachment_dir(self, dir: PathBuf) -> Self {
         *self.inner.attachment_dir.lock() = Some(dir);
+        self
+    }
+
+    /// App data root used for private, generated provider config files.
+    pub fn with_config_dir(self, dir: PathBuf) -> Self {
+        *self.inner.config_dir.lock() = Some(dir);
         self
     }
 
@@ -897,12 +927,38 @@ impl AgentHost {
         if text.is_empty() && uploads.is_empty() {
             return Err(Error::new(ErrorCode::Invalid, "prompt is empty"));
         }
+        if let Some((command, args)) = split_command(text) {
+            if command != "compact" {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    format!("unknown Ataraxia command /{command}; use /help"),
+                ));
+            }
+            let session = self
+                .inner
+                .store
+                .get_session(*session_id)?
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not found"))?;
+            let capabilities = self.capabilities(session.provider)?;
+            if !capabilities.compact {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    "compaction is unavailable for this agent",
+                ));
+            }
+            if !args.is_empty() && !capabilities.compact_instructions {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    "this agent does not accept compaction instructions",
+                ));
+            }
+        }
         let images = self.store_images(session_id, &uploads)?;
         let turn_id = TurnId::new();
         self.follow_profile(session_id)?;
         self.revive_if_dead(session_id)?;
         let guide_index = self.inner.guide.lock().clone();
-        let (backend, introduce) = {
+        let (backend, guide_intro, config_intro, config_preamble) = {
             let mut sessions = self.inner.sessions.lock();
             let live = sessions
                 .get_mut(session_id)
@@ -913,12 +969,15 @@ impl AgentHost {
             // The first message of each agent process says what Ataraxia is; later ones do not.
             // A command goes out as it is, since the harness only runs one at the very start of
             // the message; the introduction waits for the next message.
-            let introduce = live.chat
-                && !live.introduced
-                && guide_index.is_some()
-                && !split_command(text).is_some();
-            if introduce {
+            let is_command = split_command(text).is_some();
+            let guide_intro = live.chat && !live.introduced && guide_index.is_some() && !is_command;
+            let config_intro =
+                !live.config_introduced && !live.agent_config_preamble.is_empty() && !is_command;
+            if guide_intro {
                 live.introduced = true;
+            }
+            if config_intro {
+                live.config_introduced = true;
             }
             live.active_turn = Some(turn_id);
             live.status = SessionStatus::Working;
@@ -933,7 +992,12 @@ impl AgentHost {
             });
             self.inner
                 .publish_status(*session_id, SessionStatus::Working);
-            (Arc::clone(&live.backend), introduce)
+            (
+                Arc::clone(&live.backend),
+                guide_intro,
+                config_intro,
+                live.agent_config_preamble.clone(),
+            )
         };
 
         // The first message after a switch also tells the new agent where the old conversation is.
@@ -943,9 +1007,15 @@ impl AgentHost {
             self.inner.handoffs.lock().remove(session_id)
         };
         let mut sent = String::new();
-        if let (true, Some(index)) = (introduce, &guide_index) {
-            sent.push_str(&guide::preamble(index));
-            sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
+        if guide_intro {
+            if let Some(index) = &guide_index {
+                sent.push_str(&guide::preamble(index));
+                sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
+            }
+        }
+        if config_intro && !config_preamble.is_empty() {
+            sent.push_str(&config_preamble);
+            sent.push_str("\n\n");
         }
         if let Some(path) = &handoff {
             sent.push_str(&handoff::preamble(path));
@@ -968,9 +1038,14 @@ impl AgentHost {
             if let Some(path) = handoff {
                 self.inner.handoffs.lock().insert(*session_id, path);
             }
-            if introduce {
+            if guide_intro || config_intro {
                 if let Some(live) = self.inner.sessions.lock().get_mut(session_id) {
-                    live.introduced = false;
+                    if guide_intro {
+                        live.introduced = false;
+                    }
+                    if config_intro {
+                        live.config_introduced = false;
+                    }
                 }
             }
             self.inner.handle(
@@ -1142,7 +1217,137 @@ impl AgentHost {
     }
 }
 
+impl AgentHost {
+    fn repository_mcp_is_trusted(&self, approval: &RepositoryMcpApproval) -> Result<bool> {
+        let stored = self
+            .inner
+            .store
+            .get_preference(TRUSTED_REPOSITORY_MCP_KEY)?
+            .unwrap_or_default();
+        let trusted: Vec<TrustedRepositoryMcpConfig> =
+            serde_json::from_str(&stored).unwrap_or_default();
+        Ok(trusted.iter().any(|item| {
+            item.repository == approval.repository && item.fingerprint == approval.fingerprint
+        }))
+    }
+
+    fn trusted_repository_mcp_fingerprint(&self, cwd: &std::path::Path) -> Result<Option<String>> {
+        let Some(approval) = super::config::repository_mcp_approval(cwd)? else {
+            return Ok(None);
+        };
+        if self.repository_mcp_is_trusted(&approval)? {
+            Ok(Some(approval.fingerprint))
+        } else {
+            Err(Error::new(
+                ErrorCode::Invalid,
+                format!(
+                    "repository MCP approval is required for {}",
+                    approval.repository
+                ),
+            ))
+        }
+    }
+
+    fn repository_mcp_approval_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<RepositoryMcpApproval>> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let worktree = self
+            .inner
+            .store
+            .get_worktree(session.worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
+        let Some(approval) = super::config::repository_mcp_approval(&worktree.path)? else {
+            return Ok(None);
+        };
+        if self.repository_mcp_is_trusted(&approval)? {
+            Ok(None)
+        } else {
+            Ok(Some(approval))
+        }
+    }
+
+    fn trust_repository_mcp_for_session(
+        &self,
+        session_id: &SessionId,
+        fingerprint: &str,
+    ) -> Result<()> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let worktree = self
+            .inner
+            .store
+            .get_worktree(session.worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
+        let approval = super::config::repository_mcp_approval(&worktree.path)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "repository MCP config not found"))?;
+        if approval.fingerprint != fingerprint {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "repository MCP config changed; review the updated servers before trusting it",
+            ));
+        }
+
+        let _guard = TRUSTED_REPOSITORY_MCP_LOCK.lock();
+        let stored = self
+            .inner
+            .store
+            .get_preference(TRUSTED_REPOSITORY_MCP_KEY)?
+            .unwrap_or_default();
+        let mut trusted: Vec<TrustedRepositoryMcpConfig> =
+            serde_json::from_str(&stored).unwrap_or_default();
+        trusted.retain(|item| item.repository != approval.repository);
+        trusted.push(TrustedRepositoryMcpConfig {
+            repository: approval.repository,
+            fingerprint: approval.fingerprint,
+        });
+        let value = serde_json::to_string(&trusted)
+            .map_err(|error| Error::new(ErrorCode::Invalid, error.to_string()))?;
+        self.inner
+            .store
+            .set_preference(TRUSTED_REPOSITORY_MCP_KEY, &value)
+    }
+}
+
+fn session_workspace(
+    store: &dyn Store,
+    session: &ChatSession,
+) -> Result<(Option<WorkspaceId>, Option<String>)> {
+    let workspace_id = match (session.workspace_id, session.parent_session_id) {
+        (Some(workspace_id), _) => Some(workspace_id),
+        (None, Some(parent_id)) => store
+            .get_session(parent_id)?
+            .and_then(|parent| parent.workspace_id),
+        (None, None) => None,
+    };
+    let workspace_name = workspace_id
+        .map(|workspace_id| store.get_workspace(workspace_id))
+        .transpose()?
+        .flatten()
+        .map(|workspace| workspace.name);
+    Ok((workspace_id, workspace_name))
+}
+
 impl AgentRuntime for AgentHost {
+    fn repository_mcp_approval(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<RepositoryMcpApproval>> {
+        self.repository_mcp_approval_for_session(session_id)
+    }
+
+    fn trust_repository_mcp(&self, session_id: &SessionId, fingerprint: &str) -> Result<()> {
+        self.trust_repository_mcp_for_session(session_id, fingerprint)
+    }
+
     fn providers(&self) -> Vec<ProviderDescriptor> {
         ProviderRegistry::descriptors()
             .into_iter()
@@ -1173,6 +1378,129 @@ impl AgentRuntime for AgentHost {
 
     fn usage(&self) -> Vec<ProviderUsage> {
         self.inner.usage_all()
+    }
+
+    fn mcp_processes(&self) -> Result<Vec<McpProcessInfo>> {
+        let live_sessions: Vec<_> = self
+            .inner
+            .sessions
+            .lock()
+            .iter()
+            .filter(|(_, live)| live.backend.is_alive())
+            .map(|(session_id, live)| {
+                (
+                    *session_id,
+                    live.backend.process_id(),
+                    live.mcp_servers.clone(),
+                )
+            })
+            .collect();
+        let process_snapshot = ProcessSnapshot::new();
+        let mut rows = Vec::new();
+        let mut owners: HashMap<(SessionId, u32), std::collections::HashSet<String>> =
+            HashMap::new();
+
+        for (session_id, harness_pid, servers) in live_sessions {
+            let Some(session) = self.inner.store.get_session(session_id)? else {
+                continue;
+            };
+            let (workspace_id, workspace_name) = session_workspace(&*self.inner.store, &session)?;
+            for (server_name, server) in servers {
+                let base = McpProcessInfo {
+                    session_id,
+                    workspace_id,
+                    workspace_name: workspace_name.clone(),
+                    session_title: session.title.clone(),
+                    provider: session.provider,
+                    server_name: server_name.clone(),
+                    status: McpProcessStatus::Unidentified,
+                    pid: None,
+                    process_started_at: None,
+                };
+                let command = server.get("command").and_then(Value::as_str);
+                if command.is_none() && server.get("url").and_then(Value::as_str).is_some() {
+                    let mut row = base;
+                    row.status = McpProcessStatus::Remote;
+                    rows.push(row);
+                    continue;
+                }
+                let discovery = match (harness_pid, command) {
+                    (Some(pid), Some(_)) => process_snapshot.find_mcp_processes(pid, &server),
+                    _ => ProcessDiscovery::Unidentified,
+                };
+                match discovery {
+                    ProcessDiscovery::Running(processes) if !processes.is_empty() => {
+                        for process in processes {
+                            let mut row = base.clone();
+                            row.status = McpProcessStatus::Running;
+                            row.pid = Some(process.pid);
+                            row.process_started_at = Some(process.started_at);
+                            owners
+                                .entry((session_id, process.pid))
+                                .or_default()
+                                .insert(server_name.clone());
+                            rows.push(row);
+                        }
+                    }
+                    ProcessDiscovery::NotDetected => {
+                        let mut row = base;
+                        row.status = McpProcessStatus::NotDetected;
+                        rows.push(row);
+                    }
+                    ProcessDiscovery::Running(_) | ProcessDiscovery::Unidentified => {
+                        rows.push(base);
+                    }
+                }
+            }
+        }
+
+        for row in &mut rows {
+            let Some(pid) = row.pid else { continue };
+            if owners
+                .get(&(row.session_id, pid))
+                .is_some_and(|servers| servers.len() > 1)
+            {
+                row.status = McpProcessStatus::Unidentified;
+                row.pid = None;
+                row.process_started_at = None;
+            }
+        }
+        Ok(rows)
+    }
+
+    fn stop_mcp_process(
+        &self,
+        session_id: &SessionId,
+        server_name: &str,
+        pid: u32,
+        process_started_at: u64,
+    ) -> Result<()> {
+        let (harness_pid, server) = {
+            let sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get(session_id)
+                .filter(|live| live.backend.is_alive())
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session is not running"))?;
+            let harness_pid = live.backend.process_id().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unsupported,
+                    "this harness has no local process id",
+                )
+            })?;
+            let server =
+                live.mcp_servers.get(server_name).cloned().ok_or_else(|| {
+                    Error::new(ErrorCode::NotFound, "MCP server is not configured")
+                })?;
+            (harness_pid, server)
+        };
+        ProcessSnapshot::new().stop_mcp_process(
+            harness_pid,
+            &server,
+            ProcessIdentity {
+                pid,
+                started_at: process_started_at,
+            },
+        )
     }
 
     fn start_session(&self, session: &ChatSession) -> Result<()> {
@@ -1235,6 +1563,19 @@ impl AgentRuntime for AgentHost {
             .store
             .get_worktree(session.worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
+        let repository_mcp_fingerprint = self.trusted_repository_mcp_fingerprint(&worktree.path)?;
+        let config_root = self.inner.config_dir.lock().clone();
+        let agent_config = match config_root.as_deref() {
+            Some(root) => AgentConfiguration::load(
+                &worktree.path,
+                session.id,
+                Some(root),
+                repository_mcp_fingerprint.as_deref(),
+            )?,
+            None => AgentConfiguration::default(),
+        };
+        let agent_config_preamble = agent_config.preamble.clone();
+        let mcp_servers = agent_config.mcp_servers.clone();
 
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
         let session_id = session.id;
@@ -1293,6 +1634,7 @@ impl AgentRuntime for AgentHost {
                 .session_agent_ref(session.id)
                 .unwrap_or_default(),
             api,
+            config: agent_config,
             launch,
             emit,
         }) {
@@ -1324,6 +1666,7 @@ impl AgentRuntime for AgentHost {
             session_id,
             Live {
                 backend: started,
+                mcp_servers,
                 status: SessionStatus::Ready,
                 // A resumed agent still has all of it; only a new one is shown the old messages
                 // as reference.
@@ -1336,6 +1679,8 @@ impl AgentRuntime for AgentHost {
                 chat: session.kind == crate::domain::SessionKind::Chat,
                 // A resumed conversation was told about Ataraxia when it began.
                 introduced: resumed,
+                agent_config_preamble,
+                config_introduced: false,
                 api_token,
                 profile,
                 current,
@@ -1471,6 +1816,12 @@ impl AgentRuntime for AgentHost {
         let text = text.trim();
         if text.is_empty() {
             return Err(Error::new(ErrorCode::Invalid, "message is empty"));
+        }
+        if split_command(text).is_some() {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "Ataraxia commands are unavailable in subagent messages",
+            ));
         }
         if let Some(child) = self.inner.linked_child(session_id, subagent_id) {
             // A BTW conversation is its own session: the message goes to it, not through the main agent.
@@ -1669,6 +2020,14 @@ impl AgentRuntime for AgentHost {
         if let Some(dir) = self.inner.attachment_dir.lock().clone() {
             attachments::forget(&dir, session_id);
         }
+        if let Some(dir) = self.inner.config_dir.lock().clone()
+            && let Err(error) = config::forget_session_config(&dir, session_id)
+        {
+            eprintln!(
+                "ataraxia: could not remove agent config for {}: {error}",
+                session_id.0
+            );
+        }
     }
 
     fn cancel(&self, session_id: &SessionId, _turn_id: Option<&TurnId>) -> Result<()> {
@@ -1808,13 +2167,23 @@ mod tests {
         backend: Arc<dyn AgentBackend>,
         api: Option<Arc<dyn ApiGateway>>,
     ) -> Harness {
+        harness_with_api_and_config(backend, api, PathBuf::from("/tmp/repo"), None, true)
+    }
+
+    fn harness_with_api_and_config(
+        backend: Arc<dyn AgentBackend>,
+        api: Option<Arc<dyn ApiGateway>>,
+        repository_path: PathBuf,
+        config_dir: Option<PathBuf>,
+        start: bool,
+    ) -> Harness {
         let store = Arc::new(FakeStore::healthy());
         let repository_id = RepositoryId::new();
         let worktree_id = WorktreeId::new();
         store
             .upsert_repository(&Repository {
                 id: repository_id,
-                root: PathBuf::from("/tmp/repo"),
+                root: repository_path.clone(),
                 name: "repo".into(),
                 created_at: "t".into(),
                 updated_at: "t".into(),
@@ -1824,7 +2193,7 @@ mod tests {
             .upsert_worktree(&Worktree {
                 id: worktree_id,
                 repository_id,
-                path: PathBuf::from("/tmp/repo"),
+                path: repository_path,
                 branch: None,
                 head: None,
                 created_at: "t".into(),
@@ -1860,13 +2229,90 @@ mod tests {
         if let Some(api) = api {
             host = host.with_api(api);
         }
-        host.start_session(&session).expect("start");
+        if let Some(config_dir) = config_dir {
+            host = host.with_config_dir(config_dir);
+        }
+        if start {
+            host.start_session(&session).expect("start");
+        }
         Harness {
             store,
             host,
             sink,
             session,
         }
+    }
+
+    #[test]
+    fn repository_mcps_wait_for_trust_and_a_changed_config_needs_new_approval() {
+        let root = std::env::temp_dir().join(format!("ataraxia-host-mcp-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".git")).expect("create git marker");
+        let config_path = root.join(".mcp.json");
+        std::fs::write(
+            &config_path,
+            r#"{"mcpServers":{"local":{"command":"/bin/first-server"}}}"#,
+        )
+        .expect("write initial MCP config");
+        let data_dir = root.join("app-data");
+        let h = harness_with_api_and_config(
+            Arc::new(FakeBackend::new(Duration::ZERO)),
+            None,
+            root.clone(),
+            Some(data_dir.clone()),
+            false,
+        );
+
+        let first = h
+            .host
+            .repository_mcp_approval(&h.session.id)
+            .expect("inspect MCP config")
+            .expect("require approval");
+        assert!(h.host.start_session(&h.session).is_err());
+
+        std::fs::write(
+            &config_path,
+            r#"{"mcpServers":{"local":{"command":"/bin/changed-server"}}}"#,
+        )
+        .expect("change MCP config");
+        let stale_trust = h
+            .host
+            .trust_repository_mcp(&h.session.id, &first.fingerprint)
+            .expect_err("reject approval for the old config");
+        assert_eq!(stale_trust.code, ErrorCode::Conflict);
+
+        let changed = h
+            .host
+            .repository_mcp_approval(&h.session.id)
+            .expect("inspect changed config")
+            .expect("ask for approval again");
+        h.host
+            .trust_repository_mcp(&h.session.id, &changed.fingerprint)
+            .expect("trust reviewed config");
+        assert!(
+            h.host
+                .repository_mcp_approval(&h.session.id)
+                .expect("verify trust")
+                .is_none()
+        );
+        h.host
+            .start_session(&h.session)
+            .expect("start trusted session");
+
+        let server_config = std::fs::read_to_string(
+            data_dir
+                .join("agent-config")
+                .join(format!("{}.mcp.json", h.session.id.0)),
+        )
+        .expect("read harness MCP config");
+        let server_config: serde_json::Value =
+            serde_json::from_str(&server_config).expect("parse harness MCP config");
+        assert_eq!(
+            server_config["mcpServers"]["local"]["command"],
+            "/bin/changed-server"
+        );
+
+        h.host.shutdown_all();
+        std::fs::remove_dir_all(root).expect("clean temporary repository");
     }
 
     fn pending_request(events: &[AgentEvent]) -> Option<PermissionRequestId> {
@@ -2841,7 +3287,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_goes_out_as_typed_and_the_introduction_waits_for_the_next_message() {
+    fn a_provider_command_is_rejected_before_the_harness_receives_it() {
         let mut h = harness();
         let prompts = Arc::new(Mutex::new(Vec::new()));
         h.host
@@ -2852,22 +3298,34 @@ mod tests {
         h.host.shutdown_all();
         h.host.start_session(&h.session).expect("restart");
 
-        h.host
+        let error = h
+            .host
             .prompt(&h.session.id, "/review the staged changes")
-            .expect("prompt");
-        h.sink
-            .wait_for("permission", |events| pending_request(events).is_some());
-        h.host.cancel(&h.session.id, None).expect("cancel");
-        h.sink
-            .wait_for("turn done", |events| turn_done(events).is_some());
+            .expect_err("provider commands belong to the harness, not Ataraxia");
+        assert!(error.message.contains("unknown Ataraxia command"));
         h.host
             .prompt(&h.session.id, "now the tests")
             .expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        let request_id = pending_request(&h.sink.snapshot()).expect("request");
+        h.host
+            .resolve_permission(
+                &h.session.id,
+                PermissionDecision {
+                    request_id,
+                    allow: false,
+                    answers: Default::default(),
+                },
+            )
+            .expect("resolve");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
 
         let sent = prompts.lock().clone();
-        assert_eq!(sent[0], "/review the staged changes");
-        assert!(sent[1].contains("Never generate"), "{}", sent[1]);
-        assert!(sent[1].ends_with("now the tests"));
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("Never generate"), "{}", sent[0]);
+        assert!(sent[0].ends_with("now the tests"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

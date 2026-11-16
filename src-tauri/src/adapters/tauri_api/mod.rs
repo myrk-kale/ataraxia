@@ -7,7 +7,7 @@ mod state;
 use base64::Engine as _;
 
 use crate::app::{self, WorkspaceService, WorkspaceSnapshot};
-use crate::domain::agent::{ProviderDescriptor, ProviderKind, SessionOptions};
+use crate::domain::agent::{McpProcessInfo, ProviderDescriptor, ProviderKind, SessionOptions};
 use crate::domain::ids::{PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId};
 use crate::domain::{
     ChatSession, ChatSnapshot, Error, ErrorCode, ImageUpload, MessageQueue, PermissionDecision,
@@ -355,6 +355,50 @@ pub fn agent_list_providers(state: tauri::State<'_, AppState>) -> Vec<ProviderDe
     state.agent_runtime().providers()
 }
 
+#[tauri::command]
+pub fn agent_list_mcp_processes(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<Vec<McpProcessInfo>, String> {
+    state.agent_runtime().mcp_processes().map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_stop_mcp_process(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    server_name: String,
+    pid: u32,
+    process_started_at: u64,
+) -> std::result::Result<(), String> {
+    state
+        .agent_runtime()
+        .stop_mcp_process(&session_id, &server_name, pid, process_started_at)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_repository_mcp_approval(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<Option<crate::domain::agent::RepositoryMcpApproval>, String> {
+    state
+        .agent_runtime()
+        .repository_mcp_approval(&session_id)
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub fn agent_trust_repository_mcp(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    fingerprint: String,
+) -> std::result::Result<(), String> {
+    state
+        .agent_runtime()
+        .trust_repository_mcp(&session_id, &fingerprint)
+        .map_err(map_error)
+}
+
 #[tauri::command(async)]
 pub fn agent_start_session(
     state: tauri::State<'_, AppState>,
@@ -411,16 +455,34 @@ pub fn agent_message_subagent(
         .map_err(map_error)
 }
 
-/// What `/` offers in a chat: the commands and skills of its harness.
+/// What `/` offers in a chat: Ataraxia's own command catalog.
 #[tauri::command(async)]
 pub fn agent_list_commands(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
 ) -> std::result::Result<Vec<crate::domain::agent::SlashCommand>, String> {
-    state
+    let session = state
+        .store
+        .get_session(session_id)
+        .map_err(map_error)?
+        .ok_or_else(|| "session not found".to_string())?;
+    let capabilities = state
         .agent_runtime()
-        .session_commands(&session_id)
-        .map_err(map_error)
+        .capabilities(session.provider)
+        .map_err(map_error)?;
+    let mut commands = crate::domain::agent::ataraxia_commands();
+    if let Some(compact) = commands
+        .iter_mut()
+        .find(|command| command.name == "compact")
+    {
+        if !capabilities.compact {
+            compact.description = "Unavailable for this session".into();
+        }
+        compact.hint = capabilities
+            .compact_instructions
+            .then(|| "[instructions]".to_string());
+    }
+    Ok(commands)
 }
 
 #[tauri::command(async)]

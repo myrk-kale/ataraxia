@@ -94,7 +94,7 @@ impl ProviderRegistry {
                     efforts: efforts(&["low", "medium", "high", "xhigh", "max"]),
                     custom_model: true,
                     dynamic: false,
-                    agents: true,
+                    agents: false,
                     subagent_messages: true,
                 },
             },

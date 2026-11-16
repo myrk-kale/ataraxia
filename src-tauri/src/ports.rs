@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::agent::{
-    CapabilityMatrix, ProviderDescriptor, ProviderKind, SessionOptions, SlashCommand,
+    CapabilityMatrix, McpProcessInfo, ProviderDescriptor, ProviderKind, SessionOptions,
+    SlashCommand,
 };
 use crate::domain::ids::{
     CheckpointId, PtySessionId, RepositoryId, SessionId, TurnId, WorkspaceId, WorktreeId,
@@ -46,6 +47,32 @@ pub trait AgentRuntime: Send + Sync {
     fn providers(&self) -> Vec<ProviderDescriptor>;
     fn capabilities(&self, provider: ProviderKind) -> Result<CapabilityMatrix>;
 
+    /// Local and remote MCP servers attached to live agent processes.
+    fn mcp_processes(&self) -> Result<Vec<McpProcessInfo>> {
+        Ok(Vec::new())
+    }
+    /// Stops a local MCP process only when it is still an identified descendant of its harness.
+    fn stop_mcp_process(
+        &self,
+        _session_id: &SessionId,
+        _server_name: &str,
+        _pid: u32,
+        _process_started_at: u64,
+    ) -> Result<()> {
+        unsupported("stop_mcp_process")
+    }
+
+    /// Repository MCP servers that have not been approved for this repository's current config.
+    fn repository_mcp_approval(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<Option<crate::domain::agent::RepositoryMcpApproval>> {
+        Ok(None)
+    }
+    /// Approves the exact repository MCP config the user reviewed.
+    fn trust_repository_mcp(&self, _session_id: &SessionId, _fingerprint: &str) -> Result<()> {
+        unsupported("trust_repository_mcp")
+    }
     fn start_session(&self, session: &ChatSession) -> Result<()>;
     fn prompt(&self, session_id: &SessionId, text: &str) -> Result<TurnId>;
     /// A message with pictures. Runtimes that cannot take them refuse.
