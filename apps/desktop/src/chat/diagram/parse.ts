@@ -1,8 +1,8 @@
 /**
  * A reader for the part of Mermaid flowcharts that can be drawn faithfully as text: nodes with
  * a label and a rough shape, and arrows between them, with or without a label. It is strict on
- * purpose. Anything it does not understand (a subgraph, `A & B`, a diagram that is not a
- * flowchart) makes it say so instead of leaving it out, so the caller can hand the source to
+ * purpose. Anything it does not understand (`A & B`, a link to a whole subgraph, a diagram that
+ * is not a flowchart) makes it say so instead of leaving it out, so the caller can hand the source to
  * the full Mermaid library and nothing is silently drawn wrong.
  */
 
@@ -14,6 +14,18 @@ export interface GraphNode {
   id: string;
   label: string;
   shape: Shape;
+  /** The subgraph it sits in (the innermost), or null at the top. */
+  group: string | null;
+}
+
+/** A `subgraph ... end` block: a titled frame round the nodes written inside it. */
+export interface GraphGroup {
+  id: string;
+  title: string;
+  /** The subgraph it is written inside, or null at the top. */
+  parent: string | null;
+  /** Its own `direction`, when it has one. */
+  direction: Direction | null;
 }
 
 export interface GraphEdge {
@@ -28,17 +40,19 @@ export interface Graph {
   direction: Direction;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  groups: GraphGroup[];
 }
 
 export type Parsed = { ok: true; graph: Graph } | { ok: false; reason: string };
 
-export const LIMITS = { source: 8000, nodes: 30, edges: 48, label: 40 } as const;
+export const LIMITS = { source: 16000, nodes: 60, edges: 100, label: 120, groups: 16, depth: 3 } as const;
 
 const fail = (reason: string): Parsed => ({ ok: false, reason });
 
 /** Lines that only style or annotate; the drawing does not use them. */
 const IGNORED = /^(style|classDef|class|linkStyle|click|accTitle|accDescr|title)\b/;
-const UNSUPPORTED_WORDS = /^(subgraph|end|direction)\b/;
+/** The statements that open, close and set up a subgraph. */
+const GROUP_WORDS = /^(subgraph|end|direction)\b/;
 
 /** Shape delimiters, longest opener first. */
 const SHAPES: { open: string; close: string; shape: Shape }[] = [
@@ -171,6 +185,27 @@ function readLink(cursor: Cursor): LinkRead {
   return "a link was expected";
 }
 
+const DIRECTIONS = /^(LR|RL|TD|TB|BT)$/;
+
+const asDirection = (word: string): Direction => (word === "TB" ? "TD" : (word as Direction));
+
+/** The id and the title of `subgraph id[Title]`, `subgraph id["Title"]` or `subgraph Title`. */
+function readSubgraph(rest: string): { id: string; title: string } | string {
+  if (rest === "") {
+    return "a subgraph needs a title";
+  }
+  const bracket = /^([A-Za-z0-9_]+)\s*\[([\s\S]*)\]$/.exec(rest);
+  const title = cleanLabel(bracket ? bracket[2]! : rest);
+  if (title === null) {
+    return "a subgraph title has markup";
+  }
+  if (title === "") {
+    return "a subgraph needs a title";
+  }
+  const shown = title.length > LIMITS.label ? `${title.slice(0, LIMITS.label - 1)}…` : title;
+  return { id: bracket ? bracket[1]! : title, title: shown };
+}
+
 export function parseFlowchart(source: string): Parsed {
   if (source.length > LIMITS.source) {
     return fail("the diagram is too long to draw as text");
@@ -188,27 +223,78 @@ export function parseFlowchart(source: string): Parsed {
   const nodes = new Map<string, GraphNode>();
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
+  const groups: GraphGroup[] = [];
+  // The subgraphs written around the statement being read, the innermost last.
+  const open: GraphGroup[] = [];
   const declare = (read: Exclude<NodeRead, string>) => {
+    const inside = open.at(-1)?.id ?? null;
     const known = nodes.get(read.id);
     if (!known) {
-      nodes.set(read.id, { id: read.id, label: read.label ?? read.id, shape: read.shape ?? "rect" });
-    } else if (read.label !== null) {
-      // A later mention that gives a label is the one that counts.
-      known.label = read.label;
-      known.shape = read.shape ?? known.shape;
+      nodes.set(read.id, { id: read.id, label: read.label ?? read.id, shape: read.shape ?? "rect", group: inside });
+    } else {
+      if (read.label !== null) {
+        // A later mention that gives a label is the one that counts.
+        known.label = read.label;
+        known.shape = read.shape ?? known.shape;
+      }
+      // A node belongs to the first subgraph it is written in; mentioning it again later, in
+      // a link outside, does not move it.
+      if (known.group === null && inside !== null) {
+        known.group = inside;
+      }
     }
+  };
+  /** Reads `subgraph`, `end` or `direction`; a string is a reason it failed. */
+  const readGroupWord = (statement: string): string | null => {
+    const word = GROUP_WORDS.exec(statement)![1]!;
+    const rest = statement.slice(word.length).trim();
+    if (word === "subgraph") {
+      const read = readSubgraph(rest);
+      if (typeof read === "string") {
+        return read;
+      }
+      if (groups.some((group) => group.id === read.id)) {
+        return "two subgraphs have the same name";
+      }
+      if (open.length >= LIMITS.depth) {
+        return "subgraphs are nested too deep to draw as text";
+      }
+      const group: GraphGroup = { id: read.id, title: read.title, parent: open.at(-1)?.id ?? null, direction: null };
+      groups.push(group);
+      open.push(group);
+      return null;
+    }
+    if (word === "end") {
+      if (rest !== "") {
+        return "'end' must stand alone";
+      }
+      return open.pop() ? null : "'end' closes no subgraph";
+    }
+    const inside = open.at(-1);
+    if (!inside) {
+      return "'direction' only applies inside a subgraph";
+    }
+    if (!DIRECTIONS.test(rest)) {
+      return "a direction was expected: LR, RL, TD or BT";
+    }
+    inside.direction = asDirection(rest);
+    return null;
   };
 
   for (const line of lines.slice(1)) {
-    if (UNSUPPORTED_WORDS.test(line)) {
-      return fail(`'${line.split(/\s/)[0]}' is not drawn as text`);
-    }
     if (IGNORED.test(line)) {
       continue;
     }
     for (const statement of line.split(";")) {
       const cursor: Cursor = { text: statement.trim(), at: 0 };
       if (cursor.text === "") {
+        continue;
+      }
+      if (GROUP_WORDS.test(cursor.text)) {
+        const reason = readGroupWord(cursor.text);
+        if (reason !== null) {
+          return fail(reason);
+        }
         continue;
       }
       let previous = readNode(cursor);
@@ -238,16 +324,33 @@ export function parseFlowchart(source: string): Parsed {
       }
     }
   }
+  if (open.length > 0) {
+    return fail("a subgraph is not closed");
+  }
   if (nodes.size === 0) {
     return fail("the diagram has no nodes");
   }
-  if (nodes.size > LIMITS.nodes || edges.length > LIMITS.edges) {
+  if (nodes.size > LIMITS.nodes || edges.length > LIMITS.edges || groups.length > LIMITS.groups) {
     return fail("the diagram is too large to draw as text");
+  }
+  // A link to a subgraph itself was read as a link to a node of that name.
+  if (groups.some((group) => nodes.has(group.id))) {
+    return fail("a link to a whole subgraph is not drawn");
+  }
+  // A subgraph with nothing in it (or only empty ones) has nothing to put the frame round.
+  const filled = new Set<string>();
+  for (const node of nodes.values()) {
+    for (let id = node.group; id !== null; id = groups.find((group) => group.id === id)!.parent) {
+      filled.add(id);
+    }
+  }
+  if (groups.some((group) => !filled.has(group.id))) {
+    return fail("an empty subgraph is not drawn");
   }
   for (const node of nodes.values()) {
     if (node.label.length > LIMITS.label) {
       node.label = `${node.label.slice(0, LIMITS.label - 1)}…`;
     }
   }
-  return { ok: true, graph: { direction, nodes: [...nodes.values()], edges } };
+  return { ok: true, graph: { direction, nodes: [...nodes.values()], edges, groups } };
 }

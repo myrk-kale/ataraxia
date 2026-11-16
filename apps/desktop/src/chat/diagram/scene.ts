@@ -42,6 +42,16 @@ export interface SceneEdge {
 }
 
 /** A diagram as a grid of characters, ready to be drawn and animated. */
+/** The frame of a subgraph. */
+export interface SceneFrame {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface Scene {
   width: number;
   height: number;
@@ -49,6 +59,10 @@ export interface Scene {
   direction: Direction;
   nodes: SceneNode[];
   edges: SceneEdge[];
+  /** The subgraphs, outermost first. */
+  frames: SceneFrame[];
+  /** The cells of the frames' edges and titles that no link runs over: drawn all the time. */
+  frameCells: number[];
   /** The nodes in the order a reader would follow the flow. */
   order: SceneNode[];
   /** What each cell shows when the diagram is at rest, and in which colour class. */
@@ -77,6 +91,11 @@ function describe(graph: Graph): string {
   );
   const alone = graph.nodes.filter((n) => !linked.has(n.id)).map((n) => n.label);
   const parts = [`Flowchart, ${WAYS[graph.direction]}.`];
+  for (const group of graph.groups) {
+    const inside = graph.nodes.filter((n) => n.group === group.id).map((n) => n.label);
+    const parent = group.parent ? ` (inside ${graph.groups.find((g) => g.id === group.parent)!.title})` : "";
+    parts.push(`Group ${group.title}${parent}${inside.length > 0 ? `: ${inside.join(", ")}` : ""}.`);
+  }
   if (links.length > 0) {
     parts.push(`${links.join("; ")}.`);
   }
@@ -111,6 +130,31 @@ export function rasterize(layout: Layout, graph: Graph, style: StyleName): Scene
     baseGlyph[at(x, y)] = glyph(char);
     baseCls[at(x, y)] = cls;
   };
+
+  // The frames of the subgraphs go down first, outermost first: the links run over them where
+  // they cross, and the boxes sit inside.
+  const frameCells: number[] = [];
+  const frames: SceneFrame[] = layout.frames.map(({ id, title, x, y, w, h }) => ({ id, title, x, y, w, h }));
+  for (const { x, y, w, h, title } of frames) {
+    const right = x + w - 1;
+    const bottom = y + h - 1;
+    for (let col = x; col <= right; col += 1) {
+      put(col, y, col === x ? look.rtl : col === right ? look.rtr : look.h, K.dim);
+      put(col, bottom, col === x ? look.rbl : col === right ? look.rbr : look.h, K.dim);
+    }
+    for (let row = y + 1; row < bottom; row += 1) {
+      put(x, row, look.v, K.dim);
+      put(right, row, look.v, K.dim);
+    }
+    // The title sits in the top edge, between two spaces.
+    [...` ${title} `].forEach((char, i) => put(x + 2 + i, y, char, char === " " ? K.none : K.box));
+    for (let col = x; col <= right; col += 1) {
+      frameCells.push(at(col, y), at(col, bottom));
+    }
+    for (let row = y + 1; row < bottom; row += 1) {
+      frameCells.push(at(x, row), at(right, row));
+    }
+  }
 
   // The lines first, as the directions each cell is joined in, so a meeting of lines gets
   // the right corner or tee.
@@ -183,11 +227,14 @@ export function rasterize(layout: Layout, graph: Graph, style: StyleName): Scene
     for (let row = y + h - 2; row > y; row -= 1) {
       border.push(at(x, row));
     }
-    const letters = [...node.label];
-    const start = x + Math.max(2, Math.floor((w - letters.length) / 2));
-    const labelCells = letters.map((char, i) => {
-      put(start + i, y + 1, char, K.text);
-      return at(start + i, y + 1);
+    // Each line is centred in the box; the cells are kept in reading order for the animations.
+    const labelCells = node.lines.flatMap((line, row) => {
+      const letters = [...line];
+      const start = x + Math.max(2, Math.floor((w - letters.length) / 2));
+      return letters.map((char, i) => {
+        put(start + i, y + 1 + row, char, K.text);
+        return at(start + i, y + 1 + row);
+      });
     });
     const all = [...border, ...labelCells];
     return { id: node.id, label: node.label, rank: node.rank, x, y, w, h, border, labelCells, all };
@@ -209,6 +256,9 @@ export function rasterize(layout: Layout, graph: Graph, style: StyleName): Scene
     direction: layout.direction,
     nodes,
     edges,
+    frames,
+    // Where a link crosses a frame, the cell belongs to the link, which shows it in its own time.
+    frameCells: frameCells.filter((cell) => !joined[cell]),
     order,
     baseGlyph,
     baseCls,
@@ -223,7 +273,11 @@ export function buildScene(source: string, style: StyleName): SceneResult {
     return parsed;
   }
   const { graph } = parsed;
-  if (!graph.nodes.every((n) => allNarrow(n.label)) || !graph.edges.every((e) => !e.label || allNarrow(e.label))) {
+  if (
+    !graph.nodes.every((n) => allNarrow(n.label)) ||
+    !graph.edges.every((e) => !e.label || allNarrow(e.label)) ||
+    !graph.groups.every((g) => allNarrow(g.title))
+  ) {
     return { ok: false, reason: "a label has characters wider than a cell" };
   }
   const laid = layoutGraph(graph);

@@ -1,11 +1,11 @@
-import type { Direction, Graph, GraphNode } from "./parse";
+import type { Direction, Graph, GraphEdge, GraphNode } from "./parse";
 
 /** A box is always three rows: its top, its label, its bottom. */
 export const NODE_H = 3;
 /** Empty cells kept round the drawing, where an edge may run to get round a node. */
 export const MARGIN = 2;
 export const MAX_COLS = 260;
-export const MAX_ROWS = 120;
+export const MAX_ROWS = 420;
 
 const MIN_NODE_W = 8;
 const RANK_GAP_ROWS = 4;
@@ -13,14 +13,37 @@ const ROW_GAP = 3;
 const NODE_GAP_COLS = 4;
 const MIN_RANK_GAP_COLS = 8;
 const MAX_RANK_GAP_COLS = 30;
-const MAX_RANKS = 14;
+const MAX_RANKS = 40;
+/** Cells between a subgraph's frame and what it holds: room for a link to run along inside it. */
+const FRAME_PAD_X = 3;
+const FRAME_PAD_TOP = 3;
+const FRAME_PAD_BOTTOM = 2;
+/** A frame's top edge holds its title: a corner, a dash, a space, the title, a space. */
+const FRAME_TITLE_ROOM = 6;
+
+/** The longest a line of a label may be, tried in turn until the drawing fits in `MAX_COLS`. */
+const WRAP_STEPS = [40, 30, 22] as const;
 
 export interface PlacedNode extends GraphNode {
+  /** The label cut into the lines of the box, wider than none of them. */
+  lines: string[];
   rank: number;
   x: number;
   y: number;
   w: number;
   h: number;
+}
+
+/** The frame of a subgraph, round everything written inside it. */
+export interface PlacedFrame {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 0 for a subgraph at the top, 1 for one inside it. */
+  depth: number;
 }
 
 export type Cell = readonly [number, number];
@@ -41,6 +64,8 @@ export interface Layout {
   width: number;
   height: number;
   nodes: PlacedNode[];
+  /** Outer frames first. */
+  frames: PlacedFrame[];
   edges: RoutedEdge[];
 }
 
@@ -215,12 +240,22 @@ const OVERLAP_COST = 14;
 const SHARED_COST = 0.2;
 const CROSS_COST = 2;
 const HUG_COST = 1;
-const MAX_EXPANSIONS = 200_000;
+/** Crossing a frame the link has no business in (neither end is inside it) is what to avoid. */
+const FRAME_COST = 9;
+/** Running along a frame's own edge hides it, so it is kept for crossing at right angles. */
+const BORDER_COST = 3;
+const MAX_EXPANSIONS = 300_000;
 
 /** The two nodes a link joins, by position in the node list. */
 interface Link {
   from: number;
   to: number;
+}
+
+/** The cells of a frame's top edge taken by its title, the spaces round it and a dash each side. */
+export function titleColumns(frame: PlacedFrame): number[] {
+  const length = [...frame.title].length;
+  return Array.from({ length: length + 4 }, (_, i) => frame.x + 1 + i);
 }
 
 /** Finds orthogonal routes between nodes on the grid that go round every box. */
@@ -232,6 +267,9 @@ class Router {
   private readonly verticalFrom: Int16Array;
   private readonly verticalTo: Int16Array;
   private readonly hugging: Uint8Array;
+  /** The innermost frame covering a cell (-1 for none), and whether the cell is on its edge. */
+  private readonly frameAt: Int16Array;
+  private readonly onBorder: Uint8Array;
   private readonly dist: Float32Array;
   private readonly from: Int32Array;
 
@@ -239,9 +277,12 @@ class Router {
     private readonly width: number,
     private readonly height: number,
     nodes: PlacedNode[],
+    frames: PlacedFrame[],
   ) {
     const cells = width * height;
     this.blocked = new Uint8Array(cells);
+    this.frameAt = new Int16Array(cells).fill(-1);
+    this.onBorder = new Uint8Array(cells);
     this.horizontalFrom = new Int16Array(cells).fill(-1);
     this.horizontalTo = new Int16Array(cells).fill(-1);
     this.verticalFrom = new Int16Array(cells).fill(-1);
@@ -256,6 +297,19 @@ class Router {
         }
       }
     }
+    // Outer frames come first, so the innermost one is what is left in a cell.
+    frames.forEach((frame, index) => {
+      for (let y = frame.y; y < frame.y + frame.h; y += 1) {
+        for (let x = frame.x; x < frame.x + frame.w; x += 1) {
+          this.frameAt[y * width + x] = index;
+          const edge = y === frame.y || y === frame.y + frame.h - 1 || x === frame.x || x === frame.x + frame.w - 1;
+          this.onBorder[y * width + x] = edge ? 1 : 0;
+        }
+      }
+      for (const x of titleColumns(frame)) {
+        this.blocked[frame.y * width + x] = 1;
+      }
+    });
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         if (this.blocked[y * width + x]) {
@@ -264,7 +318,9 @@ class Router {
         const touches = STEP.some(([dx, dy]) => {
           const nx = x + dx;
           const ny = y + dy;
-          return nx >= 0 && ny >= 0 && nx < width && ny < height && this.blocked[ny * width + nx] === 1;
+          const near = ny * width + nx;
+          // Hugging a box, or the edge of a frame, hides the line against it.
+          return nx >= 0 && ny >= 0 && nx < width && ny < height && (this.blocked[near] === 1 || this.onBorder[near] === 1);
         });
         this.hugging[y * width + x] = touches ? 1 : 0;
       }
@@ -272,7 +328,7 @@ class Router {
   }
 
   /** The route from `start` (going `out`) to `end` (arriving going `into`), or null. */
-  route(start: Cell, out: number, end: Cell, into: number, link: Link): Cell[] | null {
+  route(start: Cell, out: number, end: Cell, into: number, link: Link, inside: ReadonlySet<number>): Cell[] | null {
     const { width, height } = this;
     this.dist.fill(Infinity);
     this.from.fill(-1);
@@ -308,8 +364,15 @@ class Router {
           continue;
         }
         const at = ny * width + nx;
+        const frame = this.frameAt[at]!;
         const cost =
-          base + 1 + (next === dir ? 0 : TURN_COST) + this.crowding(at, next & 1, link) + this.hugging[at]! * HUG_COST;
+          base +
+          1 +
+          (next === dir ? 0 : TURN_COST) +
+          this.crowding(at, next & 1, link) +
+          this.hugging[at]! * HUG_COST +
+          (frame !== -1 && !inside.has(frame) ? FRAME_COST : 0) +
+          this.onBorder[at]! * BORDER_COST;
         const key = at * 4 + next;
         if (cost < this.dist[key]!) {
           this.dist[key] = cost;
@@ -430,7 +493,7 @@ function runsOf(path: Cell[]): { horizontal: Run[]; vertical: Run[] } {
 }
 
 /** Writes a label on its link: in the line itself if a stretch is long enough, else beside it. */
-function placeLabels(edges: RoutedEdge[], nodes: PlacedNode[], width: number, height: number) {
+function placeLabels(edges: RoutedEdge[], nodes: PlacedNode[], frames: PlacedFrame[], width: number, height: number) {
   const text = new Uint8Array(width * height);
   const nodeCells = new Uint8Array(width * height);
   for (const node of nodes) {
@@ -438,6 +501,17 @@ function placeLabels(edges: RoutedEdge[], nodes: PlacedNode[], width: number, he
       for (let x = node.x; x < node.x + node.w; x += 1) {
         nodeCells[y * width + x] = 1;
       }
+    }
+  }
+  // A label never sits on the edge of a frame: it would read as part of it.
+  for (const frame of frames) {
+    for (let x = frame.x; x < frame.x + frame.w; x += 1) {
+      nodeCells[frame.y * width + x] = 1;
+      nodeCells[(frame.y + frame.h - 1) * width + x] = 1;
+    }
+    for (let y = frame.y; y < frame.y + frame.h; y += 1) {
+      nodeCells[y * width + frame.x] = 1;
+      nodeCells[y * width + frame.x + frame.w - 1] = 1;
     }
   }
   const free = (x: number, y: number, length: number) => {
@@ -504,26 +578,84 @@ function placeLabels(edges: RoutedEdge[], nodes: PlacedNode[], width: number, he
   }
 }
 
-export function layoutGraph(graph: Graph): LayoutResult {
-  const back = findBackEdges(graph);
-  const rank = rankNodes(graph, back);
-  const groups = orderRanks(graph, rank, back);
-  const horizontal = graph.direction === "LR" || graph.direction === "RL";
-  const reversed = graph.direction === "RL" || graph.direction === "BT";
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  const placed = new Map<string, PlacedNode>();
-  for (const node of graph.nodes) {
-    placed.set(node.id, {
-      ...node,
-      rank: rank.get(node.id)!,
-      x: 0,
-      y: 0,
-      w: Math.max(MIN_NODE_W, [...node.label].length + 4),
-      h: NODE_H,
-    });
+/** Cuts a label at spaces into lines of at most `max` characters; a longer word is broken. */
+export function wrapLabel(label: string, max: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of label.split(" ")) {
+    let rest = [...word];
+    while (rest.length > max) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      lines.push(rest.slice(0, max).join(""));
+      rest = rest.slice(max);
+    }
+    const piece = rest.join("");
+    if (!line) {
+      line = piece;
+    } else if ([...line].length + 1 + rest.length <= max) {
+      line = `${line} ${piece}`;
+    } else {
+      lines.push(line);
+      line = piece;
+    }
   }
+  if (line || lines.length === 0) {
+    lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * Lays the graph out. A label stays on one line while it can; when the drawing would then be
+ * wider than the limit, the labels are cut into shorter lines (taller boxes) and it is tried
+ * again, so a diagram with long labels is drawn as text and not handed to the library.
+ */
+export function layoutGraph(graph: Graph): LayoutResult {
+  let result: LayoutResult = { ok: false, reason: "the diagram is too big to draw as text" };
+  for (const wrap of WRAP_STEPS) {
+    result = layoutWrapped(graph, wrap);
+    if (result.ok) {
+      return result;
+    }
+  }
+  return result;
+}
+
+/** Something placed at one level of the drawing: a box, or the frame of a subgraph with what it holds. */
+interface Item {
+  id: string;
+  w: number;
+  h: number;
+}
+
+interface Arranged {
+  width: number;
+  height: number;
+  at: Map<string, { x: number; y: number }>;
+}
+
+/**
+ * Puts `items` in layers along `direction`, joined by `links`: each layer is a column (or a row),
+ * its items ordered to keep the links short. Positions start at the corner, with no margin.
+ */
+function arrange(items: Item[], links: GraphEdge[], direction: Direction): Arranged {
+  const pseudo: Graph = {
+    direction,
+    nodes: items.map((item) => ({ id: item.id, label: item.id, shape: "rect", group: null })),
+    edges: links,
+    groups: [],
+  };
+  const size = new Map(items.map((item) => [item.id, item]));
+  const back = findBackEdges(pseudo);
+  const rank = rankNodes(pseudo, back);
+  const groups = orderRanks(pseudo, rank, back);
+  const horizontal = direction === "LR" || direction === "RL";
   const ranks = groups.length;
-  const rankSize = groups.map((group) => Math.max(...group.map((id) => (horizontal ? placed.get(id)!.w : NODE_H))));
+  const rankSize = groups.map((group) => Math.max(...group.map((id) => (horizontal ? size.get(id)!.w : size.get(id)!.h))));
+  const at = new Map<string, { x: number; y: number }>();
   let width: number;
   let height: number;
 
@@ -531,75 +663,233 @@ export function layoutGraph(graph: Graph): LayoutResult {
     const gaps = Array.from({ length: Math.max(0, ranks - 1) }, (_, r) => {
       const widest = Math.max(
         0,
-        ...graph.edges
+        ...links
           .filter((e) => rank.get(e.from)! === r && rank.get(e.to)! > r && e.label)
           .map((e) => [...e.label!].length + 6),
       );
       return Math.min(MAX_RANK_GAP_COLS, Math.max(MIN_RANK_GAP_COLS, widest));
     });
     const left: number[] = [];
-    let at = MARGIN;
-    rankSize.forEach((size, r) => {
-      left.push(at);
-      at += size + (gaps[r] ?? 0);
+    let across = 0;
+    rankSize.forEach((room, r) => {
+      left.push(across);
+      across += room + (gaps[r] ?? 0);
     });
-    width = at + MARGIN;
-    const pitch = NODE_H + ROW_GAP;
-    const most = Math.max(...groups.map((g) => g.length));
-    height = MARGIN * 2 + (most - 1) * pitch + NODE_H;
+    width = across;
+    const stacked = groups.map((group) => group.reduce((sum, id) => sum + size.get(id)!.h, 0) + (group.length - 1) * ROW_GAP);
+    height = Math.max(...stacked);
     groups.forEach((group, r) => {
-      const offset = Math.floor(((most - group.length) * pitch) / 2);
-      group.forEach((id, i) => {
-        const node = placed.get(id)!;
-        node.x = left[r]! + Math.floor((rankSize[r]! - node.w) / 2);
-        node.y = MARGIN + offset + i * pitch;
-      });
+      let y = Math.floor((height - stacked[r]!) / 2);
+      for (const id of group) {
+        const item = size.get(id)!;
+        at.set(id, { x: left[r]! + Math.floor((rankSize[r]! - item.w) / 2), y });
+        y += item.h + ROW_GAP;
+      }
     });
   } else {
-    const pitch = NODE_H + RANK_GAP_ROWS;
-    const widths = groups.map((group) => group.reduce((sum, id) => sum + placed.get(id)!.w, 0) + (group.length - 1) * NODE_GAP_COLS);
-    const widest = Math.max(...widths);
-    width = MARGIN * 2 + widest;
-    height = MARGIN * 2 + (ranks - 1) * pitch + NODE_H;
+    const widths = groups.map((group) => group.reduce((sum, id) => sum + size.get(id)!.w, 0) + (group.length - 1) * NODE_GAP_COLS);
+    width = Math.max(...widths);
+    const top: number[] = [];
+    let down = 0;
+    rankSize.forEach((room) => {
+      top.push(down);
+      down += room + RANK_GAP_ROWS;
+    });
+    height = down - RANK_GAP_ROWS;
     groups.forEach((group, r) => {
-      let x = MARGIN + Math.floor((widest - widths[r]!) / 2);
+      let x = Math.floor((width - widths[r]!) / 2);
       for (const id of group) {
-        const node = placed.get(id)!;
-        node.x = x;
-        node.y = MARGIN + r * pitch;
-        x += node.w + NODE_GAP_COLS;
+        const item = size.get(id)!;
+        at.set(id, { x, y: top[r]! + Math.floor((rankSize[r]! - item.h) / 2) });
+        x += item.w + NODE_GAP_COLS;
       }
     });
   }
+  if (direction === "RL" || direction === "BT") {
+    for (const [id, place] of at) {
+      const item = size.get(id)!;
+      if (direction === "RL") {
+        place.x = width - place.x - item.w;
+      } else {
+        place.y = height - place.y - item.h;
+      }
+    }
+  }
+  return { width, height, at };
+}
+
+function layoutWrapped(graph: Graph, wrap: number): LayoutResult {
+  const placed = new Map<string, PlacedNode>();
+  // How far along the flow a node is, whatever subgraph it sits in: what the animations time by.
+  const flowRank = rankNodes(graph, findBackEdges(graph));
+  for (const node of graph.nodes) {
+    const lines = wrapLabel(node.label, wrap);
+    placed.set(node.id, {
+      ...node,
+      lines,
+      rank: flowRank.get(node.id)!,
+      x: 0,
+      y: 0,
+      w: Math.max(MIN_NODE_W, Math.max(...lines.map((line) => [...line].length)) + 4),
+      h: lines.length + 2,
+    });
+  }
+
+  // Where each node sits in the subgraphs, outermost first; and its own id at the end.
+  const groupOf = new Map(graph.groups.map((group) => [group.id, group]));
+  const chain = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    const outer: string[] = [];
+    for (let id = node.group; id !== null; id = groupOf.get(id)!.parent) {
+      outer.unshift(id);
+    }
+    chain.set(node.id, [...outer, node.id]);
+  }
+
+  // A link crossing a subgraph's edge makes it share its parent's direction: Mermaid only
+  // honours a subgraph's own `direction` when nothing outside is linked to what is inside.
+  const crossed = new Set<string>();
+  for (const edge of graph.edges) {
+    const from = new Set(chain.get(edge.from)!.slice(0, -1));
+    const to = new Set(chain.get(edge.to)!.slice(0, -1));
+    for (const id of from) {
+      if (!to.has(id)) {
+        crossed.add(id);
+      }
+    }
+    for (const id of to) {
+      if (!from.has(id)) {
+        crossed.add(id);
+      }
+    }
+  }
+  const flow = new Map<string | null, Direction>([[null, graph.direction]]);
+  const depthOf = new Map<string, number>();
+  for (const group of graph.groups) {
+    let depth = 0;
+    for (let id = group.parent; id !== null; id = groupOf.get(id)!.parent) {
+      depth += 1;
+    }
+    depthOf.set(group.id, depth);
+  }
+  [...graph.groups]
+    .sort((a, b) => depthOf.get(a.id)! - depthOf.get(b.id)!)
+    .forEach((group) => {
+      flow.set(group.id, group.direction && !crossed.has(group.id) ? group.direction : flow.get(group.parent)!);
+    });
+
+  // Each link belongs to the level where its two ends are first told apart: the links inside
+  // a subgraph are laid out with it, the ones between subgraphs with their parent.
+  const levels = new Map<string | null, GraphEdge[]>();
+  const levelOf: (string | null)[] = [];
+  for (const edge of graph.edges) {
+    const a = chain.get(edge.from)!;
+    const b = chain.get(edge.to)!;
+    let d = 0;
+    while (d < a.length - 1 && d < b.length - 1 && a[d] === b[d]) {
+      d += 1;
+    }
+    const parent = d === 0 ? null : a[d - 1]!;
+    levelOf.push(parent);
+    const links = levels.get(parent) ?? [];
+    links.push({ ...edge, from: a[d]!, to: b[d]! });
+    levels.set(parent, links);
+  }
+
+  const children = (parent: string | null): Item[] => {
+    const items: Item[] = [];
+    for (const node of graph.nodes) {
+      if (node.group === parent) {
+        items.push({ id: node.id, w: placed.get(node.id)!.w, h: placed.get(node.id)!.h });
+      }
+    }
+    for (const group of graph.groups) {
+      if (group.parent === parent) {
+        const box = frameOf(group.id);
+        items.push({ id: group.id, w: box.w, h: box.h });
+      }
+    }
+    return items;
+  };
+  interface Box extends Item {
+    inner: Arranged;
+    offsetX: number;
+    offsetY: number;
+  }
+  const boxes = new Map<string, Box>();
+  const frameOf = (id: string): Box => {
+    const known = boxes.get(id);
+    if (known) {
+      return known;
+    }
+    const inner = arrange(children(id), levels.get(id) ?? [], flow.get(id)!);
+    const title = [...groupOf.get(id)!.title].length;
+    const w = Math.max(inner.width + FRAME_PAD_X * 2, title + FRAME_TITLE_ROOM);
+    const box = {
+      id,
+      w,
+      h: inner.height + FRAME_PAD_TOP + FRAME_PAD_BOTTOM,
+      inner,
+      offsetX: Math.floor((w - inner.width) / 2),
+      offsetY: FRAME_PAD_TOP,
+    };
+    boxes.set(id, box);
+    return box;
+  };
+
+  const top = arrange(children(null), levels.get(null) ?? [], flow.get(null)!);
+  const width = top.width + MARGIN * 2;
+  const height = top.height + MARGIN * 2;
   if (width > MAX_COLS || height > MAX_ROWS) {
     return { ok: false, reason: "the diagram is too big to draw as text" };
   }
-  if (reversed) {
-    for (const node of placed.values()) {
-      if (horizontal) {
-        node.x = width - node.x - node.w;
-      } else {
-        node.y = height - node.y - node.h;
+
+  // Put everything where it goes, now that each level knows its size.
+  const frames: PlacedFrame[] = [];
+  const settle = (level: Arranged, ox: number, oy: number, depth: number) => {
+    for (const [id, place] of level.at) {
+      const node = placed.get(id);
+      if (node) {
+        node.x = ox + place.x;
+        node.y = oy + place.y;
+        continue;
       }
+      const box = boxes.get(id)!;
+      frames.push({
+        id,
+        title: groupOf.get(id)!.title,
+        x: ox + place.x,
+        y: oy + place.y,
+        w: box.w,
+        h: box.h,
+        depth,
+      });
+      settle(box.inner, ox + place.x + box.offsetX, oy + place.y + box.offsetY, depth + 1);
     }
-  }
+  };
+  settle(top, MARGIN, MARGIN, 0);
+  frames.sort((a, b) => a.depth - b.depth);
 
   const nodes = graph.nodes.map((n) => placed.get(n.id)!);
-  const router = new Router(width, height, nodes);
+  const frameIndex = new Map(frames.map((frame, at) => [frame.id, at]));
+  const router = new Router(width, height, nodes, frames);
   const edges: RoutedEdge[] = [];
-  for (const edge of graph.edges) {
+  graph.edges.forEach((edge, at) => {
     const from = placed.get(edge.from)!;
     const to = placed.get(edge.to)!;
-    if (!byId.has(edge.from) || !byId.has(edge.to)) {
-      continue;
-    }
-    const port = ports(graph.direction, from, to);
+    const direction = flow.get(levelOf[at]!)!;
+    const port = ports(direction, from, to);
     const link = { from: nodes.indexOf(from), to: nodes.indexOf(to) };
+    // The frames a link may cross freely: the ones either end sits in.
+    const inside = new Set<number>(
+      [...chain.get(edge.from)!.slice(0, -1), ...chain.get(edge.to)!.slice(0, -1)].map((id) => frameIndex.get(id)!),
+    );
     const path =
-      router.route(port.start, port.out, port.end, port.into, link) ?? straightRoute(port.start, port.end, horizontal);
+      router.route(port.start, port.out, port.end, port.into, link, inside) ??
+      straightRoute(port.start, port.end, direction === "LR" || direction === "RL");
     router.claim(path, link);
     edges.push({ from: edge.from, to: edge.to, label: edge.label, arrow: edge.arrow, path, labelAt: null });
-  }
-  placeLabels(edges, nodes, width, height);
-  return { ok: true, layout: { direction: graph.direction, width, height, nodes, edges } };
+  });
+  placeLabels(edges, nodes, frames, width, height);
+  return { ok: true, layout: { direction: graph.direction, width, height, nodes, frames, edges } };
 }
