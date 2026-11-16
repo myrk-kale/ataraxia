@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { STYLES, STYLE_NAMES } from "./glyphs";
 import { K } from "./palette";
+import { Frame, renderEffect } from "./effects";
 import { buildScene, cachedScene, type Scene } from "./scene";
 
 function sceneOf(source: string, style: (typeof STYLE_NAMES)[number] = "unicode"): Scene {
@@ -99,7 +100,7 @@ describe("buildScene", () => {
   });
 
   it("refuses what it cannot draw, saying why", () => {
-    for (const source of ["sequenceDiagram\nA->>B: hi", "flowchart LR\nsubgraph x\nA-->B\nend", "flowchart LR\nA[日本語] --> B"]) {
+    for (const source of ["sequenceDiagram\nA->>B: hi", "flowchart LR\nsubgraph x\nA-->B", "flowchart LR\nA[日本語] --> B"]) {
       const built = buildScene(source, "unicode");
       expect(built.ok).toBe(false);
     }
@@ -121,3 +122,146 @@ describe("cachedScene", () => {
     expect(cachedScene("flowchart LR\nA0 --> B", "rounded")).not.toBe(first);
   });
 });
+
+describe("charts that used to go to the library", () => {
+  it("draws the scheduler chart as text, with every label whole", () => {
+    const source = SCHEDULER;
+    const scene = sceneOf(source);
+    const flat = scene.text.replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ");
+    for (const label of ["ApiService.add_schedule", "schedule_cancel"]) {
+      expect(scene.text).toContain(label.slice(0, 12));
+    }
+    expect(flat).toContain("Faixa Scheduled");
+    expect(flat).toContain("para cancelar");
+    expect(scene.nodes.length).toBe(28);
+    expect(scene.text).not.toContain("…");
+  });
+
+  it("still draws a short chain the way it always did, one row of text per box", () => {
+    const scene = sceneOf(
+      'flowchart TD\nU["Contexto, pergunta e opções"] --> J["AnyJev prepara as avaliações"]\nJ --> P["Pythia calcula os escores das opções"]',
+    );
+    expect(scene.nodes.every((node) => node.h === 3)).toBe(true);
+  });
+});
+
+const SCHEDULER = `flowchart TD
+    AG["Agente do chat: Claude, Codex ou OpenCode"] -->|curl POST /v1/schedules| API["ApiService.add_schedule"]
+    CL["Claude Code: CLAUDE_CODE_DISABLE_CRON=1"] -.->|cron nativo desligado, só o do app vale| AG
+
+    API --> VA["Valida prompt e in_minutes ou at, mais every_minutes opcional"]
+    VA --> SA["Engine.schedule_add"]
+    SA --> VE["Valida: é um chat, de 1 min a 7 dias, no máximo 20 por chat"]
+    VE --> DB["Grava em preferências: schedules:id-do-chat e o índice schedules:chats"]
+    DB -->|InsightEvent Schedules| UH["useSchedules"]
+    UH --> UI1["Faixa Scheduled: texto, próximo horário e X para cancelar"]
+    UI1 -->|schedule_cancel| CA["Engine.schedule_cancel"]
+    CA --> DB
+    DB -->|201 com id e next_run| AG
+
+    CK["Relógio start_scheduler: confere a cada 5 s"] --> TK["schedules_tick: percorre os chats do índice"]
+    DB -.->|chats com agendamentos| TK
+    TK --> CH{"O chat ainda existe?"}
+    CH -->|não| DEL["Apaga os agendamentos do chat"]
+    CH -->|sim| LV{"Agente rodando? Ready, Working ou WaitingPermission"}
+    LV -->|não| WT["Espera: dispara uma vez quando o agente voltar, sem repor as perdidas"]
+    LV -->|sim| DU{"Algum next_run já venceu?"}
+    DU -->|não| CK
+    DU -->|sim| EX{"Recorrente e expirada, passou de 7 dias?"}
+    EX -->|sim| DROP["Descarta sem rodar"]
+    EX -->|não| UP["Avança o agendamento: recorrente vira agora + intervalo, avulso é removido"]
+    UP --> SV["Salva e emite Schedules, a faixa se atualiza"]
+    SV --> QH{"Mensagem igual já está na fila?"}
+    QH -->|sim| SK["Pula, para não empilhar"]
+    QH -->|não| EQ["enqueue: texto Scheduled task id, mais o prompt"]
+
+    EQ --> FQ["Fila de mensagens do chat"]
+    FQ -->|agente livre, uma por vez| DP["dispatch: runtime.prompt"]
+    FQ -.->|turno parado: fila pausada, herda a pausa| FQ
+    DP --> AT["Agente executa o turno e age, por exemplo conferir o release"]
+    AT --> TR["Transcript: linha Scheduled, não um balão do usuário"]
+    AT -->|ainda não terminou| AG
+`;
+
+describe("subgraphs", () => {
+  const SOURCE = "flowchart TD\nX --> A\nsubgraph s[Group]\nA --> B\nend";
+
+  it("draws a titled frame round what is inside it", () => {
+    const scene = sceneOf(SOURCE);
+    expect(scene.frames.map((f) => f.title)).toEqual(["Group"]);
+    expect(scene.text).toContain("╭─ Group");
+    expect(scene.text).toContain("╰");
+    expect(scene.text).toContain("╯");
+    // The title is in the frame's top edge, not in a box of its own.
+    expect(scene.nodes.map((n) => n.id)).toEqual(["X", "A", "B"]);
+  });
+
+  it("draws it with plain characters too", () => {
+    expect(sceneOf(SOURCE, "ascii").text).toContain("Group");
+  });
+
+  it("lets a link run over the frame where it crosses, and leaves that cell to the link", () => {
+    const scene = sceneOf(SOURCE);
+    const link = new Set(scene.edges.flatMap((e) => e.cells));
+    expect(scene.frameCells.length).toBeGreaterThan(0);
+    expect(scene.frameCells.every((cell) => !link.has(cell))).toBe(true);
+    const crossing = scene.edges.flatMap((e) => e.cells).filter((cell) => {
+      const x = cell % scene.width;
+      const y = Math.floor(cell / scene.width);
+      const f = scene.frames[0]!;
+      return y === f.y && x > f.x && x < f.x + f.w - 1;
+    });
+    expect(crossing.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the frame on screen while the animations draw what is inside it", () => {
+    const scene = sceneOf(SOURCE);
+    for (const effect of ["reveal", "typing"] as const) {
+      const frame = new Frame(scene.width * scene.height);
+      renderEffect(effect, scene, 0.001, frame);
+      for (const cell of scene.frameCells) {
+        expect(frame.glyph[cell], `${effect} hides a cell of the frame`).toBe(scene.baseGlyph[cell]);
+      }
+    }
+  });
+
+  it("tells a screen reader which nodes are in which group", () => {
+    expect(sceneOf(SOURCE).alt).toContain("Group Group: A, B.");
+    expect(sceneOf("flowchart TD\nsubgraph o[Outer]\nsubgraph i[Inner]\nA\nend\nend").alt).toContain(
+      "Group Inner (inside Outer): A.",
+    );
+  });
+
+  it("draws the scheduler chart written with subgraphs as text", () => {
+    const scene = sceneOf(SUBGRAPHS);
+    expect(scene.frames.map((f) => f.title)).toEqual(["Agente do chat", "API local", "Relógio, a cada 5 s", "Fila de mensagens"]);
+    expect(scene.text).toContain("schedule_add");
+  });
+
+  it("still refuses a group title it cannot draw in one cell per character", () => {
+    expect(buildScene("flowchart TD\nsubgraph s[日本語]\nA\nend", "unicode").ok).toBe(false);
+  });
+});
+
+const SUBGRAPHS = `flowchart TD
+    subgraph Agente["Agente do chat"]
+        AG["Claude, Codex ou OpenCode"]
+    end
+    subgraph API["API local"]
+        direction LR
+        P["POST /v1/schedules"] --> V["Valida os campos"] --> S["schedule_add"] --> DB["Grava em preferências"]
+    end
+    subgraph Relogio["Relógio, a cada 5 s"]
+        TK["schedules_tick"] --> LV{"Agente rodando?"}
+        LV -->|sim| DU{"Venceu?"}
+        LV -->|não| WT["Espera"]
+        DU -->|sim| EQ["enqueue"]
+    end
+    subgraph Fila["Fila de mensagens"]
+        FQ["Fila do chat"] --> DP["dispatch"]
+    end
+    AG -->|curl| P
+    DB -.-> TK
+    EQ --> FQ
+    DP --> AG
+`;

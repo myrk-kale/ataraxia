@@ -65,6 +65,8 @@ pub fn run() {
             tauri_api::profile_check,
             tauri_api::agent_enqueue,
             tauri_api::agent_queue_remove,
+            tauri_api::schedule_list,
+            tauri_api::schedule_cancel,
             tauri_api::agent_queue_send_now,
             tauri_api::agent_cancel,
             tauri_api::agent_resolve_permission,

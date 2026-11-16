@@ -108,7 +108,6 @@ describe("parseFlowchart", () => {
   });
 
   it("refuses what it cannot draw faithfully instead of dropping it", () => {
-    expect(reason("flowchart LR\nsubgraph one\nA --> B\nend")).toMatch(/subgraph/);
     expect(reason("flowchart LR\nA & B --> C")).toMatch(/&|node/);
     expect(reason("flowchart LR\nA <--> B")).toBeTruthy();
     expect(reason("flowchart LR\nA --x B")).toBeTruthy();
@@ -129,7 +128,7 @@ describe("parseFlowchart", () => {
   });
 
   it("shortens a label that is too long", () => {
-    const label = graphOf(`flowchart LR\nA[${"x".repeat(100)}]`).nodes[0]!.label;
+    const label = graphOf(`flowchart LR\nA[${"x".repeat(200)}]`).nodes[0]!.label;
     expect(label.length).toBe(LIMITS.label);
     expect(label.endsWith("…")).toBe(true);
   });
@@ -141,5 +140,60 @@ describe("parseFlowchart", () => {
 
   it("accepts ids that start with a digit, as Mermaid does", () => {
     expect(graphOf("flowchart LR\n1 --> 2").edges).toHaveLength(1);
+  });
+});
+
+describe("subgraphs", () => {
+  const ok = (source: string) => graphOf(source);
+
+  it("reads a subgraph with an id and a title, quoted or not, or with only a title", () => {
+    const quoted = ok('flowchart TD\nsubgraph api["The API"]\nA --> B\nend');
+    expect(quoted.groups).toEqual([{ id: "api", title: "The API", parent: null, direction: null }]);
+    expect(quoted.nodes.map((n) => [n.id, n.group])).toEqual([["A", "api"], ["B", "api"]]);
+    expect(ok("flowchart TD\nsubgraph api [Plain title]\nA\nend").groups[0]!.title).toBe("Plain title");
+    const bare = ok("flowchart TD\nsubgraph Back End\nA\nend").groups[0]!;
+    expect([bare.id, bare.title]).toEqual(["Back End", "Back End"]);
+  });
+
+  it("keeps a node in the first subgraph it was written in, and in none when written outside", () => {
+    const graph = ok("flowchart TD\nsubgraph one\nA\nend\nsubgraph two\nB\nend\nA --> B\nC --> A");
+    expect(Object.fromEntries(graph.nodes.map((n) => [n.id, n.group]))).toEqual({ A: "one", B: "two", C: null });
+  });
+
+  it("reads subgraphs inside subgraphs, and the direction a subgraph asks for", () => {
+    const graph = ok("flowchart TD\nsubgraph outer\nsubgraph inner\ndirection LR\nA --> B\nend\nC\nend");
+    expect(graph.groups.map((g) => [g.id, g.parent, g.direction])).toEqual([
+      ["outer", null, null],
+      ["inner", "outer", "LR"],
+    ]);
+    expect(graph.nodes.map((n) => [n.id, n.group])).toEqual([["A", "inner"], ["B", "inner"], ["C", "outer"]]);
+    expect(ok("flowchart TD\nsubgraph s\ndirection TB\nA\nend").groups[0]!.direction).toBe("TD");
+  });
+
+  it("reads the statements on one line, apart by semicolons", () => {
+    const graph = ok("flowchart TD\nsubgraph s; A --> B; end; B --> C");
+    expect(graph.groups).toHaveLength(1);
+    expect(graph.nodes.map((n) => [n.id, n.group])).toEqual([["A", "s"], ["B", "s"], ["C", null]]);
+  });
+
+  it("still refuses what is not drawn, and says why", () => {
+    expect(reason("flowchart TD\nsubgraph s\nA --> B")).toMatch(/not closed/);
+    expect(reason("flowchart TD\nA --> B\nend")).toMatch(/closes no subgraph/);
+    expect(reason("flowchart TD\ndirection LR\nA --> B")).toMatch(/inside a subgraph/);
+    expect(reason("flowchart TD\nsubgraph s\ndirection sideways\nA\nend")).toMatch(/direction was expected/);
+    expect(reason("flowchart TD\nsubgraph s\nA\nend now")).toMatch(/stand alone/);
+    expect(reason("flowchart TD\nA\nsubgraph s\nend")).toMatch(/empty subgraph/);
+    expect(reason("flowchart TD\nsubgraph s\nsubgraph t\nend\nA\nend")).toMatch(/empty subgraph/);
+    expect(reason("flowchart TD\nsubgraph s\nA\nend\nB --> s")).toMatch(/whole subgraph/);
+    expect(reason("flowchart TD\nsubgraph s\nA\nend\nsubgraph s\nB\nend")).toMatch(/same name/);
+    expect(reason('flowchart TD\nsubgraph s["a<br/>b"]\nA\nend')).toMatch(/markup/);
+    expect(reason("flowchart TD\nsubgraph\nA\nend")).toMatch(/needs a title/);
+  });
+
+  it("refuses subgraphs nested too deep, and too many of them", () => {
+    const deep = Array.from({ length: LIMITS.depth + 1 }, (_, i) => `subgraph s${i}`).join("\n");
+    expect(reason(`flowchart TD\n${deep}\nA\n${"end\n".repeat(LIMITS.depth + 1)}`)).toMatch(/nested too deep/);
+    const many = Array.from({ length: LIMITS.groups + 1 }, (_, i) => `subgraph s${i}\nA${i}\nend`).join("\n");
+    expect(reason(`flowchart TD\n${many}`)).toMatch(/too large/);
   });
 });

@@ -65,9 +65,14 @@ function rest(scene: Scene, frame: Frame) {
   frame.cls.set(scene.baseCls);
 }
 
-function clear(frame: Frame) {
+/** An empty frame, but for the subgraphs' frames, which stay while what is inside is drawn in. */
+function clear(scene: Scene, frame: Frame) {
   frame.glyph.fill(0);
   frame.cls.fill(0);
+  for (const cell of scene.frameCells) {
+    frame.glyph[cell] = scene.baseGlyph[cell]!;
+    frame.cls[cell] = scene.baseCls[cell]!;
+  }
 }
 
 /** Shows `cells` as they rest, in `cls`. */
@@ -174,7 +179,7 @@ export function renderRest(scene: Scene, frame: Frame) {
 }
 
 function reveal(scene: Scene, t: number, frame: Frame) {
-  clear(frame);
+  clear(scene, frame);
   const drawn = new Set<SceneEdge>();
   const steps: { node?: SceneNode; edge?: SceneEdge; units: number; start: number }[] = [];
   let units = 0;
@@ -289,7 +294,7 @@ function pulse(scene: Scene, t: number, frame: Frame, plain: boolean) {
 }
 
 function typing(scene: Scene, t: number, frame: Frame, plain: boolean) {
-  clear(frame);
+  clear(scene, frame);
   const { cursor } = marks(plain);
   const position = new Map(scene.order.map((n, i) => [n.id, i]));
   scene.order.forEach((node, i) => {

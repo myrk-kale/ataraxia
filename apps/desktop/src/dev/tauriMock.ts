@@ -533,6 +533,8 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return queueOf(sessionId);
     }
+    case "schedule_list": return [];
+    case "schedule_cancel": return [];
     case "agent_queue_remove": {
       const sessionId = (args?.sessionId as string) ?? "s1";
       const queue = stateOf(sessionId);

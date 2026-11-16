@@ -3,7 +3,7 @@
 
 Frames follow Claude Code's real stream-json output (partial `stream_event`s followed by the
 full `assistant` frame, `control_request`/`control_response` for tool permissions). The first
-word of the user prompt selects the scenario: tool | subagent | background | hang | crash | anything else.
+word of the user prompt selects the scenario: tool | subagent | background | wakeup | hang | crash | anything else.
 """
 import json
 import os
@@ -185,6 +185,21 @@ def run_background():
     result(text="The subagent finished.")
 
 
+def run_wakeup():
+    """A scheduled wakeup: the turn ends, then the CLI starts another on its own (no user frame)."""
+    stream_text(["Checking back soon."], "msg_wake_1")
+    send({"type": "assistant", "parent_tool_use_id": None,
+          "message": {"id": "msg_wake_1", "role": "assistant",
+                      "content": [{"type": "text", "text": "Checking back soon."}]}})
+    result(text="Checking back soon.")
+    time.sleep(0.2)
+    stream_text(["The release is ready."], "msg_wake_2")
+    send({"type": "assistant", "parent_tool_use_id": None,
+          "message": {"id": "msg_wake_2", "role": "assistant",
+                      "content": [{"type": "text", "text": "The release is ready."}]}})
+    result(text="The release is ready.")
+
+
 def run_relay(text):
     """The main agent passes a message on to the subagent (SendMessage) and reports back."""
     agent_id = "toolu_agent"
@@ -222,6 +237,8 @@ def main():
                 run_subagent()
             elif text.startswith("background"):
                 run_background()
+            elif text.startswith("wakeup"):
+                run_wakeup()
             elif text.startswith("Use the SendMessage tool"):
                 run_relay(text)
             elif text.startswith("reload"):

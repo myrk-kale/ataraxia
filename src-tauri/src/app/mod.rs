@@ -12,6 +12,7 @@ pub mod health;
 pub mod heuristics;
 pub mod queue;
 pub mod review;
+pub mod schedule;
 pub mod units;
 pub mod workspace;
 

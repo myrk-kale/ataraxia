@@ -320,6 +320,36 @@ export function agentQueueSendNow(sessionId: SessionId, id: string) {
   return invoke<MessageQueue>("agent_queue_send_now", { sessionId, id });
 }
 
+/**
+ * Something the agent asked to be told about later. The fields keep the names the local API gives
+ * them (the agents read the same JSON). `next_run` and `expires_at` are seconds since the Unix
+ * epoch; `every_secs` is set when it repeats.
+ */
+export type Schedule = {
+  id: string;
+  prompt: string;
+  next_run: number;
+  every_secs: number | null;
+  expires_at: number | null;
+  created_at: number;
+};
+
+export function scheduleList(sessionId: SessionId) {
+  return invoke<Schedule[]>("schedule_list", { sessionId });
+}
+
+export function scheduleCancel(sessionId: SessionId, id: string) {
+  return invoke<Schedule[]>("schedule_cancel", { sessionId, id });
+}
+
+const SCHEDULED_MESSAGE = /^\[Scheduled task ([^\]]+)\] ?([\s\S]*)$/;
+
+/** The message a schedule sent to the agent, told apart from one the user typed. */
+export function parseScheduledMessage(text: string): { id: string; prompt: string } | null {
+  const match = SCHEDULED_MESSAGE.exec(text);
+  return match ? { id: match[1] ?? "", prompt: (match[2] ?? "").trim() } : null;
+}
+
 export function agentCancel(sessionId: SessionId) {
   return invoke<void>("agent_cancel", { sessionId, turnId: null });
 }

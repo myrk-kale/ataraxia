@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MARGIN, MAX_COLS, NODE_H, layoutGraph, type Layout, type PlacedNode } from "./layout";
+import { MARGIN, MAX_COLS, NODE_H, layoutGraph, titleColumns, wrapLabel, type Layout, type PlacedFrame, type PlacedNode } from "./layout";
 import { parseFlowchart } from "./parse";
 
 function lay(source: string): Layout {
@@ -25,7 +25,7 @@ function expectSound(layout: Layout) {
     expect(node.y).toBeGreaterThanOrEqual(0);
     expect(node.x + node.w).toBeLessThanOrEqual(layout.width);
     expect(node.y + node.h).toBeLessThanOrEqual(layout.height);
-    expect(node.h).toBe(NODE_H);
+    expect(node.h).toBe(node.lines.length + 2);
   }
   layout.nodes.forEach((a, i) =>
     layout.nodes.slice(i + 1).forEach((b) => {
@@ -222,3 +222,166 @@ describe("layoutGraph", () => {
     }
   });
 });
+
+describe("long labels and deep charts", () => {
+  it("cuts a label at spaces, and breaks a word longer than a line", () => {
+    expect(wrapLabel("short", 10)).toEqual(["short"]);
+    expect(wrapLabel("one two three four", 9)).toEqual(["one two", "three", "four"]);
+    expect(wrapLabel("abcdefghijkl mn", 5)).toEqual(["abcde", "fghij", "kl mn"]);
+  });
+
+  it("keeps a label that fits on one line in a box of three rows", () => {
+    const layout = lay("flowchart TD\nA[Pythia calcula os escores das opções] --> B[Fim]");
+    expect(nodeAt(layout, "A").lines).toHaveLength(1);
+    expect(nodeAt(layout, "A").h).toBe(NODE_H);
+    expectSound(layout);
+  });
+
+  it("gives a label longer than a line a taller box instead of cutting it off", () => {
+    const text = "Valida prompt e in_minutes ou at, mais every_minutes opcional";
+    const layout = lay(`flowchart TD\nA["${text}"] --> B[Fim]`);
+    const box = nodeAt(layout, "A");
+    expect(box.lines.length).toBeGreaterThan(1);
+    expect(box.lines.join(" ")).toBe(text);
+    expect(box.h).toBe(box.lines.length + 2);
+    expectSound(layout);
+  });
+
+  it("draws a chain longer than fourteen steps one under the other", () => {
+    const ids = Array.from({ length: 22 }, (_, i) => `N${i}`);
+    const layout = lay(`flowchart TD\n${ids.join(" --> ")}`);
+    expect(new Set(layout.nodes.map((n) => n.x)).size).toBe(1);
+    expect(layout.nodes.map((n) => n.y)).toEqual([...layout.nodes.map((n) => n.y)].sort((a, b) => a - b));
+    expectSound(layout);
+  });
+
+  it("shortens the lines of a wide chart until it fits instead of giving up", () => {
+    const label = "x".repeat(38);
+    const row = Array.from({ length: 8 }, (_, i) => `R --> C${i}["${label} ${i}"]`).join("\n");
+    const layout = lay(`flowchart TD\n${row}`);
+    expect(layout.width).toBeLessThanOrEqual(MAX_COLS);
+    expect(nodeAt(layout, "C0").lines.length).toBeGreaterThan(1);
+    expectSound(layout);
+  });
+});
+
+describe("subgraphs", () => {
+  const frameOf = (layout: Layout, id: string): PlacedFrame => layout.frames.find((f) => f.id === id)!;
+  const within = (frame: PlacedFrame, node: { x: number; y: number; w: number; h: number }) =>
+    node.x >= frame.x && node.x + node.w <= frame.x + frame.w && node.y >= frame.y && node.y + node.h <= frame.y + frame.h;
+  const apart = (a: PlacedFrame, b: PlacedFrame) =>
+    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+
+  /** What holds for any drawing with frames, on top of what holds for any drawing. */
+  function expectFramesSound(layout: Layout) {
+    expectSound(layout);
+    for (const frame of layout.frames) {
+      expect(frame.x).toBeGreaterThanOrEqual(0);
+      expect(frame.y).toBeGreaterThanOrEqual(0);
+      expect(frame.x + frame.w).toBeLessThanOrEqual(layout.width);
+      expect(frame.y + frame.h).toBeLessThanOrEqual(layout.height);
+      expect(frame.w).toBeGreaterThanOrEqual([...frame.title].length + 6);
+      // No link runs over a title.
+      const title = new Set(titleColumns(frame));
+      for (const edge of layout.edges) {
+        for (const [x, y] of edge.path) {
+          expect(y === frame.y && title.has(x), `${edge.from}->${edge.to} runs over the title of ${frame.id}`).toBe(false);
+        }
+      }
+    }
+  }
+
+  const TWO = "flowchart TD\nsubgraph one[One]\nA --> B\nend\nsubgraph two[Two]\nC --> D\nend\nB --> C\nX --> A";
+
+  it("puts a frame round the nodes written in it, and round no others", () => {
+    const layout = lay(TWO);
+    expectFramesSound(layout);
+    expect(layout.frames.map((f) => f.id).sort()).toEqual(["one", "two"]);
+    for (const id of ["A", "B"]) {
+      expect(within(frameOf(layout, "one"), nodeAt(layout, id))).toBe(true);
+      expect(within(frameOf(layout, "two"), nodeAt(layout, id))).toBe(false);
+    }
+    for (const id of ["C", "D"]) {
+      expect(within(frameOf(layout, "two"), nodeAt(layout, id))).toBe(true);
+    }
+    for (const frame of layout.frames) {
+      expect(within(frame, nodeAt(layout, "X"))).toBe(false);
+    }
+    expect(apart(frameOf(layout, "one"), frameOf(layout, "two"))).toBe(true);
+  });
+
+  it("draws a subgraph inside the one it is written in, outermost frame first", () => {
+    const layout = lay(
+      "flowchart LR\nsubgraph outer[Outer]\nsubgraph inner[Inner]\nA --> B\nend\nC --> A\nend\nZ --> C",
+    );
+    expectFramesSound(layout);
+    expect(layout.frames.map((f) => [f.id, f.depth])).toEqual([["outer", 0], ["inner", 1]]);
+    const [outer, inner] = layout.frames as [PlacedFrame, PlacedFrame];
+    expect(within(outer, inner)).toBe(true);
+    for (const id of ["A", "B"]) {
+      expect(within(inner, nodeAt(layout, id))).toBe(true);
+    }
+    expect(within(inner, nodeAt(layout, "C"))).toBe(false);
+    for (const id of ["A", "B", "C"]) {
+      expect(within(outer, nodeAt(layout, id))).toBe(true);
+    }
+    expect(within(outer, nodeAt(layout, "Z"))).toBe(false);
+  });
+
+  it("keeps the frames of side-by-side subgraphs apart when they have several layers", () => {
+    const layout = lay(
+      "flowchart TD\nsubgraph a[A]\nA1 --> A2 --> A3\nend\nsubgraph b[B]\nB1 --> B2 --> B3\nend\nR --> A1\nR --> B1\nA3 --> E\nB3 --> E",
+    );
+    expectFramesSound(layout);
+    expect(apart(frameOf(layout, "a"), frameOf(layout, "b"))).toBe(true);
+  });
+
+  it("honours a subgraph's own direction when nothing outside is linked to what is inside", () => {
+    const alone = lay("flowchart TD\nTop --> Mid\nsubgraph G[G]\ndirection LR\nA --> B\nend\nMid --> Low");
+    expectFramesSound(alone);
+    expect(nodeAt(alone, "A").y).toBe(nodeAt(alone, "B").y);
+    expect(nodeAt(alone, "B").x).toBeGreaterThan(nodeAt(alone, "A").x);
+  });
+
+  it("ignores that direction when a link crosses the subgraph's edge, as Mermaid does", () => {
+    const linked = lay("flowchart TD\nsubgraph G[G]\ndirection LR\nA --> B\nend\nX --> A");
+    expectFramesSound(linked);
+    expect(nodeAt(linked, "A").x).toBe(nodeAt(linked, "B").x);
+    expect(nodeAt(linked, "B").y).toBeGreaterThan(nodeAt(linked, "A").y);
+  });
+
+  it("times the animations by how far along the flow a node is, whatever it sits in", () => {
+    const layout = lay("flowchart TD\nsubgraph s[S]\nA --> B\nend\nB --> C");
+    expect(["A", "B", "C"].map((id) => nodeAt(layout, id).rank)).toEqual([0, 1, 2]);
+  });
+
+  it("draws a chart of several subgraphs and links between them within the limits", () => {
+    const layout = lay(SUBGRAPH_CHART);
+    expectFramesSound(layout);
+    expect(layout.frames).toHaveLength(4);
+    expect(layout.width).toBeLessThanOrEqual(MAX_COLS);
+  });
+});
+
+const SUBGRAPH_CHART = `flowchart TD
+    subgraph Agente["Agente do chat"]
+        AG["Claude, Codex ou OpenCode"]
+    end
+    subgraph API["API local"]
+        direction LR
+        P["POST /v1/schedules"] --> V["Valida os campos"] --> S["schedule_add"] --> DB["Grava em preferências"]
+    end
+    subgraph Relogio["Relógio, a cada 5 s"]
+        TK["schedules_tick"] --> LV{"Agente rodando?"}
+        LV -->|sim| DU{"Venceu?"}
+        LV -->|não| WT["Espera"]
+        DU -->|sim| EQ["enqueue"]
+    end
+    subgraph Fila["Fila de mensagens"]
+        FQ["Fila do chat"] --> DP["dispatch"]
+    end
+    AG -->|curl| P
+    DB -.-> TK
+    EQ --> FQ
+    DP --> AG
+`;

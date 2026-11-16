@@ -124,6 +124,9 @@ pub enum Endpoint {
     CommentUnit,
     SetPriority,
     RecordFlow,
+    ListSchedules,
+    AddSchedule,
+    CancelSchedule,
 }
 
 pub struct Route {
@@ -232,6 +235,30 @@ pub const ROUTES: &[Route] = &[
         description: "Draw a diagram of how the code works in the Flow tab. Body: nodes [{id, label, kind?, description?, refs? [{path, line?}]}], edges? [{source, target, label?}], name?, summary?, checkpoint_id?. Ground every node in files that exist; nodes referring to files that do not exist are marked unverified.",
         write: true,
     },
+    Route {
+        endpoint: Endpoint::ListSchedules,
+        method: "GET",
+        path: "/v1/schedules",
+        status: 200,
+        description: "List what this chat has scheduled to be sent to you later, soonest first.",
+        write: false,
+    },
+    Route {
+        endpoint: Endpoint::AddSchedule,
+        method: "POST",
+        path: "/v1/schedules",
+        status: 201,
+        description: "Be sent a message later, in this chat: to check a release again, retry in a while, or follow up on something that takes time. Body: prompt (what you will be told when it is time), in_minutes (1 or more, up to 10080) or at (RFC 3339 time), every_minutes? (repeat; expires after 7 days). It works the same for every agent and survives a restart of the app. Do not use your own scheduling tools: they are turned off.",
+        write: true,
+    },
+    Route {
+        endpoint: Endpoint::CancelSchedule,
+        method: "DELETE",
+        path: "/v1/schedules/{schedule_id}",
+        status: 200,
+        description: "Cancel a schedule of this chat, by its id or the first characters of it.",
+        write: true,
+    },
 ];
 
 impl Endpoint {
@@ -335,12 +362,26 @@ pub trait Anchor: Send + Sync {
     fn baseline(&self, session: SessionId) -> Result<crate::domain::Checkpoint>;
 }
 
+/// What an agent can ask of the scheduler: be sent a message later.
+pub trait Scheduling: Send + Sync {
+    fn list(&self, session: SessionId) -> Vec<crate::domain::Schedule>;
+    fn add(
+        &self,
+        session: SessionId,
+        prompt: &str,
+        delay_secs: i64,
+        every_secs: Option<i64>,
+    ) -> Result<crate::domain::Schedule>;
+    fn cancel(&self, session: SessionId, id: &str) -> Result<()>;
+}
+
 /// What one token may do: read and write the data of one chat session.
 pub struct ApiService {
     db: Arc<dyn Database>,
     scope: SessionId,
     allow_write: bool,
     anchor: Option<Arc<dyn Anchor>>,
+    scheduler: Option<Arc<dyn Scheduling>>,
     /// Tells the window what a write changed, so an open tab shows it without being reloaded.
     sink: Option<Arc<dyn InsightSink>>,
 }
@@ -352,12 +393,18 @@ impl ApiService {
             scope,
             allow_write,
             anchor: None,
+            scheduler: None,
             sink: None,
         }
     }
 
     pub fn with_sink(mut self, sink: Option<Arc<dyn InsightSink>>) -> Self {
         self.sink = sink;
+        self
+    }
+
+    pub fn with_scheduler(mut self, scheduler: Option<Arc<dyn Scheduling>>) -> Self {
+        self.scheduler = scheduler;
         self
     }
 
@@ -585,7 +632,61 @@ impl ApiService {
             Endpoint::RecordFlow => self.record_flow(args, now),
             Endpoint::LinkCommit => self.link_commit(args, now),
             Endpoint::AddDecisionMessage => self.add_decision_message(args, now),
+            Endpoint::ListSchedules => {
+                let session = self.session_arg(args)?;
+                Ok(json!(self.scheduler()?.list(session)))
+            }
+            Endpoint::AddSchedule => self.add_schedule(args),
+            Endpoint::CancelSchedule => {
+                let session = self.session_arg(args)?;
+                let id = arg_str(args, "schedule_id");
+                self.scheduler()?.cancel(session, &id)?;
+                Ok(json!({ "cancelled": id }))
+            }
         }
+    }
+
+    fn scheduler(&self) -> ApiResult<&Arc<dyn Scheduling>> {
+        self.scheduler
+            .as_ref()
+            .ok_or_else(|| ApiError::invalid("scheduling is not available here"))
+    }
+
+    fn add_schedule(&self, args: &Value) -> ApiResult<Value> {
+        let session = self.session_arg(args)?;
+        let prompt = arg_str(args, "prompt");
+        let minutes = |key: &str| -> ApiResult<Option<i64>> {
+            match args.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => value
+                    .as_f64()
+                    .filter(|minutes| minutes.is_finite() && *minutes >= 0.0)
+                    .map(|minutes| Some((minutes * 60.0).round() as i64))
+                    .ok_or_else(|| {
+                        ApiError::invalid(format!("`{key}` must be a number of minutes"))
+                    }),
+            }
+        };
+        let delay = match (
+            minutes("in_minutes")?,
+            args.get("at").and_then(Value::as_str),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(ApiError::invalid("give `in_minutes` or `at`, not both"));
+            }
+            (Some(delay), None) => delay,
+            (None, Some(at)) => {
+                let at =
+                    time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
+                        .map_err(|_| ApiError::invalid("`at` must be an RFC 3339 time"))?;
+                at.unix_timestamp() - time::OffsetDateTime::now_utc().unix_timestamp()
+            }
+            (None, None) => return Err(ApiError::invalid("give `in_minutes` or `at`")),
+        };
+        let schedule = self
+            .scheduler()?
+            .add(session, &prompt, delay, minutes("every_minutes")?)?;
+        Ok(json!(schedule))
     }
 
     fn record_decision(&self, args: &Value, now: String) -> ApiResult<Value> {
@@ -879,6 +980,7 @@ struct ServerInner {
     grants: Mutex<Vec<Grant>>,
     /// Set once the engine exists; the engine needs the server first.
     anchor: std::sync::OnceLock<Arc<dyn Anchor>>,
+    scheduler: std::sync::OnceLock<Arc<dyn Scheduling>>,
     sink: std::sync::OnceLock<Arc<dyn InsightSink>>,
     port: u16,
     stop: AtomicBool,
@@ -932,6 +1034,7 @@ impl ApiServer {
             db,
             grants: Mutex::new(Vec::new()),
             anchor: std::sync::OnceLock::new(),
+            scheduler: std::sync::OnceLock::new(),
             sink: std::sync::OnceLock::new(),
             port,
             stop: AtomicBool::new(false),
@@ -953,6 +1056,11 @@ impl ApiServer {
     /// Lets calls about a chat without code changes still be answered.
     pub fn set_anchor(&self, anchor: Arc<dyn Anchor>) {
         let _ = self.inner.anchor.set(anchor);
+    }
+
+    /// Lets agents schedule messages to themselves.
+    pub fn set_scheduler(&self, scheduler: Arc<dyn Scheduling>) {
+        let _ = self.inner.scheduler.set(scheduler);
     }
 
     pub fn port(&self) -> u16 {
@@ -1348,6 +1456,7 @@ fn respond(
     // From here on the caller is known, so every call is audited.
     let service = ApiService::new(Arc::clone(&inner.db), session, write)
         .with_anchor(inner.anchor.get().cloned())
+        .with_scheduler(inner.scheduler.get().cloned())
         .with_sink(inner.sink.get().cloned());
     let target = head.target.clone();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
@@ -2167,6 +2276,76 @@ mod tests {
         assert_eq!(db.audit_count(), 7);
     }
 
+    /// Stands in for the engine: keeps what it is asked, with the delay it was asked for.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<crate::domain::Schedule>>);
+
+    impl Scheduling for Recorder {
+        fn list(&self, _: SessionId) -> Vec<crate::domain::Schedule> {
+            self.0.lock().clone()
+        }
+
+        fn add(
+            &self,
+            _: SessionId,
+            prompt: &str,
+            delay_secs: i64,
+            every_secs: Option<i64>,
+        ) -> Result<crate::domain::Schedule> {
+            let schedule = crate::domain::Schedule {
+                id: Uuid::new_v4().to_string(),
+                prompt: prompt.to_string(),
+                next_run: delay_secs,
+                every_secs,
+                expires_at: None,
+                created_at: 0,
+            };
+            self.0.lock().push(schedule.clone());
+            Ok(schedule)
+        }
+
+        fn cancel(&self, _: SessionId, id: &str) -> Result<()> {
+            self.0.lock().retain(|item| !item.id.starts_with(id));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_agent_schedules_a_message_to_itself_over_the_api() {
+        let (db, a, ..) = seeded();
+        let server = start(&db);
+        let recorder = Arc::new(Recorder::default());
+        server.set_scheduler(recorder.clone());
+        let token = server.issue_token(a, true).token;
+        let token = Some(token.as_str());
+
+        let created = req("POST", "/v1/schedules", token)
+            .with(json!({"prompt": "check the release", "in_minutes": 10, "every_minutes": 5.5}))
+            .go(&server);
+        assert_eq!(created.status, 201, "{:?}", created.body);
+        assert_eq!(created.body["next_run"], 600);
+        assert_eq!(created.body["every_secs"], 330);
+        let id = created.body["id"].as_str().unwrap().to_string();
+
+        let listed = req("GET", "/v1/schedules", token).go(&server);
+        assert_eq!(listed.body.as_array().unwrap().len(), 1);
+
+        for body in [
+            json!({"prompt": "x"}),
+            json!({"prompt": "x", "in_minutes": 1, "at": "2030-01-01T00:00:00Z"}),
+            json!({"prompt": "x", "in_minutes": "soon"}),
+            json!({"prompt": "x", "at": "tomorrow"}),
+        ] {
+            let refused = req("POST", "/v1/schedules", token).with(body).go(&server);
+            assert_eq!(refused.status, 400, "{:?}", refused.body);
+        }
+        assert_eq!(recorder.list(a).len(), 1);
+
+        let gone = req("DELETE", &format!("/v1/schedules/{}", &id[..8]), token).go(&server);
+        assert_eq!(gone.status, 200);
+        assert!(recorder.list(a).is_empty());
+    }
+
     #[test]
     fn the_index_lists_every_endpoint() {
         let (db, a, ..) = seeded();
@@ -2176,7 +2355,7 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body["version"], 1);
         let endpoints = answer.body["endpoints"].as_array().unwrap();
-        assert_eq!(endpoints.len(), 10);
+        assert_eq!(endpoints.len(), 13);
         let has = |method: &str, path: &str, write: bool| {
             endpoints.iter().any(|item| {
                 item["method"] == method
@@ -2192,6 +2371,9 @@ mod tests {
         assert!(has("POST", "/v1/decisions", true));
         assert!(has("POST", "/v1/decisions/{decision_id}/messages", true));
         assert!(has("POST", "/v1/decisions/{decision_id}/commits", true));
+        assert!(has("GET", "/v1/schedules", false));
+        assert!(has("POST", "/v1/schedules", true));
+        assert!(has("DELETE", "/v1/schedules/{schedule_id}", true));
         assert!(has("POST", "/v1/comments", true));
         assert!(has("PUT", "/v1/priority", true));
         assert!(has("POST", "/v1/flows", true));
@@ -2211,6 +2393,8 @@ mod tests {
             ("POST", "/v1/comments"),
             ("PUT", "/v1/priority"),
             ("POST", "/v1/flows"),
+            ("POST", "/v1/schedules"),
+            ("DELETE", "/v1/schedules/abc"),
             (
                 "POST",
                 &format!("/v1/decisions/{}/messages", Uuid::new_v4()),

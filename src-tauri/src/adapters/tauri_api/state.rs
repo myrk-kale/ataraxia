@@ -83,10 +83,12 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     tee.attach(&engine);
     if let Some(api) = &api {
         api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
+        api.set_scheduler(Arc::clone(&engine) as Arc<dyn crate::api::Scheduling>);
         api.set_sink(tauri_sink.clone() as Arc<dyn crate::ports::InsightSink>);
     }
     engine.ensure_builtin_presets()?;
     engine.recover();
+    engine.start_scheduler();
     Ok(AppState {
         git,
         store,

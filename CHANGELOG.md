@@ -6,6 +6,35 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
+### Added
+
+- Flowcharts with `subgraph ... end` are drawn as text too, with a titled frame round the nodes of
+  each subgraph; subgraphs can be nested up to three deep. Each is laid out on its own and placed as
+  one block, so frames never overlap. A `direction` inside a subgraph is honoured when no link joins
+  it to the outside (as in Mermaid) and ignored otherwise. Still handed to the library: a link to a
+  whole subgraph, an empty subgraph, more than 16 subgraphs, and the other things the text drawing
+  never covered (`A & B`, two-way links, styled nodes, other kinds of diagram).
+- Scheduled messages, the same for every agent. An agent that has to check something later (a
+  release still building, a retry in ten minutes) asks Ataraxia through the local API and gets a
+  message back at that time, on Claude Code, Codex and OpenCode alike. Schedules are kept per chat,
+  so they survive a restart, a change of agent or a dead process. A "Scheduled" strip above the
+  message field lists them with their next time and lets you cancel each one; the message they send
+  shows as a "Scheduled" line in the transcript. Claude Code's own cron, wakeups and `/loop` are
+  turned off in its place.
+
+### Fixed
+
+- Larger flowcharts in the chat are drawn as text like the small ones, not as the Mermaid library's
+  small SVG. A chain deeper than 14 steps was piled up sideways on the last row and made the drawing
+  too wide, and labels were cut at 40 characters. A chain can now be 40 steps deep, a long label is
+  cut at spaces into several lines of its box, and the chart may hold 60 nodes and 100 links. Charts
+  that were already drawn as text look the same.
+- What Claude Code does on its own is no longer dropped. A wakeup it set, or the end of a command it
+  left running in the background, started a turn that never reached the screen or the saved
+  conversation; it now shows as a turn of its own.
+
 ## [0.5.1] - 2026-11-15
 
 ### Fixed
@@ -276,7 +305,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/myrk-kale/ataraxia/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/myrk-kale/ataraxia/compare/v0.3.0...v0.4.0

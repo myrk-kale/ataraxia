@@ -494,6 +494,28 @@ pub fn agent_queue_remove(
     Ok(state.engine.queue_remove(session_id, &id))
 }
 
+/// What the chat has scheduled to be sent to the agent later, soonest first.
+#[tauri::command]
+pub fn schedule_list(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> std::result::Result<Vec<crate::domain::Schedule>, String> {
+    Ok(state.engine.schedules(session_id))
+}
+
+/// Cancels one scheduled message.
+#[tauri::command]
+pub fn schedule_cancel(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    id: String,
+) -> std::result::Result<Vec<crate::domain::Schedule>, String> {
+    state
+        .engine
+        .schedule_cancel(session_id, &id)
+        .map_err(map_error)
+}
+
 /// Stops the running turn and sends this queued message next, ahead of the others.
 #[tauri::command(async)]
 pub fn agent_queue_send_now(

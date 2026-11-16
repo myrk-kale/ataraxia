@@ -9,6 +9,7 @@ pub mod insight;
 pub mod profile;
 pub mod queue;
 pub mod repo;
+pub mod schedule;
 pub mod session;
 pub mod time;
 pub mod usage;
@@ -29,5 +30,6 @@ pub use insight::{
 pub use profile::{HarnessProfile, LaunchCommand, PROFILES_KEY, Profiles, parse_command};
 pub use queue::{MessageQueue, QueuedMessage};
 pub use repo::{BranchInfo, RepoInfo, Repository, Workspace, Worktree, WorktreeInfo};
+pub use schedule::{SCHEDULED_PREFIX, Schedule};
 pub use session::{ChatSession, SessionKind, SessionStatus};
 pub use usage::{ProviderUsage, UsageWindow, UsageWindowKind};

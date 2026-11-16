@@ -15,13 +15,18 @@ bash with curl, as `api.md` explains. There are no tools to look for and no othe
 
 Only after the developer says yes to your closing question, or asks you for decisions, a flow,
 review comments or a priority change. Do not read it before, and do not read all of it: read this
-page, then only the topic you need, and always `api.md` before the first call.
+page, then only the topic you need, and always `api.md` before the first call. The exception is
+`schedule.md`: read it when you need to come back to something later, even if nobody asked for
+decisions or a flow.
 
 ## Topics
 
 - `decisions.md`: what a decision is, which ones are worth recording, and how.
 - `flow.md`: how to draw a diagram that holds up.
 - `review.md`: comments on components, and changing their priority.
+- `schedule.md`: how to be sent a message later (check a release again, retry in a while), the
+  same for every agent. Read it when you need to come back to something, without waiting to be
+  asked for decisions or a flow.
 - `api.md`: the environment variables, the authentication, every endpoint with its fields, the
   errors, and a runnable bash script for each kind of artifact.
 
