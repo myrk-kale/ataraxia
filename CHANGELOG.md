@@ -6,6 +6,27 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-16
+
+### Added
+
+- One `/` command catalog and `@` file picker across Claude Code, Codex and OpenCode. File mentions
+  expand `*`, `**` and `?` globs; the commands are `/help`, `/new`, `/compact` and `/stop`.
+- Portable user and repository `AGENTS.md`, skills and MCP servers supplied by Ataraxia to every
+  harness. Repository MCP servers require explicit trust before a session can use them.
+- A chat settings view for listing active MCP processes and safely stopping one.
+
+### Changed
+
+- Provider settings and resources are isolated per harness while the provider account remains
+  available for authentication.
+
+### Fixed
+
+- Claude's native `/compact` remains available while provider skills are isolated. OpenCode now
+  honors the configured working directory of a local MCP server, and deleting chats removes their
+  generated MCP and provider credential files.
+
 ## [0.6.0] - 2026-11-16
 
 ### Added
@@ -305,7 +326,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/myrk-kale/ataraxia/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/myrk-kale/ataraxia/compare/v0.4.0...v0.5.0
