@@ -2072,3 +2072,122 @@ fn a_queued_message_keeps_its_pictures_until_its_turn() {
     assert!(w.engine.queue(w.session.id).items.is_empty());
     let _ = std::fs::remove_dir_all(&w.repo);
 }
+
+// ---------------------------------------------------------------- schedules
+
+/// A turn that has finished: the fake agent asks for a permission first, so allow it.
+fn finish_turn(w: &World) {
+    let request = next_request(w, None);
+    approve(w, request);
+    wait_for("the turn to end", || {
+        (w.host.status(&w.session.id).unwrap() == SessionStatus::Ready).then_some(())
+    });
+}
+
+#[test]
+fn a_one_off_schedule_is_sent_to_the_chat_once_when_it_falls_due() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    let schedule = w
+        .engine
+        .schedule_add(w.session.id, "  check the release  ", 600, None)
+        .unwrap();
+    assert_eq!(
+        w.engine.schedules(w.session.id),
+        std::slice::from_ref(&schedule)
+    );
+
+    // Not yet due: nothing goes out.
+    w.engine.schedules_tick(schedule.next_run - 1);
+    assert!(user_texts(&w).is_empty());
+
+    w.engine.schedules_tick(schedule.next_run);
+    assert_eq!(user_texts(&w), [schedule.message()]);
+    assert!(user_texts(&w)[0].ends_with("] check the release"));
+    assert!(
+        w.engine.schedules(w.session.id).is_empty(),
+        "a one-off is spent"
+    );
+
+    // Ticking again does not send it a second time.
+    finish_turn(&w);
+    w.engine.schedules_tick(schedule.next_run + 600);
+    assert_eq!(user_texts(&w).len(), 1);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_recurring_schedule_runs_again_after_its_interval_and_expires_on_its_own() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    let schedule = w
+        .engine
+        .schedule_add(w.session.id, "poll", 60, Some(300))
+        .unwrap();
+    let expires = schedule.expires_at.expect("a recurring schedule expires");
+
+    // Missed runs are not replayed one by one: it fires once and is set 300 seconds on from now.
+    let late = schedule.next_run + 1000;
+    w.engine.schedules_tick(late);
+    assert_eq!(user_texts(&w).len(), 1);
+    assert_eq!(w.engine.schedules(w.session.id)[0].next_run, late + 300);
+
+    finish_turn(&w);
+    w.engine.schedules_tick(expires + 1);
+    assert_eq!(user_texts(&w).len(), 1, "an expired schedule does not run");
+    assert!(w.engine.schedules(w.session.id).is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_schedule_waits_while_its_agent_is_not_running() {
+    let w = world();
+    let schedule = w
+        .engine
+        .schedule_add(w.session.id, "later", 60, None)
+        .unwrap();
+    w.engine.schedules_tick(schedule.next_run + 10);
+    assert_eq!(
+        w.engine.schedules(w.session.id).len(),
+        1,
+        "kept for when it runs"
+    );
+    assert!(!w.engine.queue(w.session.id).paused);
+
+    w.host.start_session(&w.session).unwrap();
+    w.engine.schedules_tick(schedule.next_run + 20);
+    assert_eq!(user_texts(&w), [schedule.message()]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_schedule_can_be_cancelled_and_bad_ones_are_refused() {
+    let w = world();
+    let schedule = w
+        .engine
+        .schedule_add(w.session.id, "keep", 120, None)
+        .unwrap();
+    let other = w
+        .engine
+        .schedule_add(w.session.id, "drop", 180, None)
+        .unwrap();
+    let left = w
+        .engine
+        .schedule_cancel(w.session.id, &other.id[..8])
+        .unwrap();
+    assert_eq!(left, std::slice::from_ref(&schedule));
+    assert!(w.engine.schedule_cancel(w.session.id, "nope").is_err());
+    assert!(w.engine.schedule_cancel(w.session.id, "").is_err());
+
+    let refused = |prompt: &str, delay: i64, every: Option<i64>| {
+        w.engine
+            .schedule_add(w.session.id, prompt, delay, every)
+            .is_err()
+    };
+    assert!(refused("  ", 120, None), "an empty prompt");
+    assert!(refused("x", 5, None), "sooner than a minute");
+    assert!(refused("x", 30 * 86_400, None), "too far ahead");
+    assert!(refused("x", 120, Some(10)), "an interval under a minute");
+    assert_eq!(w.engine.schedules(w.session.id).len(), 1);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}

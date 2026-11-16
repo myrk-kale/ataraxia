@@ -108,6 +108,11 @@ fn claude_env(
 ) -> Vec<(String, String)> {
     // Without the first one the CLI leaves a foreground subagent's text out of the stream.
     let mut env = vec![("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT".into(), "1".into())];
+    if api.is_some() {
+        // Scheduling is Ataraxia's, the same for every agent: it survives a restart, shows in the
+        // chat and is listed for the user. Claude's own cron lives and dies with its process.
+        env.push(("CLAUDE_CODE_DISABLE_CRON".into(), "1".into()));
+    }
     env.extend(api_env(session_id, api));
     env
 }
@@ -341,9 +346,6 @@ struct ClaudeState {
     /// Background subagents: tool_use id → the transcript file that follows them, and the flag
     /// that stops the tail reading it.
     tails: HashMap<String, (PathBuf, Arc<AtomicBool>)>,
-    /// A background subagent was launched: the agent may speak again without being asked
-    /// (to report it), so frames outside a turn start one instead of being dropped.
-    background_seen: bool,
     /// The commands and skills Claude Code runs from a `/name` message, as it last said.
     commands: Vec<SlashCommand>,
 }
@@ -583,13 +585,15 @@ impl ClaudeShared {
         });
     }
 
-    /// The running turn, or, once a background subagent exists, a new one for output nobody
-    /// asked for (the report that follows the subagent finishing).
+    /// The running turn, or a new one for output nobody asked for: the report that follows a
+    /// background subagent, a wakeup the agent scheduled for itself, the notice that a command
+    /// it left running has finished. Only a stop the user asked for keeps it from opening one,
+    /// so the tail of a cancelled turn is not taken for a new turn.
     fn turn_or_unprompted(&self, state: &mut ClaudeState) -> Option<TurnId> {
         if let Some(turn_id) = state.turn {
             return Some(turn_id);
         }
-        if !state.background_seen || state.cancel_requested {
+        if state.cancel_requested {
             return None;
         }
         let turn_id = TurnId::new();
@@ -763,7 +767,6 @@ impl ClaudeShared {
                 if !is_error && is_background_launch(&output) {
                     // Not finished: it keeps working after this turn and reports later. Its
                     // transcript file is how its progress can be followed meanwhile.
-                    state.background_seen = true;
                     (self.emit)(BackendEvent::Subagent {
                         id: tool_use_id.to_string(),
                         title: title.clone(),
@@ -1520,13 +1523,20 @@ mod tests {
         let env = claude_env(session, Some(&access));
         let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
         assert_eq!(get("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT"), Some("1"));
+        assert_eq!(get("CLAUDE_CODE_DISABLE_CRON"), Some("1"));
         assert_eq!(get("ATARAXIA_API_URL"), Some("http://127.0.0.1:4000"));
         assert_eq!(get("ATARAXIA_API_TOKEN"), Some("tok"));
         assert_eq!(
             get("ATARAXIA_SESSION_ID"),
             Some(session.0.to_string().as_str())
         );
-        assert_eq!(claude_env(session, None).len(), 1);
+        // With no API there is no scheduler to take its place, so Claude keeps its own.
+        let bare = claude_env(session, None);
+        assert_eq!(bare.len(), 1);
+        assert!(
+            bare.iter()
+                .all(|(key, _)| key != "CLAUDE_CODE_DISABLE_CRON")
+        );
     }
 
     struct Harness {
@@ -1971,17 +1981,32 @@ mod tests {
     }
 
     #[test]
-    fn output_without_a_background_subagent_is_still_ignored_outside_a_turn() {
+    fn a_quiet_agent_does_not_start_turns_of_its_own() {
         let h = start();
         h.session.prompt(TurnId::new(), "hello").expect("prompt");
         h.until("turn done", is_turn_done);
         h.session.shutdown();
-        // Nothing was launched, so no stray turn can have been invented.
+        // The agent said nothing more, so no stray turn can have been invented.
         assert!(
             h.events
                 .try_iter()
                 .all(|event| !matches!(event, BackendEvent::TurnStarted { .. }))
         );
+    }
+
+    #[test]
+    fn a_wakeup_the_agent_scheduled_is_shown_as_a_turn_of_its_own() {
+        let h = start();
+        h.session.prompt(TurnId::new(), "wakeup").expect("prompt");
+        let first = h.until("first turn done", is_turn_done);
+        let rest = h.until("wakeup turn done", is_turn_done);
+        h.session.shutdown();
+        assert_eq!(deltas(&first), "Checking back soon.");
+        let started = rest
+            .iter()
+            .position(|event| matches!(event, BackendEvent::TurnStarted { .. }))
+            .expect("the wakeup turn is announced");
+        assert_eq!(deltas(&rest[started..]), "The release is ready.");
     }
 
     #[test]

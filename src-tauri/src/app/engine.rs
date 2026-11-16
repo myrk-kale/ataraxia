@@ -43,6 +43,8 @@ pub struct Engine {
     /// Held while the first queued message is read and handed to the agent, so two ends of turn
     /// (or an end and a "send now") cannot both take the same message.
     pub(crate) sending: Mutex<()>,
+    /// Held while a chat's schedules are read, changed and written back.
+    pub(crate) schedule_lock: Mutex<()>,
     task_timeout: Duration,
 }
 
@@ -81,6 +83,7 @@ impl Engine {
             busy: Mutex::new(std::collections::HashSet::new()),
             queues: Mutex::new(HashMap::new()),
             sending: Mutex::new(()),
+            schedule_lock: Mutex::new(()),
             task_timeout: TASK_TIMEOUT,
         })
     }

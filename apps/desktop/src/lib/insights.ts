@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { MessageQueue } from "./agent";
+import type { MessageQueue, Schedule } from "./agent";
 import type { ProviderKind } from "./workspace";
 import type { RepositoryId, SessionId, WorktreeId, ChatSession } from "./workspace";
 
@@ -316,6 +316,7 @@ export type InsightEvent =
   | { type: "decisions"; sessionId: SessionId }
   | { type: "cleared"; sessionId: SessionId }
   | { type: "queue"; sessionId: SessionId; queue: MessageQueue }
+  | { type: "schedules"; sessionId: SessionId; schedules: Schedule[] }
   | { type: "decisionThread"; decisionId: DecisionId }
   | { type: "btw"; taskId: BtwTaskId; parentSessionId: SessionId; status: ArtifactStatus };
 

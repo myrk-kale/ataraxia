@@ -14,6 +14,7 @@ const FILES: &[(&str, &str)] = &[
     ("decisions.md", include_str!("../../../guide/decisions.md")),
     ("flow.md", include_str!("../../../guide/flow.md")),
     ("review.md", include_str!("../../../guide/review.md")),
+    ("schedule.md", include_str!("../../../guide/schedule.md")),
     ("api.md", include_str!("../../../guide/api.md")),
 ];
 
@@ -35,9 +36,11 @@ pub fn preamble(index: &Path) -> String {
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
          - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
          - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
+         - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          The developer's message follows.\n\n",
-        index.display()
+        index.display(),
+        index.with_file_name("schedule.md").display()
     )
 }
 
@@ -131,7 +134,7 @@ mod tests {
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 240,
+            text.split_whitespace().count() < 270,
             "{} words",
             text.split_whitespace().count()
         );

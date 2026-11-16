@@ -1,5 +1,6 @@
+import { Clock } from "lucide-react";
 import { memo } from "react";
-import type { ChatItem } from "../lib/agent";
+import { parseScheduledMessage, type ChatItem } from "../lib/agent";
 import { parseBtwReport } from "./btwReport";
 import { Markdown } from "./Markdown";
 import { MessageImages } from "./MessageImages";
@@ -53,6 +54,19 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
   if (item.role === "user") {
     if (parseBtwReport(item.text)) {
       return <BtwReport text={item.text} />;
+    }
+    const scheduled = parseScheduledMessage(item.text);
+    if (scheduled) {
+      // Sent by the app on a schedule the agent made, not typed: a line, not the user's bubble.
+      return (
+        <div className="flex max-w-[680px] min-w-0 items-start gap-2 self-start text-small text-cg-muted-strong">
+          <Clock aria-hidden="true" className="mt-0.5 flex-none" size={13} />
+          <p className="min-w-0 break-words [overflow-wrap:anywhere]">
+            <span className="font-medium text-cg-ink">Scheduled</span>
+            {scheduled.prompt ? ` · ${scheduled.prompt}` : ""}
+          </p>
+        </div>
+      );
     }
     return (
       <div className="max-w-[min(80%,600px)] min-w-0 self-end rounded-cg-lg bg-cg-bubble px-5.5 py-4.5 text-body leading-[1.7] break-words whitespace-pre-wrap [overflow-wrap:anywhere]">

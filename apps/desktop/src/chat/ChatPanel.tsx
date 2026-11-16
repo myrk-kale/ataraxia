@@ -25,6 +25,7 @@ import {
   initialChatState,
   listenAgentEvents,
   PROVIDER_LABELS,
+  scheduleCancel,
   waitingFor,
   withLocal,
   type ImageAttachment,
@@ -52,6 +53,7 @@ import { Loader } from "./Loader";
 import { seedPicture } from "./MessageImages";
 import { ProfileMark } from "./ProfileMark";
 import { QueuedMessages } from "./QueuedMessages";
+import { ScheduledTasks } from "./ScheduledTasks";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
@@ -61,6 +63,7 @@ import { VirtualTranscript } from "./VirtualTranscript";
 import { takesBack, withTakenBack } from "./takeBack";
 import { useComposerPicker } from "./useComposerPicker";
 import { useMessageQueue } from "./useMessageQueue";
+import { useSchedules } from "./useSchedules";
 
 const STICK_THRESHOLD_PX = 80;
 const MAX_COMPOSER_PX = 160;
@@ -116,6 +119,7 @@ export function ChatPanel({
   // The last message on its way to the agent, so the next one waits for it.
   const inFlight = useRef<Promise<unknown>>(Promise.resolve());
   const [queue, setQueue] = useMessageQueue(sessionId);
+  const schedules = useSchedules(sessionId);
   // What was sent to the queue and is not in the app's list yet.
   const [queuedHere, setQueuedHere] = useState<QueuedLocally[]>([]);
   const shownQueue = useMemo(() => withLocal(queue, queuedHere), [queue, queuedHere]);
@@ -712,7 +716,15 @@ export function ChatPanel({
         }}
       >
         {activeSubagent ? null : (
-          <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} />
+          <>
+            <ScheduledTasks
+              schedules={schedules}
+              onCancel={(id) => {
+                void scheduleCancel(sessionId, id).catch(() => {});
+              }}
+            />
+            <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} />
+          </>
         )}
         <div className="cg-field relative rounded-cg-lg bg-cg-tint px-4 py-3.5">
           <ComposerPicker

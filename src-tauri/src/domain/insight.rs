@@ -530,6 +530,12 @@ pub enum InsightEvent {
         session_id: SessionId,
         queue: crate::domain::MessageQueue,
     },
+    /// What a chat has scheduled for later changed.
+    #[serde(rename_all = "camelCase")]
+    Schedules {
+        session_id: SessionId,
+        schedules: Vec<crate::domain::Schedule>,
+    },
 }
 
 /// A named piece of code found by a parser: the unit a change is attributed to.
