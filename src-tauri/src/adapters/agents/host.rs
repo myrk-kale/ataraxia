@@ -943,23 +943,24 @@ impl AgentHost {
                     format!("unknown slash command /{command}"),
                 ));
             }
-            let session = self
-                .inner
-                .store
-                .get_session(*session_id)?
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not found"))?;
-            let capabilities = self.capabilities(session.provider)?;
-            if !capabilities.compact {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "compaction is unavailable for this agent",
-                ));
-            }
-            if !args.is_empty() && !capabilities.compact_instructions {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "this agent does not accept compaction instructions",
-                ));
+            if command == "compact" {
+                let session =
+                    self.inner.store.get_session(*session_id)?.ok_or_else(|| {
+                        Error::new(ErrorCode::NotFound, "agent session not found")
+                    })?;
+                let capabilities = self.capabilities(session.provider)?;
+                if !capabilities.compact {
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        "compaction is unavailable for this agent",
+                    ));
+                }
+                if !args.is_empty() && !capabilities.compact_instructions {
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        "this agent does not accept compaction instructions",
+                    ));
+                }
             }
         }
         let images = self.store_images(session_id, &uploads)?;
@@ -3380,6 +3381,46 @@ mod tests {
         assert!(sent[0].contains("Never generate"), "{}", sent[0]);
         assert!(sent[0].ends_with("now the tests"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn provider_command_arguments_are_not_checked_as_compaction_instructions() {
+        struct Commands(Arc<dyn BackendSession>);
+        impl BackendSession for Commands {
+            fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                self.0.prompt(turn_id, text)
+            }
+            fn cancel(&self) -> Result<()> {
+                self.0.cancel()
+            }
+            fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                self.0.resolve_permission(decision)
+            }
+            fn commands(&self) -> Vec<SlashCommand> {
+                vec![SlashCommand {
+                    name: "review".into(),
+                    description: "Review a target".into(),
+                    hint: Some("target".into()),
+                    source: None,
+                }]
+            }
+            fn shutdown(&self) {
+                self.0.shutdown()
+            }
+        }
+
+        let h = harness();
+        let mut sessions = h.host.inner.sessions.lock();
+        let live = sessions.get_mut(&h.session.id).expect("live session");
+        live.backend = Arc::new(Commands(Arc::clone(&live.backend)));
+        drop(sessions);
+
+        h.host
+            .prompt(&h.session.id, "/review the staged changes")
+            .expect("provider command with arguments");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
     }
 
     #[test]
