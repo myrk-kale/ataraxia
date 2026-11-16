@@ -34,8 +34,8 @@ function remembered(): string | null {
  * The BTW bar, in the manner of Spotlight: summoned by shortcut only, one wide rounded field with
  * nothing in it but its placeholder and, joined to its body, the choice of which model runs the
  * question. It answers below the bar. It can also comment on a component, change a priority, or
- * generate decisions or a diagram, but only when asked; and when it finishes, the main chat is
- * told what was asked and what was done.
+ * generate decisions or a diagram, but only when asked. Each completed reply adds a short summary
+ * of the latest question and answer to the main chat queue.
  */
 export function BtwPalette({
   isOpen,
@@ -329,20 +329,20 @@ export function BtwPalette({
   );
 }
 
-/** Whether the main chat has been told what this BTW asked and did. */
+/** Whether the latest BTW summary has been added to the main chat queue. */
 export function MainChatNote({ task }: { task: BtwTask }) {
   if (task.status !== "ready") {
     return null;
   }
-  const told = Boolean(task.returned_at) && task.returned_at! >= task.updated_at;
-  return told ? (
+  const queued = task.returned_at !== null && task.returned_at >= task.updated_at;
+  return queued ? (
     <span className="inline-flex flex-none items-center gap-1 text-small text-cg-green">
       <Check aria-hidden="true" size={12} />
-      The main chat was told
+      Latest summary queued for the main chat
     </span>
   ) : (
     <span aria-live="polite" className="flex-none text-small text-cg-muted-strong">
-      The main chat is busy. It is told as soon as its turn ends.
+      The latest BTW summary has not reached the main chat queue
     </span>
   );
 }

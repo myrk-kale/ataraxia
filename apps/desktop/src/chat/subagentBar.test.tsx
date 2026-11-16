@@ -17,6 +17,7 @@ function render(selected: string | null, busy = false, subagents = SUBAGENTS) {
       selected={selected}
       subagents={subagents}
       onSelect={() => {}}
+      onClose={() => {}}
       onStop={() => {}}
     />,
   );

@@ -56,7 +56,7 @@ impl QueueState {
 /// What happened when a queued message was handed to the agent.
 enum Dispatch {
     Sent,
-    /// The agent started something else first (a BTW report, say); the next turn end retries.
+    /// The agent started something else first (a BTW update, say); the next turn end retries.
     Busy,
 }
 

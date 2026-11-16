@@ -171,8 +171,9 @@ export type SessionOptions = {
   agents: AgentChoice[];
 };
 
-/** An action the agent runs when a message begins with `/name`: one of its commands or skills. */
-export type SlashCommand = {
+/** A command, skill, or MCP server offered by the message field's `/` picker. */
+export type ComposerResource = {
+  kind: "command" | "skill" | "mcp";
   name: string;
   description: string;
   /** What follows the name, when the agent says (`[branch]`). */
@@ -258,8 +259,8 @@ export type CapabilityMatrix = {
   child_sessions: boolean;
 };
 
-export function agentListCommands(sessionId: SessionId) {
-  return invoke<SlashCommand[]>("agent_list_commands", { sessionId });
+export function agentListComposerResources(sessionId: SessionId) {
+  return invoke<ComposerResource[]>("agent_list_composer_resources", { sessionId });
 }
 
 export function sessionPaths(sessionId: SessionId) {

@@ -1,8 +1,8 @@
 import { type KeyboardEvent, useId, useLayoutEffect, useMemo, useState } from "react";
 import {
+  type ComposerResource,
   type MentionPath,
-  type SlashCommand,
-  agentListCommands,
+  agentListComposerResources,
   sessionPaths,
 } from "../lib/agent";
 import type { SessionId } from "../lib/workspace";
@@ -17,7 +17,7 @@ import { pickerOptionId } from "./ComposerPicker";
 
 /**
  * The `/` and `@` pickers of the message field. The field keeps the focus and the caret; this
- * works out what is being typed, what Ataraxia offers, and what a choice does to the text.
+ * works out what is being typed, what the session offers, and what a choice does to the text.
  */
 export function useComposerPicker({
   sessionId,
@@ -30,12 +30,12 @@ export function useComposerPicker({
   draft: string;
   onDraft: (text: string) => void;
   field: { current: HTMLTextAreaElement | null };
-  /** `/` runs Ataraxia or harness commands; off outside the main conversation. */
+  /** `/` offers session resources in the main conversation. */
   commands: boolean;
 }) {
   const listId = useId();
   const [caret, setCaret] = useState(0);
-  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  const [resources, setResources] = useState<ComposerResource[]>([]);
   const [paths, setPaths] = useState<MentionPath[]>([]);
   const [cursor, setCursor] = useState({ for: "", index: 0 });
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -50,11 +50,11 @@ export function useComposerPicker({
       return [];
     }
     return trigger.kind === "command"
-      ? commandItems(commands, trigger.query)
+      ? commandItems(resources, trigger.query)
       : mentionItems(paths, trigger.query);
     // `trigger` is rebuilt each render; what it holds is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trigger?.kind, trigger?.query, commands, paths]);
+  }, [trigger?.kind, trigger?.query, resources, paths]);
 
   const active = cursor.for === query ? Math.min(cursor.index, Math.max(items.length - 1, 0)) : 0;
   const open = trigger !== null && items.length > 0;
@@ -74,9 +74,9 @@ export function useComposerPicker({
       return;
     }
     if (next.kind === "command") {
-      void agentListCommands(sessionId)
-        .then(setCommands)
-        .catch(() => setCommands([]));
+      void agentListComposerResources(sessionId)
+        .then(setResources)
+        .catch(() => setResources([]));
     } else {
       void sessionPaths(sessionId)
         .then(setPaths)
@@ -141,7 +141,7 @@ export function useComposerPicker({
     items,
     active,
     activeId: open ? pickerOptionId(listId, items[active]) : undefined,
-    label: trigger?.kind === "command" ? "Commands" : "Files",
+    label: trigger?.kind === "command" ? "Commands, skills, and MCP servers" : "Files",
     pick,
     hover: (index: number) => setCursor({ for: query, index }),
     onKeyDown,

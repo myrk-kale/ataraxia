@@ -9,7 +9,7 @@ import { useComposerPicker } from "./useComposerPicker";
 
 const api = vi.hoisted(() => ({ commands: vi.fn(), paths: vi.fn() }));
 vi.mock("../lib/agent", () => ({
-  agentListCommands: api.commands,
+  agentListComposerResources: api.commands,
   sessionPaths: api.paths,
 }));
 
@@ -86,10 +86,10 @@ beforeEach(() => {
   // jsdom does not scroll.
   Element.prototype.scrollIntoView = vi.fn();
   api.commands.mockResolvedValue([
-    { name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
-    { name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
-    { name: "compact", description: "Compact this conversation", hint: null, source: "Ataraxia" },
-    { name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
+    { kind: "command", name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
+    { kind: "command", name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
+    { kind: "command", name: "compact", description: "Compact this conversation", hint: null, source: "Ataraxia" },
+    { kind: "command", name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
   ]);
   api.paths.mockResolvedValue([
     { path: "src/", dir: true, repository: null },

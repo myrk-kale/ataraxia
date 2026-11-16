@@ -121,6 +121,8 @@ export function ChatPanel({
   const [trustingRepositoryMcp, setTrustingRepositoryMcp] = useState(false);
   // The subagent whose conversation is on screen; null shows the main conversation.
   const [view, setView] = useState<string | null>(null);
+  // Closing a subagent hides its chip for this view; its saved conversation stays untouched.
+  const [closedSubagents, setClosedSubagents] = useState<Set<string>>(() => new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);
@@ -281,15 +283,21 @@ export function ChatPanel({
     hadPending.current = state.pending !== null;
   }, [state.pending]);
 
-  const activeSubagent = state.subagents.find((item) => item.id === view) ?? null;
-  const canWrite = activeSubagent === null || provider?.settings.subagent_messages === true;
-  // Slash actions belong to Ataraxia; references name files in the workspace.
+  const visibleSubagents = state.subagents.filter((item) => !closedSubagents.has(item.id));
+  const activeSubagent = visibleSubagents.find((item) => item.id === view) ?? null;
+  const activeBtwSubagent = activeSubagent?.title.startsWith("BTW: ") ?? false;
+  const btwSession =
+    session.title.startsWith("BTW: ") && (session.kind === "btw" || session.kind === "delegate");
+  const mainPermission = activeBtwSubagent ? null : state.pending;
+  const canWrite =
+    activeSubagent === null || activeBtwSubagent || provider?.settings.subagent_messages === true;
+  // Slash actions name session resources; references point into the workspace.
   const picker = useComposerPicker({
     sessionId,
     draft,
     onDraft: setDraft,
     field: composerRef,
-    commands: activeSubagent === null && onNewSession !== undefined,
+    commands: activeSubagent === null,
   });
 
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
@@ -344,7 +352,7 @@ export function ChatPanel({
 
   // While the agent works, the main conversation takes messages into a queue instead of refusing
   // them; a subagent's conversation does not queue.
-  const queues = busy && activeSubagent === null;
+  const queues = busy && activeSubagent === null && !btwSession;
 
   function addFiles(files: File[]) {
     const { accepted, problems } = pickImages(files, MAX_IMAGES - attachments.length);
@@ -411,8 +419,8 @@ export function ChatPanel({
     let text = draft.trim();
     const sending = activeSubagent ? [] : attachments;
     const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
-    if (commandName && (activeSubagent !== null || onNewSession === undefined)) {
-      setAttachNotice("Ataraxia commands are available only in the main chat.");
+    if (commandName && activeSubagent !== null) {
+      setAttachNotice("Slash commands are available only in the main chat.");
       return;
     }
     if (commandName === "help" && text !== "/help") {
@@ -488,10 +496,6 @@ export function ChatPanel({
       }
       return;
     }
-    if (commandName && commandName !== "compact") {
-      setAttachNotice(`Unknown Ataraxia command /${commandName}. Use /help to list commands.`);
-      return;
-    }
     if (/@(?:"[^\"]*[*?][^\"]*"|[^\s]*[*?][^\s]*)/.test(text)) {
       try {
         text = expandGlobMentions(text, await sessionPaths(sessionId));
@@ -500,7 +504,11 @@ export function ChatPanel({
         return;
       }
     }
-    if ((!text && sending.length === 0) || (busy && !queues)) {
+    if (
+      (!text && sending.length === 0) ||
+      (activeBtwSubagent && activeSubagent?.status === "running") ||
+      (busy && !queues && !activeBtwSubagent)
+    ) {
       return;
     }
     setDraft("");
@@ -631,6 +639,14 @@ export function ChatPanel({
     void agentCancel(sessionId).catch((err: unknown) =>
       dispatch({ type: "failed", message: errorText(err) }),
     );
+  }
+
+  function closeSubagent(id: string) {
+    setClosedSubagents((closed) => new Set(closed).add(id));
+    if (view === id) {
+      stickRef.current = true;
+      setView(null);
+    }
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -904,24 +920,25 @@ export function ChatPanel({
       </Dialog>
 
       <SubagentBar
-        busy={busy && view !== null}
+        busy={busy && view !== null && !activeBtwSubagent}
         mainLabel={MAIN_AGENT}
         provider={session.provider}
         selected={activeSubagent ? activeSubagent.id : null}
-        subagents={state.subagents}
+        subagents={visibleSubagents}
         onSelect={(id) => {
           stickRef.current = true;
           setView(id);
         }}
+        onClose={closeSubagent}
         onStop={cancelTurn}
       />
 
-      {state.pending ? (
+      {mainPermission ? (
         // What the agent is waiting for takes the place of the message field until it is settled.
         // The field stays in the page, hidden, so what was typed in it is still there after.
         <div className="relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5">
           <PermissionPrompt
-            pending={state.pending}
+            pending={mainPermission}
             onResolve={(allow, answers) => {
               void resolve(allow, answers);
             }}
@@ -930,7 +947,7 @@ export function ChatPanel({
       ) : null}
 
       <form
-        className={`relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5 ${state.pending ? "hidden" : ""}`}
+        className={`relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5 ${mainPermission ? "hidden" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
           void send();

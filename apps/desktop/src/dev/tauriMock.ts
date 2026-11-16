@@ -350,19 +350,20 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "agent_repository_mcp_approval": return null;
     case "agent_trust_repository_mcp": return null;
     case "agent_start_session": return null;
-    case "agent_list_commands": {
+    case "agent_list_composer_resources": {
       const activeSession = sessions.find((item) => item.id === args?.sessionId) ?? session;
       const capabilities = providers.find((item) => item.kind === activeSession.provider)?.capabilities;
       return [
-        { name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
-        { name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
+        { kind: "command", name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
+        { kind: "command", name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
         {
+          kind: "command",
           name: "compact",
           description: capabilities?.compact ? "Compact this conversation" : "Unavailable for this session",
           hint: capabilities?.compact_instructions ? "[instructions]" : null,
           source: "Ataraxia",
         },
-        { name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
+        { kind: "command", name: "stop", description: "Stop the current run", hint: null, source: "Ataraxia" },
       ];
     }
     case "session_paths":

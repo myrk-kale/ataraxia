@@ -1,10 +1,19 @@
-import { File, Slash } from "lucide-react";
+import { BookOpen, File, Server, Slash } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { PickerItem } from "./pickerChoices";
 
 const ICONS = {
   command: Slash,
+  skill: BookOpen,
+  mcp: Server,
   file: File,
+} as const;
+
+const KIND_LABELS = {
+  command: "Command",
+  skill: "Skill",
+  mcp: "MCP server",
+  file: "File",
 } as const;
 
 /** The id of one row, which the message field names as its active descendant. */
@@ -13,9 +22,9 @@ export function pickerOptionId(listId: string, item: PickerItem): string {
 }
 
 /**
- * The list that opens above the message field while a `/command` or an `@mention` is typed. The
- * field keeps the focus: the arrows, Enter, Tab and Esc are handled there, and this only shows
- * the choices and takes a click.
+ * The list that opens above the message field while a `/` resource or an `@mention` is typed.
+ * The field keeps the focus: the arrows, Enter, Tab and Esc are handled there, and this only
+ * shows the choices and takes a click.
  */
 export function ComposerPicker({
   id,
@@ -71,6 +80,7 @@ export function ComposerPicker({
             }}
           >
             <Icon aria-hidden="true" className="flex-none text-cg-muted" size={13} />
+            <span className="sr-only">{KIND_LABELS[item.kind]}</span>
             <span className="flex min-w-0 flex-1 items-baseline gap-2.5">
               <span className="flex-none font-medium">{item.label}</span>
               {item.detail ? (

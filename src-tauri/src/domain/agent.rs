@@ -170,6 +170,25 @@ pub struct SlashCommand {
     pub source: Option<String>,
 }
 
+/// A slash-menu resource available to a chat session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerResource {
+    pub kind: ComposerResourceKind,
+    pub name: String,
+    pub description: String,
+    pub hint: Option<String>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComposerResourceKind {
+    Command,
+    Skill,
+    Mcp,
+}
+
 /// Commands whose names and meanings belong to Ataraxia, regardless of the active harness.
 pub fn ataraxia_commands() -> Vec<SlashCommand> {
     [

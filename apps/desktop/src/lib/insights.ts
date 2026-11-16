@@ -406,7 +406,6 @@ export const btwStart = (
 ) =>
   invoke<BtwTask>("btw_start", { sessionId, mode, question, context, returnPolicy, authorized, provider, model });
 export const btwList = (sessionId: SessionId) => invoke<BtwTask[]>("btw_list", { sessionId });
-export const btwReturn = (taskId: BtwTaskId) => invoke<void>("btw_return", { taskId });
 export const btwSession = (taskId: BtwTaskId) => invoke<ChatSession>("btw_session", { taskId });
 export const sessionGet = (sessionId: SessionId) => invoke<ChatSession>("session_get", { sessionId });
 
