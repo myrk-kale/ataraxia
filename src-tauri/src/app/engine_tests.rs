@@ -1854,6 +1854,62 @@ fn stopping_a_turn_holds_the_queue_until_the_user_decides() {
 }
 
 #[test]
+fn an_agent_that_left_something_undone_holds_the_queue_when_its_turn_ends() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+    w.engine
+        .enqueue(w.session.id, "second", Vec::new())
+        .unwrap();
+
+    // Asking to hold changes nothing mid-turn, and the turn then ends well.
+    w.engine
+        .queue_pause(w.session.id, Some("  The deploy\n needs a token  "))
+        .unwrap();
+    assert!(!w.engine.queue(w.session.id).paused);
+    approve(&w, first);
+    wait_for("the queue to hold", || {
+        w.engine.queue(w.session.id).paused.then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        user_texts(&w),
+        ["first"],
+        "the next message must not run on top of the problem"
+    );
+    let queue = w.engine.queue(w.session.id);
+    assert_eq!(queue.reason.as_deref(), Some("The deploy needs a token"));
+    assert_eq!(queued_texts(&w), ["second"]);
+
+    // The user decides: Send now goes through, and the pause and its reason are gone.
+    let id = queue.items[0].id.clone();
+    let queue = w.engine.queue_send_now(w.session.id, &id).unwrap();
+    assert!(queue.items.is_empty() && !queue.paused && queue.reason.is_none());
+    assert_eq!(user_texts(&w), ["first", "second"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_pause_the_agent_asked_for_leaves_nothing_behind_when_the_queue_is_empty() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+    w.engine.queue_pause(w.session.id, None).unwrap();
+    approve(&w, first);
+    wait_for("the turn to end", || {
+        (w.host.status(&w.session.id).unwrap() == SessionStatus::Ready).then_some(())
+    });
+    // Nothing was queued, so the hold ended with the turn: a later message is not held back.
+    std::thread::sleep(Duration::from_millis(200));
+    let queue = w.engine.enqueue(w.session.id, "later", Vec::new()).unwrap();
+    assert!(!queue.paused);
+    assert_eq!(user_texts(&w), ["first", "later"]);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn send_now_stops_the_turn_and_puts_that_message_ahead_of_the_rest() {
     let w = world();
     w.host.start_session(&w.session).unwrap();

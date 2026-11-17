@@ -83,7 +83,12 @@ export type BranchView = {
   worktree_id: WorktreeId | null;
 };
 
-export type BranchList = { branches: BranchView[]; workspace: WorkspaceSnapshot };
+export type BranchList = {
+  branches: BranchView[];
+  /** Remote branches (`origin/feature`) with no local branch of the same name yet. */
+  remotes: string[];
+  workspace: WorkspaceSnapshot;
+};
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -177,6 +182,21 @@ export function workspaceListBranches(worktreeId: WorktreeId) {
 /** Tries to move to a branch; when git refuses, the rejection says why and nothing changed. */
 export function workspaceSelectBranch(worktreeId: WorktreeId, name: string) {
   return invoke<WorkspaceSnapshot>("workspace_select_branch", { worktreeId, name });
+}
+
+/** Brings the remotes up to date and lists the branches again; a failure says what git said. */
+export function workspaceFetchBranches(worktreeId: WorktreeId) {
+  return invoke<BranchList>("workspace_fetch_branches", { worktreeId });
+}
+
+/** Checks out a remote branch (`origin/feature`) as a local branch that tracks it. */
+export function workspaceCheckoutRemoteBranch(worktreeId: WorktreeId, remote: string) {
+  return invoke<WorkspaceSnapshot>("workspace_checkout_remote_branch", { worktreeId, remote });
+}
+
+/** Makes a branch from another branch, a remote one, a tag or a commit, and moves to it. */
+export function workspaceCreateBranch(worktreeId: WorktreeId, name: string, base: string) {
+  return invoke<WorkspaceSnapshot>("workspace_create_branch", { worktreeId, name, base });
 }
 
 /**

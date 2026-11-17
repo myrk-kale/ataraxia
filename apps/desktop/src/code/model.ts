@@ -234,8 +234,11 @@ export function shownLabel(
   if (reference) {
     return `${branch ?? "Working tree"} against ${reference}`;
   }
-  if (!checkpoint || checkpoint.source === "compare") {
+  if (!checkpoint) {
     return "No comparison chosen";
+  }
+  if (checkpoint.source === "compare") {
+    return "Pending changes";
   }
   return checkpoint.source === "turn" ? "Last agent turn" : "Edits since the last check";
 }
@@ -251,10 +254,10 @@ export function noDiffMessage(reference: string | null, problem: string | null, 
   if (problem) {
     return problem;
   }
-  const after = "What the agent changes shows here after each of its turns.";
+  const after = "Pending changes and what the agent changes show here.";
   return branch
-    ? `No comparison chosen. Pick a branch or a commit in Compare with… (in the header) to see what ${branch} changes against it. ${after}`
-    : `This worktree is not on a branch, so there is nothing to compare. Switch to a branch in the header, then pick what to compare it with in Compare with…. ${after}`;
+    ? `No pending changes. Pick a branch or a commit in Compare with… (in the header) to see what ${branch} changes against it. ${after}`
+    : `No pending changes, and this worktree is not on a branch. Switch to a branch in the header to compare it with another. ${after}`;
 }
 
 /** The checkpoint a review follows when none is chosen: the latest that is not a comparison. */

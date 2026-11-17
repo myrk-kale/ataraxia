@@ -131,25 +131,24 @@ afterEach(() => {
 });
 
 describe("what the Code space compares", () => {
-  it("shows no diff and says why when no comparison is chosen, and never asks for one", async () => {
+  it("compares HEAD with the working tree when no reference is chosen, and says why when nothing is pending", async () => {
     answers.code_review = () => emptyReview;
     answers.code_tree = () => [];
     await space({ reference: null, branch: "feature/x" });
     const text = host.textContent ?? "";
-    expect(text).toContain("No comparison chosen");
+    expect(text).toContain("No pending changes");
     expect(text).toContain("Pick a branch or a commit in Compare with…");
-    expect(count("code_compare")).toBe(0);
+    expect(count("code_compare")).toBeGreaterThan(0);
     expect(host.querySelectorAll("[data-testid=shown-label]")[0]?.textContent).toContain("No comparison chosen");
   });
 
-  it("says the worktree is not on a branch when there is none, and still compares nothing", async () => {
+  it("says the worktree is not on a branch when there is none", async () => {
     answers.code_review = () => emptyReview;
     answers.code_tree = () => [];
     await space({ reference: null, branch: null });
     const text = host.textContent ?? "";
     expect(text).toContain("not on a branch");
     expect(text).toContain("Switch to a branch in the header");
-    expect(count("code_compare")).toBe(0);
   });
 
   it("compares the branch with the reference once one is chosen, and names both", async () => {

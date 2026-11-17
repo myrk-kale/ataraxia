@@ -328,6 +328,66 @@ export function listenInsightEvents(handler: (event: InsightEvent) => void): Pro
 export const codeTree = (worktreeId: WorktreeId) => invoke<string[]>("code_tree", { worktreeId });
 export const codeRead = (worktreeId: WorktreeId, path: string) =>
   invoke<FileContent>("code_read", { worktreeId, path });
+export type DefinitionHit = { path: string; line: number; kind: string; container: string | null };
+export const codeDefinitions = (worktreeId: WorktreeId, name: string) =>
+  invoke<DefinitionHit[]>("code_definitions", { worktreeId, name });
+export type LintStatus = {
+  trusted: boolean;
+  tools: { id: string; local: boolean; path: string }[];
+  /** Language servers the project could use. */
+  servers: string[];
+};
+export type Diagnostic = {
+  tool: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  severity: "error" | "warning" | "info" | "hint";
+  code: string | null;
+  message: string;
+};
+export const codeLintStatus = (worktreeId: WorktreeId) => invoke<LintStatus>("code_lint_status", { worktreeId });
+export const codeLintTrust = (worktreeId: WorktreeId, trusted: boolean) =>
+  invoke<void>("code_lint_trust", { worktreeId, trusted });
+export const codeLintFile = (worktreeId: WorktreeId, path: string) =>
+  invoke<Diagnostic[]>("code_lint_file", { worktreeId, path });
+// Language servers of the repository (only for a repository whose tools the user allowed).
+export type LspTextEdit = { range: [number, number, number, number]; newText: string };
+export type LspCompletionItem = {
+  label: string;
+  /** The server's CompletionItemKind, 1 to 25. */
+  kind: number;
+  detail: string | null;
+  documentation: string | null;
+  insertText: string;
+  snippet: boolean;
+  sortText: string | null;
+  filterText: string | null;
+  /** Zero-based [start line, start character, end line, end character]. */
+  range: [number, number, number, number] | null;
+  additionalEdits: LspTextEdit[];
+  deprecated: boolean;
+};
+export type LspCompletions = { items: LspCompletionItem[]; incomplete: boolean };
+export type LspPlace = { path: string; line: number; column: number };
+export const lspSync = (worktreeId: WorktreeId, path: string, text: string) =>
+  invoke<string | null>("lsp_sync", { worktreeId, path, text });
+export const lspSaved = (worktreeId: WorktreeId, path: string) => invoke<void>("lsp_saved", { worktreeId, path });
+export const lspClose = (worktreeId: WorktreeId, path: string) => invoke<void>("lsp_close", { worktreeId, path });
+export const lspComplete = (
+  worktreeId: WorktreeId,
+  path: string,
+  line: number,
+  character: number,
+  trigger: string | null,
+) => invoke<LspCompletions>("lsp_complete", { worktreeId, path, line, character, trigger });
+export const lspDefinition = (worktreeId: WorktreeId, path: string, line: number, character: number) =>
+  invoke<LspPlace[]>("lsp_definition", { worktreeId, path, line, character });
+export type LspDiagnostics = { worktreeId: WorktreeId; path: string; diagnostics: Diagnostic[] };
+export function listenLspDiagnostics(handler: (event: LspDiagnostics) => void): Promise<UnlistenFn> {
+  return listen<LspDiagnostics>("lsp://diagnostics", (event) => handler(event.payload));
+}
 export const codeWrite = (
   worktreeId: WorktreeId,
   path: string,

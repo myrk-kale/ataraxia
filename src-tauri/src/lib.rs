@@ -24,6 +24,7 @@ pub fn run() {
             let state = tauri_api::build_app_state(app.handle())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(state);
+            app.manage(adapters::lsp::LspManager::new(app.handle().clone()));
             tauri_api::follow_git(app.handle());
             Ok(())
         })
@@ -41,6 +42,9 @@ pub fn run() {
             tauri_api::workspace_select_worktree,
             tauri_api::workspace_list_branches,
             tauri_api::workspace_select_branch,
+            tauri_api::workspace_fetch_branches,
+            tauri_api::workspace_checkout_remote_branch,
+            tauri_api::workspace_create_branch,
             tauri_api::workspace_create_session,
             tauri_api::workspace_open_session,
             tauri_api::workspace_delete_session,
@@ -81,6 +85,23 @@ pub fn run() {
             tauri_api::code_tree,
             tauri_api::session_paths,
             tauri_api::code_read,
+            tauri_api::code_definitions,
+            tauri_api::code_lint_status,
+            tauri_api::code_lint_trust,
+            tauri_api::code_lint_file,
+            tauri_api::resources_list,
+            tauri_api::resources_set_state,
+            tauri_api::resources_read_skill,
+            tauri_api::resources_save_skill,
+            tauri_api::resources_delete_skill,
+            tauri_api::resources_read_mcp,
+            tauri_api::resources_save_mcp,
+            tauri_api::resources_delete_mcp,
+            tauri_api::lsp_sync,
+            tauri_api::lsp_saved,
+            tauri_api::lsp_close,
+            tauri_api::lsp_complete,
+            tauri_api::lsp_definition,
             tauri_api::code_write,
             tauri_api::code_file_at,
             tauri_api::code_review,

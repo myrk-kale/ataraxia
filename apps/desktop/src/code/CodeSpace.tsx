@@ -16,7 +16,18 @@ import {
   codeFileAt,
   codeRead,
   codeCompare,
-  codeRefreshCheckpoint,
+  codeDefinitions,
+  codeLintFile,
+  codeLintStatus,
+  codeLintTrust,
+  listenLspDiagnostics,
+  lspClose,
+  lspComplete,
+  lspDefinition,
+  lspSaved,
+  lspSync,
+  type Diagnostic,
+  type LintStatus,
   codeReview,
   reviewResetPriority,
   codeSetReviewMark,
@@ -43,7 +54,6 @@ import {
   shownLabel,
   fileScore,
   languageFor,
-  latestOfTurns,
   lineChanges,
   mapLine,
   noDiffMessage,
@@ -161,6 +171,14 @@ export function CodeSpace({
   const [conflict, setConflict] = useState(false);
   const [commenting, setCommenting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [lintStatus, setLintStatus] = useState<LintStatus | null>(null);
+  const [lintAsked, setLintAsked] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
+  const [lintNote, setLintNote] = useState<string | null>(null);
+  const lintRun = useRef(0);
+  // The language server of the open file, once one answered; and what servers published, by file.
+  const [lspServer, setLspServer] = useState<string | null>(null);
+  const [lspFound, setLspFound] = useState<Record<string, Diagnostic[]>>({});
   const [compareProblem, setCompareProblem] = useState<string | null>(null);
   const [activeUnit, setActiveUnit] = useState<string | null>(null);
   const editor = useRef<EditorHandle>(null);
@@ -215,11 +233,22 @@ export function CodeSpace({
 
   /**
    * What the review shows: the current branch against the reference the header picked, or, with
-   * no reference, only what the agent changed in its last turn (nothing is compared by default).
-   * Comparing records the working tree as it is now, so asking again after an edit shows the edit.
+   * no reference, what is pending in the working tree against `HEAD` (and, when nothing is
+   * pending, the agent's last turn). Comparing records the working tree as it is now, so asking
+   * again after an edit shows the edit.
    */
   const openTarget = useCallback(
     async (quiet = false) => {
+      if (!reference && sessionId) {
+        try {
+          const pending = await codeCompare(sessionId, "HEAD", null, false, repositoryId);
+          setCompareProblem(null);
+          await loadReview(pending.id, quiet);
+          return;
+        } catch {
+          // Clean tree, unborn HEAD or git busy: fall back to the agent's last turn below.
+        }
+      }
       if (reference && sessionId) {
         try {
           const compared = await codeCompare(sessionId, reference, null, true, repositoryId);
@@ -305,13 +334,7 @@ export function CodeSpace({
       return;
     }
     if (event.type === "checkpoint" && event.sessionId === sessionId) {
-      if (reference) {
-        void openTarget(true);
-        return;
-      }
-      // The view follows the agent's latest turn; a comparison made earlier does not count.
-      const latest = latestOfTurns(review?.checkpoints ?? []);
-      void loadReview(checkpoint && latest?.id !== checkpoint.id ? checkpoint.id : null);
+      void openTarget(true);
     }
   });
 
@@ -377,6 +400,141 @@ export function CodeSpace({
     },
     [worktreeId, checkpoint, headLive, mode, marks, onError],
   );
+
+  const goToDefinition = useCallback(
+    async (place: { path: string; line: number }) => {
+      if (docRef.current?.path !== place.path) {
+        await openFile(place.path);
+      }
+      setTimeout(() => editor.current?.reveal(Math.max(1, place.line - 2)), 140);
+    },
+    [openFile],
+  );
+
+  // What the repository's linters and checkers say about the open file, once the user allowed them.
+  useEffect(() => {
+    setLintStatus(null);
+    setLintAsked(false);
+    if (!worktreeId) {
+      return;
+    }
+    let live = true;
+    codeLintStatus(worktreeId)
+      .then((status) => live && setLintStatus(status))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [worktreeId]);
+
+  const lintPath = doc && !doc.fixed && doc.disk && !doc.disk.binary ? doc.path : null;
+  const lintStamp = doc?.disk?.mtimeMs ?? 0;
+  const lintReady = Boolean(lintStatus?.trusted && lintStatus.tools.length > 0);
+  const lspAllowed = Boolean(lintStatus?.trusted && (lintStatus.servers.length > 0 || lintStatus.tools.length > 0));
+  const shownDiagnostics = useMemo(
+    () => [...diagnostics, ...(doc ? (lspFound[doc.path] ?? []) : [])],
+    [diagnostics, lspFound, doc?.path],
+  );
+  useEffect(() => {
+    const run = ++lintRun.current;
+    setDiagnostics([]);
+    setLintNote(null);
+    if (!worktreeId || !lintPath || !lintReady) {
+      return;
+    }
+    codeLintFile(worktreeId, lintPath)
+      .then((found) => run === lintRun.current && setDiagnostics(found))
+      .catch((err: unknown) => run === lintRun.current && setLintNote(errorText(err)));
+  }, [worktreeId, lintPath, lintStamp, lintReady]);
+
+  // The language server gets the document as it is typed (a moment after the last key), and is
+  // told when it is no longer open.
+  const lspText = lintPath ? (doc?.buffer ?? null) : null;
+  useEffect(() => {
+    if (!worktreeId || !lintPath || !lspAllowed || lspText === null) {
+      setLspServer(null);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      lspSync(worktreeId, lintPath, lspText)
+        .then((name) => live && setLspServer(name))
+        .catch(() => live && setLspServer(null));
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [worktreeId, lintPath, lspAllowed, lspText]);
+  useEffect(() => {
+    if (!worktreeId || !lintPath || !lspAllowed) {
+      return;
+    }
+    return () => void lspClose(worktreeId, lintPath).catch(() => undefined);
+  }, [worktreeId, lintPath, lspAllowed]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listenLspDiagnostics((event) => {
+      if (event.worktreeId === worktreeId) {
+        setLspFound((all) => ({ ...all, [event.path]: event.diagnostics }));
+      }
+    })
+      .then((off) => (disposed ? off() : (unlisten = off)))
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [worktreeId]);
+  useEffect(() => setLspFound({}), [worktreeId]);
+
+  const complete = useCallback(
+    async (request: { line: number; column: number; trigger: string | null }) => {
+      const current = docRef.current;
+      if (!worktreeId || !lspServer || !current || current.fixed) {
+        return null;
+      }
+      const text = editor.current?.value() ?? current.buffer;
+      await lspSync(worktreeId, current.path, text);
+      // Monaco counts from 1 in UTF-16 units, the protocol from 0 in the same units.
+      return lspComplete(worktreeId, current.path, request.line - 1, request.column - 1, request.trigger);
+    },
+    [worktreeId, lspServer],
+  );
+
+  const findDefinitions = useCallback(
+    async (name: string, line: number, column: number) => {
+      const current = docRef.current;
+      if (worktreeId && lspServer && current && !current.fixed) {
+        const text = editor.current?.value() ?? current.buffer;
+        const places = await lspSync(worktreeId, current.path, text)
+          .then(() => lspDefinition(worktreeId, current.path, line - 1, column - 1))
+          .catch(() => []);
+        if (places.length > 0) {
+          return places;
+        }
+      }
+      return worktreeId ? await codeDefinitions(worktreeId, name) : [];
+    },
+    [worktreeId, lspServer],
+  );
+
+  async function allowLint(allowed: boolean) {
+    if (!worktreeId) {
+      return;
+    }
+    if (!allowed) {
+      setLintAsked(true);
+      return;
+    }
+    try {
+      await codeLintTrust(worktreeId, true);
+      setLintStatus(await codeLintStatus(worktreeId));
+    } catch (err) {
+      onError(errorText(err));
+    }
+  }
 
   const openUnit = useCallback(
     async (unit: Unit) => {
@@ -455,6 +613,7 @@ export function CodeSpace({
             : state,
         );
         setConflict(false);
+        void lspSaved(worktreeId, current.path).catch(() => undefined);
       } catch (err) {
         if (errorCode(err) === "conflict") {
           setConflict(true);
@@ -550,11 +709,9 @@ export function CodeSpace({
   // made or deleted by another program): read again the views over them.
   const syncFromGit = useCallback(() => {
     loadTree(true);
-    if (reference) {
-      void openTarget(true);
-    }
+    void openTarget(true);
     void syncOpenDoc();
-  }, [loadTree, reference, openTarget, syncOpenDoc]);
+  }, [loadTree, openTarget, syncOpenDoc]);
   const syncRef = useRef(syncFromGit);
   syncRef.current = syncFromGit;
   useEffect(() => {
@@ -655,12 +812,7 @@ export function CodeSpace({
       return;
     }
     try {
-      if (reference) {
-        await openTarget();
-        return;
-      }
-      await codeRefreshCheckpoint(sessionId, repositoryId);
-      await loadReview(null);
+      await openTarget();
     } catch (err) {
       onError(errorText(err));
     }
@@ -1039,6 +1191,28 @@ export function CodeSpace({
               </div>
             ) : null}
 
+            {lintStatus && !lintStatus.trusted && (lintStatus.tools.length > 0 || lintStatus.servers.length > 0) && !lintAsked ? (
+              <div
+                className="flex flex-none items-center gap-2 border-b border-cg-line bg-cg-sidebar px-4 py-1.5 text-small text-cg-muted-strong"
+                data-testid="lint-trust"
+              >
+                <span className="flex-1">
+                  This repository can use {[...lintStatus.tools.map((tool) => tool.id), ...lintStatus.servers].join(", ")}. Run them on the files you open, to underline problems and suggest completions?
+                </span>
+                <Button variant="quiet" onClick={() => void allowLint(true)}>
+                  Allow
+                </Button>
+                <Button variant="quiet" onClick={() => void allowLint(false)}>
+                  Not now
+                </Button>
+              </div>
+            ) : null}
+            {lintNote ? (
+              <p className="flex-none border-b border-cg-line bg-cg-sidebar px-4 py-1.5 text-small text-cg-muted-strong" data-testid="lint-note">
+                {lintNote}
+              </p>
+            ) : null}
+
             {score && score.reasons.length > 0 && !(activeUnit && units.find((item) => item.id === activeUnit)?.path === doc.path) ? (
               <p
                 aria-label="Why this ranks here"
@@ -1108,12 +1282,19 @@ export function CodeSpace({
                     onToggleVersion={toggleVersion}
                     onToggleWrap={toggleWrap}
                     wrap={wrap}
-                    onChange={(text) =>
-                      version === "current"
+                    onChange={(text) => {
+                      // Lines moved under the edit: the findings wait for the next save.
+                      setDiagnostics((found) => (found.length > 0 ? [] : found));
+                      return version === "current"
                         ? setDoc((state) => (state && state.path === doc.path ? { ...state, buffer: text } : state))
-                        : undefined
-                    }
+                        : undefined;
+                    }}
+                    diagnostics={version === "current" ? shownDiagnostics : undefined}
                     onSave={() => void save()}
+                    onDefinition={findDefinitions}
+                    onComplete={complete}
+                    lspActive={lspServer !== null && version === "current"}
+                    onOpenDefinition={(place) => void goToDefinition(place)}
                     onSelection={(next) => {
                       selection.current = next;
                       bridge.current.context = contextOf(next);

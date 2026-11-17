@@ -18,6 +18,19 @@ use crate::domain::{
 };
 use crate::ports::FileContent;
 
+/// More declarations than this under one name are noise, not a place to jump to.
+const MAX_DEFINITIONS: usize = 30;
+
+/// A declaration found by [`Engine::code_definitions`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefinitionHit {
+    pub path: String,
+    /// 1-based line where the declaration starts.
+    pub line: u32,
+    pub kind: String,
+    pub container: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewView {
@@ -437,6 +450,53 @@ impl Engine {
             .get_worktree(worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
         self.fs.read_text(&worktree.path, path)
+    }
+
+    /// Where a symbol named `name` is declared in the worktree: every function, class, type...
+    /// with that name, in the files a grammar is known for. The Code space uses it to go to a
+    /// definition on Cmd/Ctrl+click. Files that do not mention the name are not parsed.
+    pub fn code_definitions(
+        &self,
+        worktree_id: WorktreeId,
+        name: &str,
+    ) -> Result<Vec<DefinitionHit>> {
+        if name.is_empty() || name.len() > 200 {
+            return Ok(Vec::new());
+        }
+        let worktree = self
+            .db
+            .get_worktree(worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
+        let mut hits = Vec::new();
+        for path in self.git.list_files(&worktree.path)? {
+            if self.syntax.language_of(&path).is_none() {
+                continue;
+            }
+            let Ok(file) = self.fs.read_text(&worktree.path, &path) else {
+                continue;
+            };
+            if file.binary || file.too_large || !file.text.contains(name) {
+                continue;
+            }
+            let Some(symbols) = self.syntax.symbols(&path, &file.text) else {
+                continue;
+            };
+            hits.extend(
+                symbols
+                    .into_iter()
+                    .filter(|symbol| symbol.name == name && symbol.kind != "impl")
+                    .map(|symbol| DefinitionHit {
+                        path: path.clone(),
+                        line: symbol.start_line,
+                        kind: symbol.kind,
+                        container: symbol.container,
+                    }),
+            );
+            if hits.len() >= MAX_DEFINITIONS {
+                break;
+            }
+        }
+        Ok(hits)
     }
 
     /// Saves a file. `expected_mtime_ms` is what the editor read; a newer file on disk is a

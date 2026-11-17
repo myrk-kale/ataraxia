@@ -6,10 +6,13 @@ import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
 import { ProfileSettings } from "./ProfileSettings";
 import { AutocompletePanel } from "./AutocompleteSettings";
+import { ResourcesSettings } from "./ResourcesSettings";
+import type { RepositoryId, WorkspaceId } from "../lib/workspace";
 
 const TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "profiles", label: "Agent profiles" },
+  { id: "resources", label: "Skills & MCP" },
   { id: "autocomplete", label: "Autocomplete" },
   { id: "sound", label: "Sound" },
   { id: "privacy", label: "Privacy" },
@@ -20,10 +23,15 @@ type TabId = (typeof TABS)[number]["id"];
 export function SettingsDialog({
   isOpen,
   provider,
+  workspace = null,
+  repository = null,
   onClose,
 }: {
   isOpen: boolean;
   provider: ProviderKind | null;
+  /** The workspace and repository the app is looking at: the scopes the skills manager can edit besides global. */
+  workspace?: { id: WorkspaceId; name: string } | null;
+  repository?: { id: RepositoryId; name: string } | null;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
@@ -89,6 +97,8 @@ export function SettingsDialog({
             {tab === "appearance" ? <AppearanceSettings /> : null}
 
             {tab === "profiles" ? <ProfileSettings /> : null}
+
+            {tab === "resources" ? <ResourcesSettings repository={repository} workspace={workspace} /> : null}
 
             {tab === "autocomplete" ? <AutocompletePanel /> : null}
 

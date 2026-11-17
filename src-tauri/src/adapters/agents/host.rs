@@ -1641,12 +1641,21 @@ impl AgentRuntime for AgentHost {
         let repository_mcp_fingerprint = self.trusted_repository_mcp_fingerprint(&worktree.path)?;
         let config_root = self.inner.config_dir.lock().clone();
         let agent_config = match config_root.as_deref() {
-            Some(root) => AgentConfiguration::load(
-                &worktree.path,
-                session.id,
-                Some(root),
-                repository_mcp_fingerprint.as_deref(),
-            )?,
+            Some(root) => {
+                // What the user switched off, and the skills and servers of the chat's workspace.
+                let policy = super::resources::ResourceManager::new(
+                    Arc::clone(&self.inner.store),
+                    root.to_path_buf(),
+                )
+                .policy_for(session.workspace_id, session.repository_id);
+                AgentConfiguration::load_with(
+                    &worktree.path,
+                    session.id,
+                    Some(root),
+                    repository_mcp_fingerprint.as_deref(),
+                    &policy,
+                )?
+            }
             None => AgentConfiguration::default(),
         };
         let agent_config_preamble = if session.provider == ProviderKind::Claude {

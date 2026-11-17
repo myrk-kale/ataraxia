@@ -127,6 +127,7 @@ pub enum Endpoint {
     ListSchedules,
     AddSchedule,
     CancelSchedule,
+    PauseQueue,
 }
 
 pub struct Route {
@@ -259,6 +260,14 @@ pub const ROUTES: &[Route] = &[
         description: "Cancel a schedule of this chat, by its id or the first characters of it.",
         write: true,
     },
+    Route {
+        endpoint: Endpoint::PauseQueue,
+        method: "POST",
+        path: "/v1/queue/pause",
+        status: 200,
+        description: "Hold the developer's message queue because something you were asked to do is left undone (a blocker, a step you could not finish, a question that stops the work). The queue is held when your turn ends and stays held until the developer acts, so the next queued message does not run on top of the problem. Body: reason? (one short sentence of what is pending). Do not call it when the work is done.",
+        write: true,
+    },
 ];
 
 impl Endpoint {
@@ -362,7 +371,7 @@ pub trait Anchor: Send + Sync {
     fn baseline(&self, session: SessionId) -> Result<crate::domain::Checkpoint>;
 }
 
-/// What an agent can ask of the scheduler: be sent a message later.
+/// What an agent can ask of the chat's message flow: be sent a message later, or hold the queue.
 pub trait Scheduling: Send + Sync {
     fn list(&self, session: SessionId) -> Vec<crate::domain::Schedule>;
     fn add(
@@ -373,6 +382,17 @@ pub trait Scheduling: Send + Sync {
         every_secs: Option<i64>,
     ) -> Result<crate::domain::Schedule>;
     fn cancel(&self, session: SessionId, id: &str) -> Result<()>;
+    /// Holds the chat's message queue once the running turn ends.
+    fn pause_queue(
+        &self,
+        _session: SessionId,
+        _reason: Option<&str>,
+    ) -> Result<crate::domain::MessageQueue> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "the message queue is not available here",
+        ))
+    }
 }
 
 /// What one token may do: read and write the data of one chat session.
@@ -642,6 +662,12 @@ impl ApiService {
                 let id = arg_str(args, "schedule_id");
                 self.scheduler()?.cancel(session, &id)?;
                 Ok(json!({ "cancelled": id }))
+            }
+            Endpoint::PauseQueue => {
+                let session = self.session_arg(args)?;
+                let reason = args.get("reason").and_then(Value::as_str);
+                let queue = self.scheduler()?.pause_queue(session, reason)?;
+                Ok(json!({ "paused": true, "queued": queue.items.len() }))
             }
         }
     }
@@ -2310,6 +2336,86 @@ mod tests {
         }
     }
 
+    /// Stands in for the engine's queue: remembers the reason it was told.
+    #[derive(Default)]
+    struct Holder(Mutex<Vec<Option<String>>>);
+
+    impl Scheduling for Holder {
+        fn list(&self, _: SessionId) -> Vec<crate::domain::Schedule> {
+            Vec::new()
+        }
+
+        fn add(
+            &self,
+            _: SessionId,
+            _: &str,
+            _: i64,
+            _: Option<i64>,
+        ) -> Result<crate::domain::Schedule> {
+            Err(Error::new(ErrorCode::Unsupported, "not here"))
+        }
+
+        fn cancel(&self, _: SessionId, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn pause_queue(
+            &self,
+            _: SessionId,
+            reason: Option<&str>,
+        ) -> Result<crate::domain::MessageQueue> {
+            self.0.lock().push(reason.map(str::to_string));
+            Ok(crate::domain::MessageQueue {
+                items: vec![crate::domain::QueuedMessage {
+                    id: "1".into(),
+                    text: "next".into(),
+                    images: Vec::new(),
+                }],
+                ..Default::default()
+            })
+        }
+    }
+
+    #[test]
+    fn an_agent_holds_the_message_queue_over_the_api() {
+        let (db, a, ..) = seeded();
+        let server = start(&db);
+        let holder = Arc::new(Holder::default());
+        server.set_scheduler(holder.clone());
+        let write = server.issue_token(a, true).token;
+        let read_only = server.issue_token(a, false).token;
+
+        let held = req("POST", "/v1/queue/pause", Some(write.as_str()))
+            .with(json!({"reason": "needs a token"}))
+            .go(&server);
+        assert_eq!(held.status, 200, "{:?}", held.body);
+        assert_eq!(held.body, json!({"paused": true, "queued": 1}));
+        // The reason is optional.
+        assert_eq!(
+            req("POST", "/v1/queue/pause", Some(write.as_str()))
+                .with(json!({}))
+                .go(&server)
+                .status,
+            200
+        );
+        assert_eq!(
+            *holder.0.lock(),
+            vec![Some("needs a token".to_string()), None]
+        );
+
+        // A hidden investigation session cannot hold the chat's queue.
+        let refused = req("POST", "/v1/queue/pause", Some(read_only.as_str()))
+            .with(json!({}))
+            .go(&server);
+        assert_eq!(refused.status, 403);
+        assert_eq!(
+            req("GET", "/v1/queue/pause", Some(write.as_str()))
+                .go(&server)
+                .status,
+            405
+        );
+    }
+
     #[test]
     fn an_agent_schedules_a_message_to_itself_over_the_api() {
         let (db, a, ..) = seeded();
@@ -2355,7 +2461,12 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body["version"], 1);
         let endpoints = answer.body["endpoints"].as_array().unwrap();
-        assert_eq!(endpoints.len(), 13);
+        assert_eq!(endpoints.len(), 14);
+        assert!(
+            endpoints
+                .iter()
+                .any(|item| item["path"] == "/v1/queue/pause" && item["write"] == true)
+        );
         let has = |method: &str, path: &str, write: bool| {
             endpoints.iter().any(|item| {
                 item["method"] == method

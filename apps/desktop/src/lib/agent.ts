@@ -408,8 +408,11 @@ export function withLocal(queue: MessageQueue, local: QueuedLocally[]): MessageQ
   };
 }
 
-/** What a chat has waiting. `paused`: the last turn was stopped or failed, so nothing goes out alone. */
-export type MessageQueue = { items: QueuedMessage[]; paused: boolean };
+/**
+ * What a chat has waiting. `paused`: the last turn was stopped or failed, or the agent said
+ * something is left undone (`reason` is what), so nothing goes out alone.
+ */
+export type MessageQueue = { items: QueuedMessage[]; paused: boolean; reason?: string | null };
 
 export const EMPTY_QUEUE: MessageQueue = { items: [], paused: false };
 

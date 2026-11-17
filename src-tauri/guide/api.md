@@ -61,6 +61,7 @@ out. `{...}` in a path is an id taken from an earlier response.
 | `GET /v1/schedules` | no | what this chat has scheduled to be sent to you later |
 | `POST /v1/schedules` | yes | be sent a message later: `prompt` (required), `in_minutes` or `at`, `every_minutes`; see `schedule.md` |
 | `DELETE /v1/schedules/{schedule_id}` | yes | cancels a schedule (the id or its first characters) |
+| `POST /v1/queue/pause` | yes | holds the developer's message queue because something is left undone: `reason` (optional); see `queue.md` |
 | `PUT /v1/priority` | yes | changes or resets a component's priority |
 | `POST /v1/flows` | yes | draws a diagram |
 

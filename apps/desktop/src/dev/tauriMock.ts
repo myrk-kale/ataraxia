@@ -401,7 +401,29 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "workspace_list_branches": {
       const current = worktrees.find((item) => item.id === args?.worktreeId)?.branch ?? "main";
       const names = ["main", "feature/course-mask", "fix/prohibited-question-feedback", "fix/node-24-cve-2025-55130", "feature/diff-target", "feature/spec-v1.1-remaining", "chore/bump-deps", "release/2.3", "hotfix/token-expiry", "dirty/conflicts-with-your-edits"];
-      return { branches: names.map((name) => ({ name, current: name === current, worktree_id: worktrees.find((item) => item.branch === name && name !== current)?.id ?? null })), workspace: { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) } };
+      return { branches: names.map((name) => ({ name, current: name === current, worktree_id: worktrees.find((item) => item.branch === name && name !== current)?.id ?? null })), remotes: ["origin/feature/remote-only", "origin/release/2.4"], workspace: { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) } };
+    }
+    case "resources_list":
+      return { skills: [{ id: "review-style", kind: "skill", description: "How we review code here", definedIn: "global", state: "inherit", effective: true, inherited: true, inheritedFrom: null }], mcps: [{ id: "docs", kind: "mcp", description: "npx -y @scope/docs", definedIn: "global", state: "inherit", effective: true, inherited: true, inheritedFrom: null }], problems: [] };
+    case "resources_set_state":
+    case "resources_save_skill":
+    case "resources_delete_skill":
+    case "resources_save_mcp":
+    case "resources_delete_mcp":
+      return null;
+    case "resources_read_skill":
+      return { description: "How we review code here", body: "Be kind and specific." };
+    case "resources_read_mcp":
+      return { command: "npx", args: ["-y", "@scope/docs"] };
+    case "workspace_fetch_branches": {
+      const current = worktrees.find((item) => item.id === args?.worktreeId)?.branch ?? "main";
+      return { branches: [{ name: current, current: true, worktree_id: null }], remotes: ["origin/feature/remote-only"], workspace: { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) } };
+    }
+    case "workspace_checkout_remote_branch":
+    case "workspace_create_branch": {
+      const target = worktrees.find((item) => item.id === args?.worktreeId)!;
+      target.branch = args?.name ? String(args.name) : String(args?.remote).replace(/^[^/]+\//, "");
+      return { ...snapshot, worktrees: worktrees.map((item) => ({ ...item })) };
     }
     case "workspace_select_branch": {
       const name = String(args?.name);

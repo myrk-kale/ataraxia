@@ -70,6 +70,78 @@ impl Git for GitCli {
             .collect())
     }
 
+    fn list_remote_branches(&self, worktree: &Path) -> Result<Vec<String>> {
+        let listing = git_output(
+            &[
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=%(refname)",
+                "refs/remotes",
+            ],
+            Some(worktree),
+        )?;
+        Ok(listing
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("refs/remotes/"))
+            .filter(|name| name.contains('/') && !name.ends_with("/HEAD"))
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn fetch(&self, worktree: &Path) -> Result<()> {
+        // A prompt for credentials would wait on a terminal that is not there; a stalled
+        // connection is given up on after a while instead of holding the app.
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "http.lowSpeedLimit=1000",
+                "-c",
+                "http.lowSpeedTime=20",
+                "fetch",
+                "--all",
+                "--prune",
+            ])
+            .current_dir(worktree)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env(
+                "GIT_SSH_COMMAND",
+                "ssh -o BatchMode=yes -o ConnectTimeout=15",
+            )
+            .output()
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(Error::new(
+            ErrorCode::Io,
+            if stderr.is_empty() {
+                "git fetch failed".into()
+            } else {
+                stderr
+            },
+        ))
+    }
+
+    fn create_branch(&self, worktree: &Path, name: &str, start: &str) -> Result<()> {
+        validate_spec(start)?;
+        // Git's own rules for what a branch may be called (no spaces, `..`, a leading `-`...).
+        git_output(&["check-ref-format", "--branch", name], Some(worktree)).map_err(|_| {
+            Error::new(
+                ErrorCode::Invalid,
+                format!("`{name}` is not a valid branch name"),
+            )
+        })?;
+        if name.starts_with('-') {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "a branch name cannot start with `-`",
+            ));
+        }
+        // Starting at a remote branch makes the new one track it.
+        git_output(&["checkout", "-b", name, start, "--"], Some(worktree)).map(|_| ())
+    }
+
     fn switch_branch(&self, worktree: &Path, name: &str) -> Result<()> {
         validate_spec(name)?;
         // `checkout`, not `switch`: `switch` refuses while any operation is recorded as pending
@@ -564,6 +636,78 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "init"]);
         dir
+    }
+
+    #[test]
+    fn lists_remote_branches_fetches_and_creates_branches_from_any_start() {
+        let origin = temp_repo();
+        git_output(&["branch", "feature/remote"], Some(&origin)).unwrap();
+        let clone = std::env::temp_dir().join(format!("ataraxia-git-{}", uuid::Uuid::new_v4()));
+        git_output(
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+            None,
+        )
+        .unwrap();
+        let git = GitCli;
+        git_output(&["config", "user.email", "t@example.com"], Some(&clone)).unwrap();
+        git_output(&["config", "user.name", "T"], Some(&clone)).unwrap();
+
+        let remotes = git.list_remote_branches(&clone).unwrap();
+        assert!(
+            remotes.contains(&"origin/feature/remote".to_string()),
+            "{remotes:?}"
+        );
+        assert!(
+            !remotes.iter().any(|name| name.ends_with("HEAD")),
+            "{remotes:?}"
+        );
+
+        // A branch made on the remote after the clone shows up once fetched.
+        git_output(&["branch", "late"], Some(&origin)).unwrap();
+        assert!(
+            !git.list_remote_branches(&clone)
+                .unwrap()
+                .contains(&"origin/late".to_string())
+        );
+        git.fetch(&clone).unwrap();
+        assert!(
+            git.list_remote_branches(&clone)
+                .unwrap()
+                .contains(&"origin/late".to_string())
+        );
+
+        // From a remote branch: made, checked out, and tracking it.
+        git.create_branch(&clone, "mine", "origin/feature/remote")
+            .unwrap();
+        let current = git_output(&["branch", "--show-current"], Some(&clone)).unwrap();
+        assert_eq!(current.trim(), "mine");
+        let upstream = git_output(
+            &["rev-parse", "--abbrev-ref", "mine@{upstream}"],
+            Some(&clone),
+        )
+        .unwrap();
+        assert_eq!(upstream.trim(), "origin/feature/remote");
+
+        // From a commit.
+        let sha = git.head_rev(&clone).unwrap();
+        git.create_branch(&clone, "from-commit", &sha).unwrap();
+        assert_eq!(
+            git_output(&["branch", "--show-current"], Some(&clone))
+                .unwrap()
+                .trim(),
+            "from-commit"
+        );
+
+        // Names git would refuse, or that would be read as options, never reach it.
+        for bad in ["has space", "-x", "a..b", ""] {
+            assert!(git.create_branch(&clone, bad, "main").is_err(), "{bad:?}");
+        }
+        assert!(git.create_branch(&clone, "ok", "--help").is_err());
     }
 
     #[test]

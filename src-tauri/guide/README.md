@@ -27,6 +27,8 @@ decisions or a flow.
 - `schedule.md`: how to be sent a message later (check a release again, retry in a while), the
   same for every agent. Read it when you need to come back to something, without waiting to be
   asked for decisions or a flow.
+- `queue.md`: how to hold the developer's message queue when something you were asked to do is left
+  undone. The preamble already says when; read it for the details.
 - `api.md`: the environment variables, the authentication, every endpoint with its fields, the
   errors, and a runnable bash script for each kind of artifact.
 

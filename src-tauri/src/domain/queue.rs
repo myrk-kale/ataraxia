@@ -16,6 +16,10 @@ pub struct QueuedMessage {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageQueue {
     pub items: Vec<QueuedMessage>,
-    /// The turn before it was stopped or failed, so nothing goes out until the user says so.
+    /// The turn before it was stopped or failed, or the agent asked to hold it, so nothing goes
+    /// out until the user says so.
     pub paused: bool,
+    /// What the agent said was pending when it asked for the pause.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
