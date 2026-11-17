@@ -364,6 +364,7 @@ struct ClaudeState {
     tools: HashMap<String, ToolMeta>,
     /// API message ids whose text already streamed as deltas (the `assistant` frame repeats it).
     streamed: HashSet<String>,
+    thinking_streamed: HashSet<String>,
     current_message: Option<String>,
     /// Partial-stream block index → tool_use id, for blocks that are tool calls.
     tool_blocks: HashMap<u64, String>,
@@ -480,7 +481,21 @@ impl ClaudeShared {
             }
             Some("content_block_delta") => {
                 let delta = event.get("delta").unwrap_or(&Value::Null);
-                if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
+                if delta.get("type").and_then(Value::as_str) == Some("thinking_delta") {
+                    if let Some(text) = delta
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        if let Some(message) = state.current_message.clone() {
+                            state.thinking_streamed.insert(message);
+                        }
+                        (self.emit)(BackendEvent::Reasoning {
+                            turn_id,
+                            text: text.to_string(),
+                        });
+                    }
+                } else if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
                     let text = delta
                         .get("text")
                         .and_then(Value::as_str)
@@ -512,11 +527,26 @@ impl ClaudeShared {
         let already_streamed = message_id
             .as_ref()
             .is_some_and(|id| state.streamed.contains(id));
+        let thinking_streamed = message_id
+            .as_ref()
+            .is_some_and(|id| state.thinking_streamed.contains(id));
         let Some(blocks) = frame.pointer("/message/content").and_then(Value::as_array) else {
             return;
         };
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
+                Some("thinking") if !thinking_streamed => {
+                    if let Some(text) = block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        (self.emit)(BackendEvent::Reasoning {
+                            turn_id,
+                            text: text.to_string(),
+                        });
+                    }
+                }
                 Some("text") if !already_streamed => {
                     let text = block
                         .get("text")
@@ -647,6 +677,21 @@ impl ClaudeShared {
         };
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
+                Some("thinking") => {
+                    if let Some(text) = block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        (self.emit)(BackendEvent::Subagent {
+                            id: parent.to_string(),
+                            title: title.clone(),
+                            update: SubagentUpdate::Reasoning {
+                                text: text.to_string(),
+                            },
+                        });
+                    }
+                }
                 Some("text") => {
                     let text = block
                         .get("text")
@@ -834,6 +879,7 @@ impl ClaudeShared {
             state.queue.clear();
             state.active = None;
             state.streamed.clear();
+            state.thinking_streamed.clear();
             state.tool_blocks.clear();
             state.current_message = None;
             (turn_id, std::mem::take(&mut state.cancel_requested))
@@ -1412,6 +1458,34 @@ fn usage_windows(frame: &Value) -> Vec<UsageWindow> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streams_reasoning_separately_from_the_answer() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "reasoning please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let reasoning: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning, "Consider this");
+        assert_eq!(answer, "Answer");
+    }
+
     #[test]
     fn both_windows_come_out_of_a_rate_limit_event() {
         let frame = json!({

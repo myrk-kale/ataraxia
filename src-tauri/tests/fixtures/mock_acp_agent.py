@@ -156,7 +156,12 @@ def main():
             send({"id": frame["id"], "result": {"stopReason": "end_turn"}})
         elif method == "session/prompt":
             text = frame["params"]["prompt"][0]["text"]
-            if text.startswith("tool"):
+            if text.startswith("reasoning"):
+                update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Consider "}})
+                update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "this"}})
+                chunk("Answer")
+                send({"id": frame["id"], "result": {"stopReason": "end_turn"}})
+            elif text.startswith("tool"):
                 run_tool(frame["id"])
             elif text.startswith("child"):
                 run_child(frame["id"])

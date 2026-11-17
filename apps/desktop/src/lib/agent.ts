@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ProviderUsage } from "./usage";
 import type { ChatSession, ProviderKind, SessionId, SessionStatus, WorkspaceId } from "./workspace";
 
-export type ChatRole = "user" | "assistant" | "system";
+export type ChatRole = "user" | "assistant" | "reasoning" | "system";
 export type ToolStatus = "running" | "done" | "failed";
 
 /** A picture attached to a message. The file stays in the app; `agentAttachment` reads it. */
@@ -73,6 +73,7 @@ export type SubagentUpdate =
   | { kind: "detached" }
   | { kind: "user"; text: string }
   | { kind: "delta"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "tool"; callId: string; name: string; input: string }
   | { kind: "toolResult"; callId: string; output: string; ok: boolean }
   | { kind: "done"; ok: boolean };
@@ -598,6 +599,13 @@ export function applySubagent(
             },
           ],
         };
+      case "reasoning": {
+        const last = next.items[next.items.length - 1];
+        if (last && last.kind === "message" && last.role === "reasoning") {
+          return { ...next, items: [...next.items.slice(0, -1), { ...last, text: last.text + update.text }] };
+        }
+        return { ...next, items: [...next.items, { kind: "message", id: `${id}:${next.items.length}`, role: "reasoning", text: update.text, turnId: null }] };
+      }
       case "delta": {
         const last = next.items[next.items.length - 1];
         if (last && last.kind === "message" && last.role === "assistant") {

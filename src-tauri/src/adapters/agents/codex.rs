@@ -534,6 +534,18 @@ impl CodexShared {
                 }
                 return;
             }
+            "item/reasoning/summaryTextDelta" => {
+                if let Some(text) = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    (self.emit)(BackendEvent::Reasoning {
+                        turn_id,
+                        text: text.to_string(),
+                    });
+                }
+            }
             "item/agentMessage/delta" => {
                 let text = params
                     .get("delta")
@@ -639,6 +651,22 @@ impl CodexShared {
         let title = Self::child_title(&state, thread);
         let id = thread.to_string();
         match method {
+            "item/reasoning/summaryTextDelta" => {
+                if let Some(text) = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    state.child_live.insert(id.clone());
+                    (self.emit)(BackendEvent::Subagent {
+                        id,
+                        title,
+                        update: SubagentUpdate::Reasoning {
+                            text: text.to_string(),
+                        },
+                    });
+                }
+            }
             "item/agentMessage/delta" => {
                 let text = params
                     .get("delta")
@@ -1571,6 +1599,34 @@ fn usage_from_snapshot(snapshot: &Value) -> Option<(Option<String>, Vec<UsageWin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streams_reasoning_separately_from_the_answer() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "reasoning please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let reasoning: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning, "Consider this");
+        assert_eq!(answer, "Answer");
+    }
+
     #[test]
     fn portable_http_headers_become_codex_http_headers() {
         let servers = serde_json::from_value(json!({

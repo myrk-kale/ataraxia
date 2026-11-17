@@ -51,6 +51,9 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
       </div>
     );
   }
+  if (item.role === "reasoning") {
+    return <details open className="max-w-[680px] min-w-0 text-small text-cg-muted-strong"><summary className="cursor-pointer font-medium">Thinking</summary><div className="mt-2 break-words whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</div></details>;
+  }
   if (item.role === "user") {
     if (parseBtwReport(item.text)) {
       return <BtwReport text={item.text} />;

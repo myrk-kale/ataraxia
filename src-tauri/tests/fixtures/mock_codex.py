@@ -215,7 +215,13 @@ def main():
         elif method == "turn/start":
             send({"id": frame["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}})
             text = frame["params"]["input"][0]["text"]
-            if text.startswith(("echo", "$", "/")):
+            if text.startswith("reasoning"):
+                start_turn()
+                notify("item/reasoning/summaryTextDelta", turnId=TURN, itemId="r1", summaryIndex=0, delta="Consider ")
+                notify("item/reasoning/summaryTextDelta", turnId=TURN, itemId="r1", summaryIndex=0, delta="this")
+                notify("item/agentMessage/delta", turnId=TURN, itemId="m1", delta="Answer")
+                complete()
+            elif text.startswith(("echo", "$", "/")):
                 run_echo(frame["params"]["input"])
             elif text.startswith("tool"):
                 run_tool()

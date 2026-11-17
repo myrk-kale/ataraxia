@@ -51,6 +51,18 @@ pub fn parse_entry(entry: &Value, state: &mut TailState) -> Vec<SubagentUpdate> 
         Some("assistant") => {
             for block in content.and_then(Value::as_array).into_iter().flatten() {
                 match block.get("type").and_then(Value::as_str) {
+                    Some("thinking") => {
+                        if let Some(text) = block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.trim().is_empty())
+                        {
+                            updates.push(SubagentUpdate::Reasoning {
+                                text: text.to_string(),
+                            });
+                            state.last_was_text = false;
+                        }
+                    }
                     Some("text") => {
                         let text = block
                             .get("text")
@@ -267,14 +279,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_user_text_is_the_prompt_and_thinking_is_skipped() {
+    fn only_the_first_user_text_is_the_prompt_and_thinking_is_forwarded() {
         let updates = parse(&[
             json!({"type":"user","message":{"role":"user","content":"first"}}),
             json!({"type":"user","message":{"role":"user","content":"a later message"}}),
             json!({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}),
             json!({"type":"fork-context-ref","agentId":"x"}),
         ]);
-        assert_eq!(updates.len(), 1);
+        assert_eq!(updates.len(), 2);
+        assert!(matches!(&updates[1], SubagentUpdate::Reasoning { text } if text == "hmm"));
     }
 
     #[test]

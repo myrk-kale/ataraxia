@@ -251,6 +251,9 @@ impl Inner {
         let link = self.links.lock().get(&session_id)?.clone();
         let update = match event {
             BackendEvent::Delta { text, .. } => SubagentUpdate::Delta { text: text.clone() },
+            BackendEvent::Reasoning { text, .. } => {
+                SubagentUpdate::Reasoning { text: text.clone() }
+            }
             BackendEvent::Tool {
                 call_id,
                 name,
@@ -471,6 +474,19 @@ impl Inner {
                     session_id,
                     turn_id,
                     role: ChatRole::Assistant,
+                    text,
+                    images: Vec::new(),
+                });
+            }
+            BackendEvent::Reasoning { turn_id, text } => {
+                if live.active_turn != Some(turn_id) {
+                    return;
+                }
+                append_text(&mut live.transcript, ChatRole::Reasoning, turn_id, &text);
+                self.sink.emit_agent(AgentEvent::Delta {
+                    session_id,
+                    turn_id,
+                    role: ChatRole::Reasoning,
                     text,
                     images: Vec::new(),
                 });
@@ -725,6 +741,21 @@ fn apply_subagent(
             record.items.push(ChatItem::Message(ChatMessage {
                 id: Uuid::new_v4().to_string(),
                 role: ChatRole::User,
+                text: text.clone(),
+                turn_id: None,
+                images: Vec::new(),
+            }));
+        }
+        SubagentUpdate::Reasoning { text } => {
+            if let Some(ChatItem::Message(last)) = record.items.last_mut() {
+                if last.role == ChatRole::Reasoning {
+                    last.text.push_str(text);
+                    return;
+                }
+            }
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: ChatRole::Reasoning,
                 text: text.clone(),
                 turn_id: None,
                 images: Vec::new(),
@@ -2295,6 +2326,53 @@ mod tests {
             sink,
             session,
         }
+    }
+
+    #[test]
+    fn reasoning_stays_ordered_and_separate_in_subagent_transcripts() {
+        let mut agents = Vec::new();
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "First ".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "thought".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Delta {
+                text: "Answer".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "Next".into(),
+            },
+        );
+        assert_eq!(agents[0].items.len(), 3);
+        assert!(
+            matches!(&agents[0].items[0], ChatItem::Message(m) if m.role == ChatRole::Reasoning && m.text == "First thought")
+        );
+        assert!(
+            matches!(&agents[0].items[1], ChatItem::Message(m) if m.role == ChatRole::Assistant && m.text == "Answer")
+        );
+        assert!(
+            matches!(&agents[0].items[2], ChatItem::Message(m) if m.role == ChatRole::Reasoning && m.text == "Next")
+        );
     }
 
     #[test]

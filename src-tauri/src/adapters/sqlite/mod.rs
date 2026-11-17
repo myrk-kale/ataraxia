@@ -932,6 +932,13 @@ mod tests {
                 turn_id: Some(turn),
                 images: Vec::new(),
             }),
+            ChatItem::Message(ChatMessage {
+                id: "thinking".into(),
+                role: ChatRole::Reasoning,
+                text: "Considering".into(),
+                turn_id: Some(turn),
+                images: Vec::new(),
+            }),
             ChatItem::Tool(ToolCallRecord {
                 call_id: ToolCallId::new(),
                 turn_id: turn,

@@ -231,7 +231,14 @@ def main():
         elif kind == "user":
             content = frame["message"]["content"]
             text = content if isinstance(content, str) else content[0]["text"]
-            if text.startswith("tool"):
+            if text.startswith("reasoning"):
+                stream_event({"type": "message_start", "message": {"id": MSG}})
+                for part in ("Consider ", "this"):
+                    stream_event({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": part}})
+                stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Answer"}})
+                send({"type": "assistant", "parent_tool_use_id": None, "message": {"id": MSG, "content": [{"type": "thinking", "thinking": "Consider this"}, {"type": "text", "text": "Answer"}]}})
+                result(text="Answer")
+            elif text.startswith("tool"):
                 run_tool()
             elif text.startswith("subagent"):
                 run_subagent()

@@ -743,6 +743,18 @@ impl AcpShared {
             return;
         };
         match kind {
+            "agent_thought_chunk" => {
+                if let Some(text) = update
+                    .pointer("/content/text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    (self.emit)(BackendEvent::Reasoning {
+                        turn_id,
+                        text: text.to_string(),
+                    });
+                }
+            }
             "agent_message_chunk" => {
                 let text = update
                     .pointer("/content/text")
@@ -787,6 +799,17 @@ impl AcpShared {
             });
         };
         match kind {
+            "agent_thought_chunk" => {
+                if let Some(text) = update
+                    .pointer("/content/text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    emit(SubagentUpdate::Reasoning {
+                        text: text.to_string(),
+                    });
+                }
+            }
             "agent_message_chunk" => {
                 let text = update
                     .pointer("/content/text")
@@ -1339,6 +1362,34 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn streams_reasoning_separately_from_the_answer() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "reasoning please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let reasoning: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning, "Consider this");
+        assert_eq!(answer, "Answer");
+    }
 
     #[test]
     fn opencode_skill_permissions_deny_native_skills_and_allow_only_ataraxia_skills() {

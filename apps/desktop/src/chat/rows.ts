@@ -107,6 +107,8 @@ export function estimateRow(row: Row): number {
   let height: number;
   if (item.kind === "tool") {
     height = 38;
+  } else if (item.role === "reasoning") {
+    height = 24 + item.text.split("\n").reduce((total, line) => total + wrapped(line.length, REPLY_CHARS), 0) * TEXT_LINE;
   } else if (item.role === "user") {
     const lines = item.text
       .split("\n")

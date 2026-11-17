@@ -41,6 +41,7 @@ impl Default for ToolCallId {
 pub enum ChatRole {
     User,
     Assistant,
+    Reasoning,
     System,
 }
 
@@ -49,6 +50,7 @@ impl ChatRole {
         match self {
             Self::User => "user",
             Self::Assistant => "assistant",
+            Self::Reasoning => "reasoning",
             Self::System => "system",
         }
     }
@@ -155,6 +157,9 @@ pub enum SubagentUpdate {
     },
     #[serde(rename_all = "camelCase")]
     Delta {
+        text: String,
+    },
+    Reasoning {
         text: String,
     },
     #[serde(rename_all = "camelCase")]

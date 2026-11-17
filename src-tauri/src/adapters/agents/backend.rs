@@ -21,6 +21,10 @@ pub enum BackendEvent {
         turn_id: TurnId,
         text: String,
     },
+    Reasoning {
+        turn_id: TurnId,
+        text: String,
+    },
     Tool {
         turn_id: TurnId,
         call_id: ToolCallId,

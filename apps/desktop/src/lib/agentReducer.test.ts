@@ -19,6 +19,18 @@ function apply(state: ChatState, ...events: AgentEvent[]): ChatState {
 }
 
 describe("chatReducer", () => {
+  it("keeps streamed reasoning separate and in order around tools and answers", () => {
+    const state = apply(initialChatState,
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "Think " },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "first" },
+      { type: "tool", sessionId: SESSION, turnId: TURN, callId: "c1", name: "read", input: "" },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "Then" },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "assistant", text: "Answer" },
+    );
+    expect(state.items.map((item) => item.kind === "message" ? [item.role, item.text] : item.kind)).toEqual([
+      ["reasoning", "Think first"], "tool", ["reasoning", "Then"], ["assistant", "Answer"],
+    ]);
+  });
   it("merges consecutive deltas of the same turn and role", () => {
     const state = apply(
       initialChatState,

@@ -183,7 +183,9 @@ impl Engine {
                     let who = match message.role {
                         crate::domain::ChatRole::User => "Developer",
                         crate::domain::ChatRole::Assistant => "Agent",
-                        crate::domain::ChatRole::System => continue,
+                        crate::domain::ChatRole::System | crate::domain::ChatRole::Reasoning => {
+                            continue;
+                        }
                     };
                     lines.push(format!("{who}: {}", clip(message.text.trim(), 2_500)));
                 }
