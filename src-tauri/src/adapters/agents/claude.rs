@@ -431,6 +431,8 @@ struct ClaudeState {
     /// API message ids whose text already streamed as deltas (the `assistant` frame repeats it).
     streamed: HashSet<String>,
     thinking_streamed: HashSet<String>,
+    limit_reset: Option<i64>,
+    limit_interrupted: bool,
     context_input: Option<u64>,
     context_output: u64,
     context_model: Option<String>,
@@ -503,6 +505,39 @@ impl ClaudeShared {
             Some("user") => self.on_user(&frame),
             Some("result") => self.on_result(&frame),
             Some("rate_limit_event") => {
+                let info = frame.get("rate_limit_info").unwrap_or(&Value::Null);
+                let short = info.pointer("/unifiedWindows/five_hour").or_else(|| {
+                    (info.get("rateLimitType").and_then(Value::as_str) == Some("five_hour"))
+                        .then_some(info)
+                });
+                if let Some(short) = short {
+                    let denied = matches!(
+                        short.get("status").and_then(Value::as_str),
+                        Some("rejected" | "denied")
+                    );
+                    let resets_at = if denied {
+                        short.get("resetsAt").and_then(Value::as_i64)
+                    } else {
+                        None
+                    };
+                    let mut state = self.state.lock();
+                    state.limit_reset = resets_at;
+                    let interrupted = match (state.turn, resets_at) {
+                        (Some(turn_id), Some(resets_at))
+                            if !state.limit_interrupted
+                                && resets_at > time::OffsetDateTime::now_utc().unix_timestamp() =>
+                        {
+                            state.limit_interrupted = true;
+                            Some((turn_id, resets_at))
+                        }
+                        _ => None,
+                    };
+                    drop(state);
+                    if let Some((turn_id, resets_at)) = interrupted {
+                        (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+                        self.write(&json!({ "type": "control_request", "request_id": format!("interrupt-{}", Uuid::new_v4()), "request": { "subtype": "interrupt" } }));
+                    }
+                }
                 let windows = usage_windows(&frame);
                 if !windows.is_empty() {
                     (self.emit)(BackendEvent::Usage {
@@ -974,7 +1009,7 @@ impl ClaudeShared {
     }
 
     fn on_result(&self, frame: &Value) {
-        let (turn_id, cancelled) = {
+        let (turn_id, cancelled, limit_reset, limit_interrupted) = {
             let mut state = self.state.lock();
             if let (Some(used), Some(model)) = (state.context_input, state.context_model.as_deref())
             {
@@ -1002,13 +1037,24 @@ impl ClaudeShared {
             state.thinking_streamed.clear();
             state.tool_blocks.clear();
             state.current_message = None;
-            (turn_id, std::mem::take(&mut state.cancel_requested))
+            (
+                turn_id,
+                std::mem::take(&mut state.cancel_requested),
+                state.limit_reset.take(),
+                std::mem::take(&mut state.limit_interrupted),
+            )
         };
         let is_error = frame
             .get("is_error")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if is_error && !cancelled {
+            if let Some(resets_at) = limit_reset
+                .filter(|_| !limit_interrupted)
+                .filter(|at| *at > time::OffsetDateTime::now_utc().unix_timestamp())
+            {
+                (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+            }
             let message = frame
                 .get("result")
                 .and_then(Value::as_str)
@@ -1021,7 +1067,7 @@ impl ClaudeShared {
         }
         (self.emit)(BackendEvent::TurnDone {
             turn_id,
-            ok: !is_error && !cancelled,
+            ok: !is_error && !cancelled && !limit_interrupted,
         });
     }
 
@@ -1579,6 +1625,49 @@ fn usage_windows(frame: &Value) -> Vec<UsageWindow> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_limit_reset_does_not_schedule_a_resume() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit_no_reset")
+            .expect("prompt");
+        let seen = h.until("failed", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::RateLimited { .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn rate_limit_is_reported_before_the_turn_ends() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit please")
+            .expect("prompt");
+        let seen = h.until("limit", |event| {
+            matches!(event, BackendEvent::RateLimited { .. })
+        });
+        assert!(seen.iter().any(|event| matches!(event, BackendEvent::RateLimited { resets_at, .. } if *resets_at > time::OffsetDateTime::now_utc().unix_timestamp())));
+        let end = h.until("turn end", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !end.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: true, .. }))
+        );
+        h.session.shutdown();
+    }
+
     #[test]
     fn streams_reasoning_separately_from_the_answer() {
         let h = start();

@@ -135,16 +135,28 @@ describe("spaces render with real data shapes", () => {
     await flush();
     const verdict = calls.find((c) => c.cmd === "decision_set_state")!;
     expect(verdict.args).toMatchObject({ decisionState: "approved", comment: "Fine by me" });
-    expect([...host.querySelectorAll("form[aria-label='Your verdict'] button")].map((b) => b.textContent?.trim())).toEqual(["Comment", "Reopen"]);
-    expect(host.textContent).toContain("Approved");
+    expect(host.textContent).toContain("Write the retry helper locally");
+    expect(host.textContent).not.toContain("Store only a hash of issued tokens?");
     expect(calls.some((c) => c.cmd.startsWith("code_"))).toBe(false);
 
     // J and K step through the decisions, and Back returns to the list.
-    act(() => bridge.current.commands.item?.(-1));
+    act(() => bridge.current.commands.item?.(1));
     await flush();
     expect(host.textContent).toContain("2 of 3");
     const back = [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Decisions"))!;
     act(() => (back as HTMLButtonElement).click());
+    expect(host.textContent).toContain("Generate…");
+    const remaining = [...host.querySelectorAll("ul button")].find((button) => button.textContent?.includes("Write the retry helper locally"))!;
+    act(() => (remaining as HTMLButtonElement).click());
+    await flush();
+    const rejectBox = host.querySelector("textarea[aria-label='Comment']") as HTMLTextAreaElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(rejectBox, "Use the shared helper");
+      rejectBox.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    press("Reject with comment");
+    await flush();
+    expect(calls.filter((call) => call.cmd === "decision_set_state").at(-1)?.args).toMatchObject({ decisionState: "rejected", comment: "Use the shared helper" });
     expect(host.textContent).toContain("Generate…");
   });
 

@@ -466,6 +466,15 @@ impl Inner {
             return;
         };
         match event {
+            BackendEvent::RateLimited { turn_id, resets_at } => {
+                if live.active_turn == Some(turn_id) {
+                    self.sink.emit_agent(AgentEvent::RateLimited {
+                        session_id,
+                        turn_id,
+                        resets_at,
+                    });
+                }
+            }
             BackendEvent::ContextUsage { used, size } => {
                 if size > 0 {
                     let usage = crate::domain::chat::ContextUsage { used, size };
@@ -2203,6 +2212,7 @@ impl AgentRuntime for AgentHost {
         let sessions = self.inner.sessions.lock();
         Ok(match sessions.get(session_id) {
             Some(live) => ChatSnapshot {
+                rate_limit_at: None,
                 context_usage: live.context_usage.clone(),
                 items: live.transcript.clone(),
                 subagents: live.subagents.clone(),
@@ -2211,6 +2221,7 @@ impl AgentRuntime for AgentHost {
                 pending_permission: live.pending.clone(),
             },
             None => ChatSnapshot {
+                rate_limit_at: None,
                 context_usage: None,
                 items: Vec::new(),
                 subagents: Vec::new(),

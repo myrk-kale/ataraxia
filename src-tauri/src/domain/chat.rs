@@ -210,6 +210,12 @@ pub struct QuestionOption {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
+    RateLimited {
+        session_id: SessionId,
+        turn_id: TurnId,
+        resets_at: i64,
+    },
+    #[serde(rename_all = "camelCase")]
     Status {
         session_id: SessionId,
         status: SessionStatus,
@@ -308,6 +314,8 @@ pub struct ContextUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSnapshot {
+    #[serde(default)]
+    pub rate_limit_at: Option<i64>,
     #[serde(default)]
     pub context_usage: Option<ContextUsage>,
     pub items: Vec<ChatItem>,

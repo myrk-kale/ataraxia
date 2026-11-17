@@ -131,7 +131,7 @@ export function DecisionIssue({
             <>
               <Button variant="secondary" onClick={() => onVerdict("rejected", text)}>
                 <X aria-hidden="true" className="text-cg-red" size={14} />
-                Reject
+                {text ? "Reject with comment" : "Reject"}
               </Button>
               <Button variant="secondary" onClick={() => onVerdict("approved", text)}>
                 <Check aria-hidden="true" className="text-cg-green" size={14} />

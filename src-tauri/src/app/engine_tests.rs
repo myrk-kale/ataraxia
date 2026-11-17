@@ -1718,6 +1718,58 @@ fn queued_texts(w: &World) -> Vec<String> {
 }
 
 #[test]
+fn limit_resumes_the_interrupted_task_before_the_queue() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    let turn = w.host.prompt(&w.session.id, "first").unwrap();
+    next_request(&w, None);
+    w.engine
+        .enqueue(w.session.id, "queued", Vec::new())
+        .unwrap();
+    w.engine.on_agent_event(&AgentEvent::RateLimited {
+        session_id: w.session.id,
+        turn_id: turn,
+        resets_at: 100,
+    });
+    w.host.cancel(&w.session.id, None).unwrap();
+    wait_for("rate wait ready", || {
+        w.engine
+            .rate_waits
+            .lock()
+            .get(&w.session.id)
+            .filter(|wait| wait.2)
+            .cloned()
+    });
+    w.engine.rate_limit_tick(99);
+    assert_eq!(user_texts(&w), ["first"]);
+    w.engine.rate_limit_tick(100);
+    let request = next_request(&w, None);
+    let texts = user_texts(&w);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[1].starts_with("Continue the task interrupted by the usage limit"));
+    assert_eq!(queued_texts(&w), ["queued"]);
+    approve(&w, request);
+    wait_for("queued message", || {
+        (user_texts(&w).len() == 3).then_some(())
+    });
+    assert_eq!(user_texts(&w)[2], "queued");
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn canceling_a_rate_wait_prevents_automatic_resume() {
+    let w = world();
+    w.engine
+        .rate_waits
+        .lock()
+        .insert(w.session.id, ("turn".into(), 100, true));
+    w.engine.cancel_rate_wait(w.session.id);
+    w.engine.rate_limit_tick(100);
+    assert!(w.engine.rate_waits.lock().is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn queued_messages_go_out_one_after_another_as_each_turn_ends() {
     let w = world();
     w.host.start_session(&w.session).unwrap();

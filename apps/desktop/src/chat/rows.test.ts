@@ -15,6 +15,11 @@ const tool = (callId: string): ChatItem => ({
 });
 
 describe("toRows", () => {
+  it("copies all agent messages in an interaction across tools and restored boundaries", () => {
+    const rows = toRows([user("u1"), agent("a1"), tool("c1"), agent("a2"), user("u2"), agent("a3")], 3);
+    expect(rows.map((row) => row.copyText ?? null)).toEqual([null, null, null, "a1\n\na2", null, "a3"]);
+  });
+
   it("makes one row per message and tool call, so a long turn can be cut anywhere", () => {
     const rows = toRows([user("u1"), agent("a1"), tool("c1"), tool("c2"), agent("a2")], -1);
     expect(rows.map((row) => row.key)).toEqual(["u1", "a1", "c1", "c2", "a2"]);

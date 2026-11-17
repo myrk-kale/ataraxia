@@ -470,6 +470,7 @@ struct ToolMeta {
 struct AcpState {
     turn: Option<TurnId>,
     cancel_requested: bool,
+    rate_attempts: u32,
     tools: HashMap<String, ToolMeta>,
     queue: VecDeque<QueuedPermission>,
     active: Option<QueuedPermission>,
@@ -738,6 +739,41 @@ impl AcpShared {
                 state.commands = parse_commands(list);
             }
             return;
+        }
+        if kind == "session_info_update" {
+            let retry = update.pointer("/_meta/opencode~1retry");
+            if let Some(retry) = retry {
+                let rate_limit = retry.pointer("/error/type").and_then(Value::as_str)
+                    == Some("provider.rate-limit");
+                let resets_at = retry
+                    .get("nextRetryAt")
+                    .and_then(Value::as_str)
+                    .and_then(|value| {
+                        time::OffsetDateTime::parse(
+                            value,
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .ok()
+                    })
+                    .map(|value| value.unix_timestamp());
+                if let (true, Some(turn_id), Some(resets_at)) = (rate_limit, state.turn, resets_at)
+                {
+                    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+                    if resets_at >= now {
+                        state.rate_attempts = state.rate_attempts.saturating_add(1);
+                        let delay = (60_i64
+                            * (1_i64 << state.rate_attempts.saturating_sub(1).min(4)))
+                        .min(900);
+                        let resets_at = resets_at.max(now + delay);
+                        (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+                        if let (Some(client), Some(id)) =
+                            (self.client.get(), self.acp_session_id.get())
+                        {
+                            let _ = client.notify("session/cancel", json!({ "sessionId": id }));
+                        }
+                    }
+                }
+            }
         }
         if kind == "usage_update" {
             if let (Some(used), Some(size)) = (
@@ -1092,6 +1128,9 @@ impl AcpShared {
                     .get("stopReason")
                     .and_then(Value::as_str)
                     .unwrap_or("end_turn");
+                if reason == "end_turn" && !cancelled {
+                    self.state.lock().rate_attempts = 0;
+                }
                 if !matches!(reason, "end_turn" | "cancelled") {
                     (self.emit)(BackendEvent::Delta {
                         turn_id,
@@ -1373,6 +1412,49 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn missing_limit_reset_does_not_schedule_a_resume() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit_no_reset")
+            .expect("prompt");
+        let seen = h.until("failed", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::RateLimited { .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn rate_limit_is_reported_before_the_turn_ends() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit please")
+            .expect("prompt");
+        let seen = h.until("limit", |event| {
+            matches!(event, BackendEvent::RateLimited { .. })
+        });
+        assert!(seen.iter().any(|event| matches!(event, BackendEvent::RateLimited { resets_at, .. } if *resets_at > time::OffsetDateTime::now_utc().unix_timestamp())));
+        let end = h.until("turn end", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !end.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: true, .. }))
+        );
+        h.session.shutdown();
+    }
 
     #[test]
     fn streams_reasoning_separately_from_the_answer() {

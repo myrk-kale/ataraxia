@@ -194,6 +194,7 @@ pub fn ataraxia_commands() -> Vec<SlashCommand> {
     [
         ("help", "List Ataraxia commands", None),
         ("new", "Create a new chat and keep this one", None),
+        ("workspace", "Switch to the previous workspace", None),
         (
             "compact",
             "Compact this conversation",

@@ -25,7 +25,7 @@ import { DecisionIssue } from "./DecisionIssue";
 import { ThreadDialog } from "./ThreadDialog";
 import { DecisionList } from "./DecisionList";
 import { GenerateDialog, LinkCommitDialog, NewDecisionDialog } from "./Dialogs";
-import { filterDecisions, generationState, KIND_LABEL, orderDecisions, refLabel, type Tab } from "./model";
+import { filterDecisions, generationState, KIND_LABEL, nextPendingDecision, orderDecisions, refLabel, type Tab } from "./model";
 
 /**
  * Decisions as threads, like the issues of a repository: a list, and one page per decision with
@@ -199,7 +199,12 @@ export function DecisionsSpace({
       const updated = await decisionSetState(current.id, state, comment || null);
       setDecisions((list) => list.map((item) => (item.id === updated.id ? updated : item)));
       setDraft("");
-      void loadDetail(updated.id);
+      if (state === "approved" || state === "rejected") {
+        const next = nextPendingDecision(decisions, current.id);
+        setSelected((selectedId) => selectedId === current.id ? next : selectedId);
+      } else {
+        void loadDetail(updated.id);
+      }
     } catch (err) {
       onError(errorText(err));
     }

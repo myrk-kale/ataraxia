@@ -1,3 +1,4 @@
+import { CopyButton } from "./CopyButton";
 import { Clock } from "lucide-react";
 import { memo } from "react";
 import { parseScheduledMessage, type ChatItem } from "../lib/agent";
@@ -102,18 +103,17 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
  */
 export const TranscriptRow = memo(
   function TranscriptRow({ row, sessionId }: { row: Row; sessionId: string }) {
-    if (!row.notice) {
-      return <Item item={row.item} sessionId={sessionId} />;
-    }
     return (
-      <div className="flex flex-col gap-9.5">
-        {RESTORED_NOTICE}
+      <div className={`flex flex-col ${row.notice ? "gap-9.5" : "gap-3"}`}>
+        {row.notice ? RESTORED_NOTICE : null}
         <Item item={row.item} sessionId={sessionId} />
+        {row.copyText ? <div className="self-start"><CopyButton inline what="interaction" read={() => ({ text: row.copyText ?? "" })} /></div> : null}
       </div>
     );
   },
   (before, after) =>
     before.row.item === after.row.item &&
     before.row.notice === after.row.notice &&
+    before.row.copyText === after.row.copyText &&
     before.sessionId === after.sessionId,
 );

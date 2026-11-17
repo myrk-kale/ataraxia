@@ -16,6 +16,7 @@ export type Row = {
   after: number;
   /** The divider "earlier messages are shown for reference" goes above this one. */
   notice: boolean;
+  copyText?: string;
 };
 
 /**
@@ -37,6 +38,22 @@ export function toRows(items: ChatItem[], restoredSplit: number): Row[] {
         notice: notice && at === 0,
       });
     });
+  }
+  const isUser = (row: Row) => row.item.kind === "message" && row.item.role === "user";
+  let start = 0;
+  while (start < rows.length) {
+    if (isUser(rows[start])) {
+      start += 1;
+      continue;
+    }
+    let end = start;
+    while (end < rows.length && !isUser(rows[end])) end += 1;
+    const messages = rows.slice(start, end).filter((row) => row.item.kind === "message" && (row.item.role === "assistant" || row.item.role === "reasoning") && row.item.text.trim());
+    const last = messages.at(-1);
+    if (last) {
+      last.copyText = messages.map((row) => row.item.kind === "message" ? row.item.text : "").join("\n\n");
+    }
+    start = end;
   }
   if (rows.length > 0) {
     rows[rows.length - 1] = { ...rows[rows.length - 1], after: 0 };
@@ -119,5 +136,5 @@ export function estimateRow(row: Row): number {
   } else {
     height = markdownHeight(item.text, REPLY_CHARS);
   }
-  return height + (row.notice ? 60 : 0) + row.after;
+  return height + (row.copyText ? 36 : 0) + (row.notice ? 60 : 0) + row.after;
 }

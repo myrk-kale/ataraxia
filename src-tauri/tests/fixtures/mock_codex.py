@@ -215,7 +215,22 @@ def main():
         elif method == "turn/start":
             send({"id": frame["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}})
             text = frame["params"]["input"][0]["text"]
-            if text.startswith("reasoning"):
+            if text.startswith("limit_retry"):
+                start_turn()
+                notify("account/rateLimits/updated", rateLimits={"primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": int(time.time()) + 300}})
+                notify("error", error={"message": "limit reached", "codexErrorInfo": "usageLimitExceeded"}, willRetry=True)
+                interrupt = wait_for(lambda item: item.get("method") == "turn/interrupt")
+                send({"id": interrupt["id"], "result": {}})
+                complete("interrupted")
+            elif text.startswith("limit_no_reset"):
+                start_turn()
+                notify("account/rateLimits/updated", rateLimits={"primary": {"usedPercent": 100, "windowDurationMins": 300}})
+                notify("turn/completed", turn={"id": TURN, "status": "failed", "error": {"message": "limit reached", "codexErrorInfo": "usageLimitExceeded"}})
+            elif text.startswith("limit"):
+                start_turn()
+                notify("account/rateLimits/updated", rateLimits={"primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": int(time.time()) + 300}})
+                notify("turn/completed", turn={"id": TURN, "status": "failed", "error": {"message": "limit reached", "codexErrorInfo": "usageLimitExceeded"}})
+            elif text.startswith("reasoning"):
                 start_turn()
                 notify("thread/tokenUsage/updated", turnId=TURN, tokenUsage={"last": {"totalTokens": 42000}, "modelContextWindow": 200000})
                 notify("item/reasoning/summaryTextDelta", turnId=TURN, itemId="r1", summaryIndex=0, delta="Consider ")

@@ -49,6 +49,7 @@ import {
   workspaceOpenSession,
   workspaceSelectRepository,
   workspaceSelectWorkspace,
+  workspacePreviousWorkspace,
   workspaceListBranches,
   workspaceSelectBranch,
   type BranchView,
@@ -243,6 +244,9 @@ export function AppShell() {
           break;
         case "terminal":
           setTerminalOpen((openPanel) => !openPanel);
+          break;
+        case "previous-workspace":
+          void runWorkspace(workspacePreviousWorkspace);
           break;
         case "btw":
           openBtw(null);
@@ -578,6 +582,7 @@ export function AppShell() {
           provider={providers?.find((item) => item.kind === selectedSession.provider) ?? null}
           session={selectedSession}
           onNewSession={setWorkspace}
+          onPreviousWorkspace={workspacePreviousWorkspace}
           onSessionChange={(updated) =>
             setWorkspace((current) => ({
               ...current,

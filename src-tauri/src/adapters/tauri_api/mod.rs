@@ -75,6 +75,13 @@ pub fn workspace_select_workspace(
 }
 
 #[tauri::command]
+pub fn workspace_previous_workspace(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| workspace.previous_workspace())
+}
+
+#[tauri::command]
 pub fn workspace_create_workspace(
     state: tauri::State<'_, AppState>,
     name: String,
@@ -522,6 +529,8 @@ pub fn agent_prompt(
     text: String,
     images: Option<Vec<ImageUpload>>,
 ) -> std::result::Result<TurnId, String> {
+    // A new manual message supersedes an automatic continuation.
+    state.engine.cancel_rate_wait(session_id);
     // Marks where the working tree stands, so this turn's changes become a checkpoint.
     state.engine.turn_started(session_id);
     state
@@ -616,6 +625,7 @@ pub fn agent_cancel(
     session_id: SessionId,
     turn_id: Option<TurnId>,
 ) -> std::result::Result<(), String> {
+    state.engine.cancel_rate_wait(session_id);
     state
         .agent_runtime()
         .cancel(&session_id, turn_id.as_ref())
@@ -648,8 +658,20 @@ pub fn agent_get_snapshot(
     state: tauri::State<'_, AppState>,
     session_id: SessionId,
 ) -> std::result::Result<ChatSnapshot, String> {
-    state
+    let mut snapshot = state
         .agent_runtime()
         .snapshot(&session_id)
-        .map_err(map_error)
+        .map_err(map_error)?;
+    snapshot.rate_limit_at = state
+        .engine
+        .rate_waits
+        .lock()
+        .get(&session_id)
+        .map(|wait| wait.1);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn agent_cancel_rate_wait(state: tauri::State<'_, AppState>, session_id: SessionId) {
+    state.engine.cancel_rate_wait(session_id);
 }

@@ -81,6 +81,7 @@ export type SubagentUpdate =
 export type ContextUsage = { used: number; size: number };
 
 export type ChatSnapshot = {
+  rateLimitAt?: number | null;
   contextUsage?: ContextUsage | null;
   items: ChatItem[];
   subagents: SubagentView[];
@@ -90,6 +91,7 @@ export type ChatSnapshot = {
 };
 
 type AgentEventBody =
+  | { type: "rateLimited"; sessionId: SessionId; turnId: string; resetsAt: number }
   | { type: "contextUsage"; sessionId: SessionId; usage: ContextUsage }
   | { type: "status"; sessionId: SessionId; status: SessionStatus }
   /** A provider reported its limits. Not about one chat. */
@@ -424,6 +426,10 @@ export function parseScheduledMessage(text: string): { id: string; prompt: strin
   return match ? { id: match[1] ?? "", prompt: (match[2] ?? "").trim() } : null;
 }
 
+export function agentCancelRateWait(sessionId: SessionId) {
+  return invoke<void>("agent_cancel_rate_wait", { sessionId });
+}
+
 export function agentCancel(sessionId: SessionId) {
   return invoke<void>("agent_cancel", { sessionId, turnId: null });
 }
@@ -455,6 +461,7 @@ export function listenAgentEvents(
 }
 
 export type ChatState = {
+  rateLimitAt: number | null;
   contextUsage: ContextUsage | null;
   /** The number of the last event applied, so a repeat of it is not applied again. */
   lastSeq: number;
@@ -468,6 +475,7 @@ export type ChatState = {
 };
 
 export const initialChatState: ChatState = {
+  rateLimitAt: null,
   contextUsage: null,
   lastSeq: 0,
   items: [],
@@ -487,7 +495,8 @@ export type ChatAction =
   | { type: "rollback"; id: string; status: SessionStatus }
   | { type: "event"; event: AgentEvent }
   | { type: "failed"; message: string }
-  | { type: "dismissError" };
+  | { type: "dismissError" }
+  | { type: "cancelRateWait" };
 
 /** The message shown ahead of the app that is this text, if there is one. */
 export function waitingFor(items: ChatItem[], text: string): ChatMessage | undefined {
@@ -674,6 +683,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "loaded":
       return {
+        rateLimitAt: action.snapshot.rateLimitAt ?? state.rateLimitAt,
         lastSeq: state.lastSeq,
         contextUsage: action.snapshot.contextUsage ?? null,
         items: action.snapshot.items,
@@ -708,6 +718,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, error: action.message, loaded: true };
     case "dismissError":
       return { ...state, error: null };
+    case "cancelRateWait":
+      return { ...state, rateLimitAt: null };
     case "event": {
       const event = action.event;
       if (event.seq !== undefined) {
@@ -718,10 +730,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         state = { ...state, lastSeq: event.seq };
       }
       switch (event.type) {
+        case "rateLimited":
+          return { ...state, rateLimitAt: event.resetsAt, error: null };
         case "contextUsage":
           return { ...state, contextUsage: event.usage };
         case "status":
-          return { ...state, status: event.status };
+          return { ...state, status: event.status, rateLimitAt: event.status === "working" ? null : state.rateLimitAt };
         case "delta": {
           const taken = event.role === "user" ? reconcile(state.items, event.text, event.turnId, event.images) : null;
           return {
@@ -810,7 +824,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ),
           };
         case "error":
-          return { ...state, error: event.message, pending: null };
+          return { ...state, error: state.rateLimitAt ? null : event.message, pending: null };
         case "usage":
           // About the provider, not this chat: the meter listens for it itself.
           return state;

@@ -231,7 +231,14 @@ def main():
         elif kind == "user":
             content = frame["message"]["content"]
             text = content if isinstance(content, str) else content[0]["text"]
-            if text.startswith("reasoning"):
+            if text.startswith("limit_no_reset"):
+                send({"type": "rate_limit_event", "rate_limit_info": {"rateLimitType": "five_hour", "status": "rejected"}})
+                send({"type": "result", "subtype": "error", "is_error": True, "result": "limit reached"})
+            elif text.startswith("limit"):
+                send({"type": "rate_limit_event", "rate_limit_info": {"rateLimitType": "five_hour", "status": "rejected", "resetsAt": int(time.time()) + 300}})
+                wait_for(lambda message: message.get("type") == "control_request" and message.get("request", {}).get("subtype") == "interrupt")
+                send({"type": "result", "subtype": "success", "is_error": False, "result": "interrupted"})
+            elif text.startswith("reasoning"):
                 stream_event({"type": "message_start", "message": {"id": MSG, "model": "mock-model", "usage": {"input_tokens": 10000, "cache_read_input_tokens": 30000, "cache_creation_input_tokens": 1000}}})
                 stream_event({"type": "message_delta", "usage": {"output_tokens": 1000}})
                 for part in ("Consider ", "this"):
