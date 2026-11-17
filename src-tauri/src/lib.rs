@@ -115,6 +115,11 @@ pub fn run() {
             tauri_api::flow_list,
             tauri_api::code_refs,
             tauri_api::code_compare,
+            tauri_api::autocomplete_suggest,
+            tauri_api::autocomplete_settings,
+            tauri_api::autocomplete_set_settings,
+            tauri_api::autocomplete_languages,
+            tauri_api::autocomplete_forget,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

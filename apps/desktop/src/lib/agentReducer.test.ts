@@ -101,6 +101,20 @@ describe("chatReducer", () => {
     expect(done.pending).toBeNull();
   });
 
+  it("stops asking once the answer is taken, so the question cannot be answered twice", () => {
+    const asked = apply(
+      initialChatState,
+      { type: "permission", sessionId: SESSION, turnId: TURN, requestId: "r1", toolName: "ask", detail: "?" },
+      { type: "status", sessionId: SESSION, status: "waiting-permission" },
+    );
+    expect(asked.pending?.requestId).toBe("r1");
+    // Another request's answer does not close this one.
+    expect(chatReducer(asked, { type: "permissionResolved", requestId: "other" }).pending?.requestId).toBe("r1");
+    expect(chatReducer(asked, { type: "permissionResolved", requestId: "r1" }).pending).toBeNull();
+    // The app going back to work is the same thing seen from its side.
+    expect(apply(asked, { type: "status", sessionId: SESSION, status: "working" }).pending).toBeNull();
+  });
+
   it("fails tools still running when the turn ends unsuccessfully", () => {
     const state = apply(
       initialChatState,

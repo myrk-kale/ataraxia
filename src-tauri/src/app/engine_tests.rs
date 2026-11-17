@@ -1770,6 +1770,30 @@ fn canceling_a_rate_wait_prevents_automatic_resume() {
 }
 
 #[test]
+fn the_machine_is_kept_awake_only_while_work_is_pending() {
+    let w = world();
+    assert_eq!(w.engine.pending_work(), None);
+    w.engine
+        .rate_waits
+        .lock()
+        .insert(w.session.id, ("turn".into(), 100, true));
+    assert!(w.engine.pending_work().is_some());
+    w.engine.cancel_rate_wait(w.session.id);
+    assert_eq!(w.engine.pending_work(), None);
+    w.host.start_session(&w.session).unwrap();
+    assert_eq!(
+        w.engine.pending_work(),
+        None,
+        "an idle open chat does not count"
+    );
+    w.engine
+        .schedule_add(w.session.id, "check the release", 60, None)
+        .unwrap();
+    assert!(w.engine.pending_work().is_some());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn queued_messages_go_out_one_after_another_as_each_turn_ends() {
     let w = world();
     w.host.start_session(&w.session).unwrap();

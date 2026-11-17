@@ -115,6 +115,10 @@ pub trait AgentRuntime: Send + Sync {
     fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {
         Ok(self.snapshot(session_id)?.status)
     }
+    /// The status of every agent process that is alive, helpers included.
+    fn live_statuses(&self) -> Vec<SessionStatus> {
+        Vec::new()
+    }
     /// Stores a new model/effort for the chat and applies it. Providers that cannot switch on a
     /// live process restart the session (the transcript stays, the agent starts fresh).
     fn configure_session(
@@ -180,6 +184,9 @@ pub trait InsightSink: Send + Sync {
 }
 
 /// Everything the engine persists, behind one handle.
+/// One learned step of the autocomplete: `(context, word, count)`.
+pub type GramRow = (String, String, i64);
+
 pub trait Database: Store + InsightStore {}
 impl<T: Store + InsightStore> Database for T {}
 
@@ -425,6 +432,23 @@ pub trait Store: Send + Sync {
 
     fn get_preference(&self, key: &str) -> Result<Option<String>>;
     fn set_preference(&self, key: &str, value: &str) -> Result<()>;
+
+    /// What the autocomplete learned in `scope`, as `(context, word, count)`.
+    fn autocomplete_load(&self, _scope: &str) -> Result<Vec<GramRow>> {
+        Ok(Vec::new())
+    }
+    /// Adds `count` to each `(context, word)` of `scope`, `now` being seconds since the epoch.
+    fn autocomplete_add(&self, _scope: &str, _rows: &[GramRow], _now: i64) -> Result<()> {
+        Ok(())
+    }
+    /// Keeps the `keep` most used and most recent rows of `scope` and drops the rest.
+    fn autocomplete_prune(&self, _scope: &str, _keep: usize) -> Result<()> {
+        Ok(())
+    }
+    /// Forgets one scope, or all of them.
+    fn autocomplete_clear(&self, _scope: Option<&str>) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Persistence of everything derived from an agent's work.
@@ -626,4 +650,12 @@ pub struct Prompt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartedTurn {
     pub turn_id: TurnId,
+}
+
+/// Keeps the machine from going to sleep by itself while the app has work that must go on.
+///
+/// `hold` is called repeatedly with the current answer and from one thread only, so an
+/// implementation may keep state tied to the calling thread.
+pub trait SleepGuard: Send + Sync {
+    fn hold(&self, awake: bool);
 }

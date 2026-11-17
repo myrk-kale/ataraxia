@@ -45,7 +45,7 @@ impl Entry {
 }
 
 impl QueueState {
-    fn view(&self) -> MessageQueue {
+    pub(crate) fn view(&self) -> MessageQueue {
         MessageQueue {
             items: self.items.iter().map(Entry::view).collect(),
             paused: self.paused,

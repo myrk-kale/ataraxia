@@ -6,6 +6,25 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Keep the system from sleeping while an agent is working, a message is queued, a schedule is
+  waiting to fire or a usage-limit wait is pending, in any workspace.
+- Autocomplete in the chat composer now suggests whole phrases and names from the code (found by
+  the syntax analyzer), using packaged dictionaries for English, Portuguese (Brazil and Portugal),
+  Spanish, French, German and Italian. A language model learns from the messages you send, in
+  general and per chat, and keeps what it learned on disk across restarts. Choose the languages,
+  turn parts off or forget what it learned in Settings > Autocomplete.
+
+### Changed
+
+- Word suggestions come from the app instead of a fixed list in the window.
+
+### Fixed
+
+- Answering a question with several steps no longer ends in "no pending permission": the prompt
+  goes away once the answer is taken, and an answer is sent only once.
+
 ## [0.9.0] - 2026-11-17
 
 ### Added

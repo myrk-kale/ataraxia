@@ -16,6 +16,7 @@ categories = ["development-tools"]
 include = [
   "/src/**",
   "/migrations/**",
+  "/dictionaries/**",
   "/guide/**",
   "/icons/**",
   "/capabilities/**",
