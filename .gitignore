@@ -8,6 +8,7 @@ rustc-ice-*.txt
 
 # Node / frontend
 node_modules/
+.pnpm-store/
 dist/
 .turbo/
 .vite/
