@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
 ### Added
 
 - Stream reasoning and context usage from supported coding agents, with a copy action for each
@@ -368,7 +370,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/myrk-kale/ataraxia/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/myrk-kale/ataraxia/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...v0.6.0
