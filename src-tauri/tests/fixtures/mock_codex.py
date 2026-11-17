@@ -217,6 +217,7 @@ def main():
             text = frame["params"]["input"][0]["text"]
             if text.startswith("reasoning"):
                 start_turn()
+                notify("thread/tokenUsage/updated", turnId=TURN, tokenUsage={"last": {"totalTokens": 42000}, "modelContextWindow": 200000})
                 notify("item/reasoning/summaryTextDelta", turnId=TURN, itemId="r1", summaryIndex=0, delta="Consider ")
                 notify("item/reasoning/summaryTextDelta", turnId=TURN, itemId="r1", summaryIndex=0, delta="this")
                 notify("item/agentMessage/delta", turnId=TURN, itemId="m1", delta="Answer")

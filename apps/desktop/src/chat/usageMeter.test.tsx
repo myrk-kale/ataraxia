@@ -24,10 +24,12 @@ function render(value: ProviderUsage) {
 }
 
 describe("UsageView", () => {
-  it("shows both limits in the bar with the share as a number", () => {
+  it("shows both limits in the details and the short window in the ring", () => {
     const html = render(usage());
-    expect(html).toContain(">5h<");
-    expect(html).toContain(">Week<");
+    expect(html).toContain("<svg");
+    expect(html).toContain('stroke-dasharray="2.6388 43.98"');
+    expect(html).toContain("5-hour limit");
+    expect(html).toContain("Weekly limit");
     expect(html).toMatch(/6%/);
     expect(html).toMatch(/76%/);
   });

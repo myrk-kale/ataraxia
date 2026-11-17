@@ -8,23 +8,24 @@ function render(status: SessionStatus): string {
 }
 
 describe("StatusDot", () => {
-  it("says nothing when the agent is ready", () => {
-    expect(render("ready")).toBe("");
-    expect(render("idle")).toBe("");
+  it("shows a green dot when ready or idle", () => {
+    expect(render("ready")).toContain("bg-cg-green");
+    expect(render("idle")).toContain('aria-label="Idle"');
   });
 
-  it("is amber while busy or waiting, and says so in words", () => {
+  it("is amber while busy or waiting, with an accessible label", () => {
     for (const status of ["starting", "working", "waiting-permission", "stopping"] as const) {
       const html = render(status);
       expect(html).toContain("bg-cg-amber");
       expect(html).not.toContain("animate");
     }
-    expect(render("waiting-permission")).toContain("Needs approval");
+    expect(render("waiting-permission")).toContain('aria-label="Needs approval"');
+    expect(render("working")).not.toContain(">Working<");
   });
 
-  it("is red when stopped or failed, with the word as well as the colour", () => {
+  it("is red when stopped or failed, with an accessible label", () => {
     expect(render("failed")).toContain("bg-cg-red");
     expect(render("stopped")).toContain("bg-cg-red");
-    expect(render("failed")).toContain("Failed");
+    expect(render("failed")).toContain('aria-label="Failed"');
   });
 });

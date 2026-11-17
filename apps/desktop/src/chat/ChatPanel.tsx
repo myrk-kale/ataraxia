@@ -62,6 +62,7 @@ import { ScheduledTasks } from "./ScheduledTasks";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
+import { ContextMeter } from "./ContextMeter";
 import { SubagentBar } from "./SubagentBar";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { VirtualTranscript } from "./VirtualTranscript";
@@ -314,14 +315,6 @@ export function ChatPanel({
     if (element) {
       element.style.height = "auto";
       element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_PX)}px`;
-      // The background is as tall as the area above the field would be with the field at its
-      // smallest: what the field grows by is added back, so it stays where it is. The height
-      // that counts is the one on screen, which the style sheet may cap below the one asked for.
-      const least = parseFloat(getComputedStyle(element).minHeight) || 0;
-      element.closest<HTMLElement>(".cg-chat")?.style.setProperty(
-        "--composer-growth",
-        `${Math.max(0, element.offsetHeight - least)}px`,
-      );
     }
   }, [draft]);
 
@@ -700,20 +693,13 @@ export function ChatPanel({
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
-    <section className="cg-chat flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+    <section className="cg-chat relative flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+      {background.enabled ? (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+          <AsciiMark mark={emptyChat} />
+        </div>
+      ) : null}
       <div className="relative min-h-0 flex-1">
-        {background.enabled ? (
-          // It does not follow the area above the field as that shrinks when the field grows (the
-          // letter and the lit parts would rise with it): it reaches down behind the field by as
-          // much as the field has grown.
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0"
-            style={{ bottom: "calc(var(--composer-growth, 0px) * -1)" }}
-          >
-            <AsciiMark mark={emptyChat} />
-          </div>
-        ) : null}
         <div ref={scrollRef} className="relative h-full overflow-y-auto" onScroll={onScroll}>
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
@@ -1041,7 +1027,7 @@ export function ChatPanel({
                 </>
               )}
               <StatusDot status={state.status} />
-              {bare ? null : <UsageMeter label={providerLabel} provider={session.provider} />}
+              {bare ? null : <><UsageMeter label={providerLabel} provider={session.provider} /><ContextMeter usage={state.contextUsage} /></>}
             </div>
             {activeSubagent ? (
               <button

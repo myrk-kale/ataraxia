@@ -95,6 +95,8 @@ pub struct AgentConfiguration {
     pub mcp_config_path: Option<PathBuf>,
     /// Instructions and available skills to introduce to the current conversation.
     pub preamble: String,
+    /// Instructions without the portable skill catalog, for native skill integrations.
+    pub instructions_preamble: String,
     /// Skills discovered in the Ataraxia user and repository roots.
     pub skills: Vec<SkillDefinition>,
     /// Only the portable user and repository roots are exposed to harnesses.
@@ -171,6 +173,7 @@ impl AgentConfiguration {
             preamble.push_str(&instructions.join("\n\n"));
             preamble.push_str("\n\n");
         }
+        let instructions_preamble = preamble.clone();
         if !skills.is_empty() {
             preamble.push_str("Ataraxia skills available in this session. Read the listed SKILL.md before applying one that fits the task:\n");
             for skill in &skills {
@@ -196,6 +199,7 @@ impl AgentConfiguration {
             mcp_servers: servers,
             mcp_config_path,
             preamble,
+            instructions_preamble,
             skills,
             skill_roots,
         })

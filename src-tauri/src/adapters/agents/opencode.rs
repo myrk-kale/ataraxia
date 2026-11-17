@@ -739,6 +739,17 @@ impl AcpShared {
             }
             return;
         }
+        if kind == "usage_update" {
+            if let (Some(used), Some(size)) = (
+                update.get("used").and_then(Value::as_u64),
+                update.get("size").and_then(Value::as_u64),
+            ) {
+                if size > 0 {
+                    (self.emit)(BackendEvent::ContextUsage { used, size });
+                }
+            }
+            return;
+        }
         let Some(turn_id) = state.turn else {
             return;
         };
@@ -1387,6 +1398,13 @@ mod tests {
                 _ => None,
             })
             .collect();
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ContextUsage {
+                used: 42000,
+                size: 200000
+            }
+        )));
         assert_eq!(reasoning, "Consider this");
         assert_eq!(answer, "Answer");
     }

@@ -214,6 +214,11 @@ pub enum AgentEvent {
         session_id: SessionId,
         status: SessionStatus,
     },
+    #[serde(rename_all = "camelCase")]
+    ContextUsage {
+        session_id: SessionId,
+        usage: ContextUsage,
+    },
     /// A provider reported where its limits stand. Not about one chat: every chat on that
     /// provider shows it.
     Usage { usage: super::usage::ProviderUsage },
@@ -292,10 +297,19 @@ pub struct PendingPermission {
     pub questions: Vec<PermissionQuestion>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub used: u64,
+    pub size: u64,
+}
+
 /// Everything the UI needs to rebuild a chat view after (re)opening a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSnapshot {
+    #[serde(default)]
+    pub context_usage: Option<ContextUsage>,
     pub items: Vec<ChatItem>,
     /// Subagent conversations of the running agent process (not persisted across restarts).
     #[serde(default)]

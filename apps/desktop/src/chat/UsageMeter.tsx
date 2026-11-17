@@ -4,6 +4,7 @@ import { useActiveProfile, type HarnessProfile } from "../lib/profiles";
 import type { ProviderUsage } from "../lib/usage";
 import type { ProviderKind } from "../lib/workspace";
 import { useNowSeconds, useProviderUsage } from "./useProviderUsage";
+import { UsageRing } from "./UsageRing";
 import {
   describeWindow,
   formatAge,
@@ -40,15 +41,6 @@ function Bar({ view, className }: { view: WindowView; className: string }) {
         className={`block h-full rounded-full ${FILL[view.level]}`}
         style={{ width: `${filled}%` }}
       />
-    </span>
-  );
-}
-
-function Share({ view }: { view: WindowView }) {
-  return (
-    <span className={`flex items-center gap-1 tabular-nums ${TEXT[view.level]}`}>
-      {view.level === "ok" ? null : <TriangleAlert aria-hidden="true" size={11} />}
-      {view.percent}%
     </span>
   );
 }
@@ -135,17 +127,11 @@ export function UsageView({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={`${label}${profile ? ` (${profile.name})` : ""} limits. ${spoken}. Show details`}
-        className="flex flex-none cursor-pointer items-center gap-3 rounded-cg-sm px-1.5 py-1 text-small outline-none hover:bg-cg-line"
+        className="flex flex-none cursor-pointer items-center gap-3 rounded-cg-sm px-1.5 py-1 text-small hover:bg-cg-line focus-visible:outline focus-visible:outline-2 focus-visible:outline-cg-ink"
         type="button"
         onClick={show}
       >
-        {views.map((view) => (
-          <span key={view.kind} className="flex items-center gap-1.5">
-            <span className="text-cg-muted-strong">{view.short}</span>
-            <Bar className="w-8" view={view} />
-            <Share view={view} />
-          </span>
-        ))}
+        <UsageRing percent={views[0].percent} />
       </button>
       <div
         ref={menuRef}

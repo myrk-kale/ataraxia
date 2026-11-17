@@ -59,7 +59,9 @@ compatible agent tools.
 
 ## Provider isolation
 
-Claude Code runs with `--bare` and strict MCP configuration. Codex receives a fresh `CODEX_HOME`
+Claude Code uses strict MCP configuration and loads the selected portable skills as a temporary
+session plugin. Skill commands use the `ataraxia:` namespace; Claude's built-in skills may also
+remain available. Codex receives a fresh `CODEX_HOME`
 for each chat with only the active account's authentication file carried over; native project
 instructions, Codex apps, and plugins are disabled, and its skill catalog enables only the skills
 Ataraxia selected. MCP servers come from the portable configuration described above.

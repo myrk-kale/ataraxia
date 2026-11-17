@@ -19,6 +19,10 @@ function apply(state: ChatState, ...events: AgentEvent[]): ChatState {
 }
 
 describe("chatReducer", () => {
+  it("updates conversation context from a session event", () => {
+    const state = apply(initialChatState, { type: "contextUsage", sessionId: SESSION, usage: { used: 42000, size: 200000 } });
+    expect(state.contextUsage).toEqual({ used: 42000, size: 200000 });
+  });
   it("keeps streamed reasoning separate and in order around tools and answers", () => {
     const state = apply(initialChatState,
       { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "Think " },

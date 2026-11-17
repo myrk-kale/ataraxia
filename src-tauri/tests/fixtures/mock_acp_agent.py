@@ -157,6 +157,7 @@ def main():
         elif method == "session/prompt":
             text = frame["params"]["prompt"][0]["text"]
             if text.startswith("reasoning"):
+                update({"sessionUpdate": "usage_update", "used": 42000, "size": 200000})
                 update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Consider "}})
                 update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "this"}})
                 chunk("Answer")

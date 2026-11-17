@@ -17,6 +17,10 @@ use crate::ports::ApiAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEvent {
+    ContextUsage {
+        used: u64,
+        size: u64,
+    },
     Delta {
         turn_id: TurnId,
         text: String,

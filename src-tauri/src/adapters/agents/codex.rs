@@ -510,6 +510,21 @@ impl CodexShared {
                 return;
             }
         }
+        if method == "thread/tokenUsage/updated" {
+            if let (Some(used), Some(size)) = (
+                params
+                    .pointer("/tokenUsage/last/totalTokens")
+                    .and_then(Value::as_u64),
+                params
+                    .pointer("/tokenUsage/modelContextWindow")
+                    .and_then(Value::as_u64),
+            ) {
+                if size > 0 {
+                    (self.emit)(BackendEvent::ContextUsage { used, size });
+                }
+            }
+            return;
+        }
         let mut state = self.state.lock();
         let Some(turn_id) = state.turn else {
             return;
@@ -1623,6 +1638,13 @@ mod tests {
                 _ => None,
             })
             .collect();
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ContextUsage {
+                used: 42000,
+                size: 200000
+            }
+        )));
         assert_eq!(reasoning, "Consider this");
         assert_eq!(answer, "Answer");
     }

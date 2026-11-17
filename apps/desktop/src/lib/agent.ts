@@ -78,7 +78,10 @@ export type SubagentUpdate =
   | { kind: "toolResult"; callId: string; output: string; ok: boolean }
   | { kind: "done"; ok: boolean };
 
+export type ContextUsage = { used: number; size: number };
+
 export type ChatSnapshot = {
+  contextUsage?: ContextUsage | null;
   items: ChatItem[];
   subagents: SubagentView[];
   restoredCount: number;
@@ -87,6 +90,7 @@ export type ChatSnapshot = {
 };
 
 type AgentEventBody =
+  | { type: "contextUsage"; sessionId: SessionId; usage: ContextUsage }
   | { type: "status"; sessionId: SessionId; status: SessionStatus }
   /** A provider reported its limits. Not about one chat. */
   | { type: "usage"; usage: ProviderUsage }
@@ -451,6 +455,7 @@ export function listenAgentEvents(
 }
 
 export type ChatState = {
+  contextUsage: ContextUsage | null;
   /** The number of the last event applied, so a repeat of it is not applied again. */
   lastSeq: number;
   items: ChatItem[];
@@ -463,6 +468,7 @@ export type ChatState = {
 };
 
 export const initialChatState: ChatState = {
+  contextUsage: null,
   lastSeq: 0,
   items: [],
   subagents: [],
@@ -669,6 +675,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "loaded":
       return {
         lastSeq: state.lastSeq,
+        contextUsage: action.snapshot.contextUsage ?? null,
         items: action.snapshot.items,
         subagents: action.snapshot.subagents ?? [],
         restoredCount: action.snapshot.restoredCount,
@@ -711,6 +718,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         state = { ...state, lastSeq: event.seq };
       }
       switch (event.type) {
+        case "contextUsage":
+          return { ...state, contextUsage: event.usage };
         case "status":
           return { ...state, status: event.status };
         case "delta": {

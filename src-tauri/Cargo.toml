@@ -70,6 +70,7 @@ sysinfo = "=0.36.1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-opener = "2"
+tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 tree-sitter = "0.26.13"
