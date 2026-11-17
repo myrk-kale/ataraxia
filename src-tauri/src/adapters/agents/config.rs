@@ -222,7 +222,7 @@ pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<
             ));
         }
     }
-    fs::write(&codex_config, "project_doc_max_bytes = 0\n").map_err(|error| {
+    fs::write(&codex_config, "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n").map_err(|error| {
         Error::new(
             ErrorCode::Io,
             format!("could not configure {}: {error}", codex_config.display()),
@@ -669,7 +669,7 @@ mod tests {
         prepare_isolated_home(&root.join("home"), Some(&profile_a)).expect("select profile A");
         assert_eq!(
             fs::read_to_string(root.join("home/config.toml")).expect("read private config"),
-            "project_doc_max_bytes = 0\n"
+            "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n"
         );
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile A"),

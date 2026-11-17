@@ -61,7 +61,8 @@ compatible agent tools.
 
 Claude Code runs with `--bare` and strict MCP configuration. Codex receives a fresh `CODEX_HOME`
 for each chat with only the active account's authentication file carried over; native project
-instructions are disabled, and its skill catalog enables only the skills Ataraxia selected.
+instructions, Codex apps, and plugins are disabled, and its skill catalog enables only the skills
+Ataraxia selected. MCP servers come from the portable configuration described above.
 OpenCode receives the Ataraxia MCP list through ACP; Ataraxia disables project configuration,
 external skills, Claude compatibility files, and external plugins, then replaces the global config
 directory with an empty per-chat directory. OpenCode denies skills by default and allows only the
