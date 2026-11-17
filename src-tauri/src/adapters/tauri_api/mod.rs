@@ -1,5 +1,6 @@
 //! Tauri commands: the driving adapter at the UI edge.
 
+mod autocomplete;
 mod events;
 mod insights;
 mod state;
@@ -18,6 +19,7 @@ use crate::domain::{
 };
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
+pub use autocomplete::*;
 pub use insights::*;
 pub use state::{AppState, build_app_state, follow_git};
 
@@ -459,6 +461,7 @@ pub fn agent_message_subagent(
     subagent_id: String,
     text: String,
 ) -> std::result::Result<(), String> {
+    autocomplete::learn(&state, session_id, &text);
     state
         .agent_runtime()
         .message_subagent(&session_id, &subagent_id, &text)
@@ -531,6 +534,7 @@ pub fn agent_prompt(
 ) -> std::result::Result<TurnId, String> {
     // A new manual message supersedes an automatic continuation.
     state.engine.cancel_rate_wait(session_id);
+    autocomplete::learn(&state, session_id, &text);
     // Marks where the working tree stands, so this turn's changes become a checkpoint.
     state.engine.turn_started(session_id);
     state
@@ -569,6 +573,7 @@ pub fn agent_enqueue(
     text: String,
     images: Option<Vec<ImageUpload>>,
 ) -> std::result::Result<MessageQueue, String> {
+    autocomplete::learn(&state, session_id, &text);
     state
         .engine
         .enqueue(session_id, &text, images.unwrap_or_default())

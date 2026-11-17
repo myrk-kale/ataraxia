@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod analysis;
 pub mod artifacts;
+pub mod autocomplete;
 pub mod btw;
 pub mod decisions;
 pub mod engine;
@@ -14,6 +15,7 @@ pub mod queue;
 pub mod review;
 pub mod schedule;
 pub mod units;
+pub mod wake;
 pub mod workspace;
 
 pub use engine::Engine;

@@ -262,7 +262,7 @@ impl Engine {
         self.db.set_preference(INDEX_KEY, &text)
     }
 
-    fn schedule_chats(&self) -> Vec<SessionId> {
+    pub(crate) fn schedule_chats(&self) -> Vec<SessionId> {
         self.db
             .get_preference(INDEX_KEY)
             .ok()

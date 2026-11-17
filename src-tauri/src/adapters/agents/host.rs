@@ -2199,6 +2199,15 @@ impl AgentRuntime for AgentHost {
         backend.resolve_permission(&decision)
     }
 
+    fn live_statuses(&self) -> Vec<SessionStatus> {
+        self.inner
+            .sessions
+            .lock()
+            .values()
+            .map(|live| live.status)
+            .collect()
+    }
+
     fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {
         Ok(self
             .inner

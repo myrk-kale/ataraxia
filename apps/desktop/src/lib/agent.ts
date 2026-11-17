@@ -270,6 +270,40 @@ export function agentListComposerResources(sessionId: SessionId) {
   return invoke<ComposerResource[]>("agent_list_composer_resources", { sessionId });
 }
 
+/** What the autocomplete would add after the caret: a word, a phrase or a name from the code. */
+export type AutocompleteSuggestion = { text: string; kind: "word" | "phrase" | "symbol" };
+
+export type AutocompleteSettings = {
+  enabled: boolean;
+  /** Language codes, the first weighing the most; at most two. */
+  languages: string[];
+  learn: boolean;
+  symbols: boolean;
+  phrases: boolean;
+};
+
+export type AutocompleteLanguage = { code: string; name: string };
+
+export function autocompleteSuggest(sessionId: SessionId, text: string) {
+  return invoke<AutocompleteSuggestion | null>("autocomplete_suggest", { sessionId, text });
+}
+
+export function autocompleteSettings(locale?: string) {
+  return invoke<AutocompleteSettings>("autocomplete_settings", { locale: locale ?? null });
+}
+
+export function autocompleteSetSettings(settings: AutocompleteSettings) {
+  return invoke<AutocompleteSettings>("autocomplete_set_settings", { settings });
+}
+
+export function autocompleteLanguages() {
+  return invoke<AutocompleteLanguage[]>("autocomplete_languages");
+}
+
+export function autocompleteForget() {
+  return invoke<void>("autocomplete_forget");
+}
+
 export function sessionPaths(sessionId: SessionId) {
   return invoke<MentionPath[]>("session_paths", { sessionId });
 }
@@ -495,6 +529,8 @@ export type ChatAction =
   | { type: "rollback"; id: string; status: SessionStatus }
   | { type: "event"; event: AgentEvent }
   | { type: "failed"; message: string }
+  /** The app took the answer to a permission request or question: it is no longer waiting. */
+  | { type: "permissionResolved"; requestId: string }
   | { type: "dismissError" }
   | { type: "cancelRateWait" };
 
@@ -716,6 +752,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     case "failed":
       return { ...state, error: action.message, loaded: true };
+    case "permissionResolved":
+      return state.pending?.requestId === action.requestId ? { ...state, pending: null } : state;
     case "dismissError":
       return { ...state, error: null };
     case "cancelRateWait":
@@ -735,7 +773,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         case "contextUsage":
           return { ...state, contextUsage: event.usage };
         case "status":
-          return { ...state, status: event.status, rateLimitAt: event.status === "working" ? null : state.rateLimitAt };
+          // Waiting for an answer is the only status with a request open: any other one means it
+          // was answered (or the turn ended), so the prompt has nothing left to ask.
+          return { ...state, pending: event.status === "waiting-permission" ? state.pending : null, status: event.status, rateLimitAt: event.status === "working" ? null : state.rateLimitAt };
         case "delta": {
           const taken = event.role === "user" ? reconcile(state.items, event.text, event.turnId, event.images) : null;
           return {

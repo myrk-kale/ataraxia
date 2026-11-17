@@ -42,7 +42,7 @@ import type { ChatSession, WorkspaceSnapshot } from "../lib/workspace";
 import { workspaceCreateSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
 import { toRows } from "./rows";
-import { completeWord, rememberWords } from "./autocomplete";
+import { useSuggestion } from "./autocomplete";
 import { AsciiMark } from "./AsciiMark";
 import {
   type Attachment,
@@ -124,7 +124,6 @@ export function ChatPanel({
   const [composing, setComposing] = useState(false);
   const [dismissedCompletion, setDismissedCompletion] = useState<string | null>(null);
   const completionRef = useRef<HTMLDivElement>(null);
-  const learnedMessages = useRef(new Set<string>());
   const [atBottom, setAtBottom] = useState(true);
   const [options, setOptions] = useState<SessionOptions | null>(null);
   const [repositoryMcpApproval, setRepositoryMcpApproval] = useState<RepositoryMcpApproval | null>(null);
@@ -328,15 +327,6 @@ export function ChatPanel({
     }
   }, [draft]);
 
-  useEffect(() => {
-    for (const item of state.items) {
-      if (item.kind === "message" && item.role === "user" && !item.pending && !learnedMessages.current.has(item.id)) {
-        learnedMessages.current.add(item.id);
-        rememberWords(sessionId, item.text);
-      }
-    }
-  }, [sessionId, state.items]);
-
   const busy = state.status === "working" || state.status === "waiting-permission";
 
   function onScroll() {
@@ -429,7 +419,6 @@ export function ChatPanel({
 
   async function send() {
     let text = draft.trim();
-    rememberWords(sessionId, text);
     const sending = activeSubagent ? [] : attachments;
     const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
     if (commandName && activeSubagent !== null) {
@@ -682,9 +671,12 @@ export function ChatPanel({
     }
   }
 
-  const completion = composerFocused && !composing && !picker.open && completionCaret === draft.length && dismissedCompletion !== draft
-    ? completeWord(sessionId, draft)
-    : null;
+  const suggestion = useSuggestion(
+    sessionId,
+    draft,
+    composerFocused && !composing && !picker.open && completionCaret === draft.length && dismissedCompletion !== draft,
+  );
+  const completion = suggestion?.text ?? null;
 
   useLayoutEffect(() => {
     if (completionRef.current && composerRef.current) {
@@ -703,7 +695,6 @@ export function ChatPanel({
       setDraft(next);
       setCompletionCaret(next.length);
       setDismissedCompletion(next);
-      rememberWords(sessionId, next);
       return;
     }
     if (completion && event.key === "Escape") {
@@ -731,15 +722,25 @@ export function ChatPanel({
     }
   }
 
-  async function resolve(allow: boolean, answers?: Record<string, string>) {
+  /** Whether the answer went through; the prompt lets it be given again when it did not. */
+  async function resolve(allow: boolean, answers?: Record<string, string>): Promise<boolean> {
     const pending = state.pending;
     if (!pending) {
-      return;
+      return true;
     }
     try {
       await agentResolvePermission(sessionId, pending.requestId, allow, answers);
+      dispatch({ type: "permissionResolved", requestId: pending.requestId });
+      return true;
     } catch (err) {
-      dispatch({ type: "failed", message: errorText(err) });
+      const message = errorText(err);
+      // Already answered, which is what was wanted.
+      if (message.includes("no pending permission")) {
+        dispatch({ type: "permissionResolved", requestId: pending.requestId });
+        return true;
+      }
+      dispatch({ type: "failed", message });
+      return false;
     }
   }
 
@@ -997,9 +998,7 @@ export function ChatPanel({
         <div className="relative mx-auto w-full max-w-[840px] flex-none px-8.5 pt-2.5 pb-6.5">
           <PermissionPrompt
             pending={mainPermission}
-            onResolve={(allow, answers) => {
-              void resolve(allow, answers);
-            }}
+            onResolve={resolve}
           />
         </div>
       ) : null}
@@ -1065,9 +1064,6 @@ export function ChatPanel({
               picker.onChange(element);
               setCompletionCaret(element.selectionStart);
               setDismissedCompletion(null);
-              const beforeCaret = element.value.slice(0, element.selectionStart);
-              const completed = /([\p{L}\p{N}_-]{2,})[^\p{L}\p{N}_-]+$/u.exec(beforeCaret);
-              if (completed) rememberWords(sessionId, completed[1]);
             }}
             onFocus={(event) => { setComposerFocused(true); setCompletionCaret(event.currentTarget.selectionStart); }}
             onBlur={() => setComposerFocused(false)}

@@ -36,7 +36,7 @@ const multi: PermissionQuestion = {
 
 let root: Root;
 let host: HTMLDivElement;
-let resolve: Mock<(allow: boolean, answers?: Record<string, string>) => void>;
+let resolve: Mock<(allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>>;
 
 function show(pending: PendingPermission) {
   act(() => root.render(<PermissionPrompt pending={pending} onResolve={resolve} />));
@@ -70,7 +70,7 @@ function write(value: string) {
 }
 
 beforeEach(() => {
-  resolve = vi.fn<(allow: boolean, answers?: Record<string, string>) => void>();
+  resolve = vi.fn<(allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>>();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -96,10 +96,14 @@ describe("a permission the agent asks for", () => {
     // A real Enter on a focused button clicks it.
     act(() => row("Yes").click());
     expect(resolve).toHaveBeenLastCalledWith(true);
+    // Each request is answered once, so the next answers are to new requests.
+    show({ ...base, requestId: "r2" });
     press("2");
     expect(resolve).toHaveBeenLastCalledWith(false);
+    show({ ...base, requestId: "r3" });
     press("1");
     expect(resolve).toHaveBeenLastCalledWith(true);
+    show({ ...base, requestId: "r4" });
     const esc = press("Escape");
     expect(esc.defaultPrevented).toBe(true);
     expect(resolve).toHaveBeenLastCalledWith(false);
@@ -130,6 +134,7 @@ describe("questions the agent asks", () => {
     show(ask(single));
     act(() => row("Hide").click());
     expect(resolve).toHaveBeenLastCalledWith(true, { "Which approach?": "Hide" });
+    show({ ...ask(single), requestId: "r2" });
     press("1");
     expect(resolve).toHaveBeenLastCalledWith(true, { "Which approach?": "Resume" });
   });
@@ -200,7 +205,24 @@ describe("questions the agent asks", () => {
     const esc = press("Escape");
     expect(esc.defaultPrevented).toBe(true);
     expect(resolve).toHaveBeenLastCalledWith(false);
+    show({ ...ask(single), requestId: "r2" });
     act(() => buttons().find((item) => item.textContent === "Skip")!.click());
+    expect(resolve).toHaveBeenLastCalledWith(false);
+  });
+
+  it("answers a request once, however many times the answer is given", () => {
+    show(ask(single));
+    act(() => row("Resume").click());
+    act(() => row("Resume").click());
+    press("Escape");
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an answer that did not go through be given again", async () => {
+    resolve.mockResolvedValueOnce(false);
+    show(ask(single));
+    await act(async () => row("Resume").click());
+    await act(async () => row("Resume").click());
     expect(resolve).toHaveBeenCalledTimes(2);
   });
 

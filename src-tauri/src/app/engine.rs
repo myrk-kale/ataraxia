@@ -46,6 +46,7 @@ pub struct Engine {
     pub(crate) sending: Mutex<()>,
     /// Held while a chat's schedules are read, changed and written back.
     pub(crate) schedule_lock: Mutex<()>,
+    pub(crate) autocomplete: super::autocomplete::AutocompleteState,
     task_timeout: Duration,
 }
 
@@ -86,6 +87,7 @@ impl Engine {
             rate_waits: Mutex::new(HashMap::new()),
             sending: Mutex::new(()),
             schedule_lock: Mutex::new(()),
+            autocomplete: Default::default(),
             task_timeout: TASK_TIMEOUT,
         })
     }

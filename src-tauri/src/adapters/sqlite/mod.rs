@@ -14,7 +14,7 @@ use crate::domain::{
     ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus,
     Workspace, Worktree,
 };
-use crate::ports::Store;
+use crate::ports::{GramRow, Store};
 
 use migrations::migrate;
 
@@ -450,6 +450,11 @@ impl Store for SqliteStore {
                 params![format!("turn_base:{id}:%")],
             )
             .map_err(io)?;
+            conn.execute(
+                "DELETE FROM autocomplete_grams WHERE scope = ?1",
+                params![id],
+            )
+            .map_err(io)?;
             let deleted = conn
                 .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])
                 .map_err(io)?;
@@ -643,6 +648,74 @@ impl Store for SqliteStore {
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
             Ok(())
+        })
+    }
+
+    fn autocomplete_load(&self, scope: &str) -> Result<Vec<GramRow>> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let mut statement = conn
+                .prepare("SELECT context, word, count FROM autocomplete_grams WHERE scope = ?1")
+                .map_err(io)?;
+            let rows = statement
+                .query_map(params![scope], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(io)?
+                .collect::<std::result::Result<Vec<GramRow>, _>>()
+                .map_err(io)?;
+            Ok(rows)
+        })
+    }
+
+    fn autocomplete_add(&self, scope: &str, rows: &[GramRow], now: i64) -> Result<()> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let tx = conn.unchecked_transaction().map_err(io)?;
+            {
+                let mut statement = tx
+                    .prepare(
+                        "INSERT INTO autocomplete_grams (scope, context, word, count, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(scope, context, word) DO UPDATE
+                         SET count = count + excluded.count, updated_at = excluded.updated_at",
+                    )
+                    .map_err(io)?;
+                for (context, word, count) in rows {
+                    statement
+                        .execute(params![scope, context, word, count, now])
+                        .map_err(io)?;
+                }
+            }
+            tx.commit().map_err(io)
+        })
+    }
+
+    fn autocomplete_prune(&self, scope: &str, keep: usize) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM autocomplete_grams WHERE scope = ?1 AND rowid NOT IN (
+                     SELECT rowid FROM autocomplete_grams WHERE scope = ?1
+                     ORDER BY count DESC, updated_at DESC LIMIT ?2)",
+                params![scope, keep as i64],
+            )
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn autocomplete_clear(&self, scope: Option<&str>) -> Result<()> {
+        self.with_conn(|conn| {
+            let result = match scope {
+                Some(scope) => conn.execute(
+                    "DELETE FROM autocomplete_grams WHERE scope = ?1",
+                    params![scope],
+                ),
+                None => conn.execute("DELETE FROM autocomplete_grams", []),
+            };
+            result
+                .map(|_| ())
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
         })
     }
 }

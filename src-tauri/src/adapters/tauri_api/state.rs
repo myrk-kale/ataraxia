@@ -90,6 +90,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     engine.ensure_builtin_presets()?;
     engine.recover();
     engine.start_scheduler();
+    engine.start_sleep_guard(Arc::new(crate::adapters::sleep::SystemSleepGuard::default()));
     Ok(AppState {
         git,
         store,

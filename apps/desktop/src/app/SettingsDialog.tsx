@@ -5,10 +5,12 @@ import { Dialog, Toggle } from "../ui/Overlay";
 import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
 import { ProfileSettings } from "./ProfileSettings";
+import { AutocompletePanel } from "./AutocompleteSettings";
 
 const TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "profiles", label: "Agent profiles" },
+  { id: "autocomplete", label: "Autocomplete" },
   { id: "sound", label: "Sound" },
   { id: "privacy", label: "Privacy" },
 ] as const;
@@ -87,6 +89,8 @@ export function SettingsDialog({
             {tab === "appearance" ? <AppearanceSettings /> : null}
 
             {tab === "profiles" ? <ProfileSettings /> : null}
+
+            {tab === "autocomplete" ? <AutocompletePanel /> : null}
 
             {tab === "sound" ? (
               <>

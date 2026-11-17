@@ -2,7 +2,8 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { PendingPermission, PermissionQuestion } from "../lib/agent";
 import { Button } from "../ui/Button";
 
-type Resolve = (allow: boolean, answers?: Record<string, string>) => void;
+/** Answers the agent. A promise settles to `false` when the answer did not go through. */
+type Resolve = (allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>;
 
 const FIELD = "cg-field rounded-cg-lg bg-cg-tint px-4 py-3.5";
 
@@ -282,9 +283,27 @@ export function PermissionPrompt({
   onResolve: Resolve;
 }) {
   const questions = pending.questions ?? [];
+  // A request is answered once: a second click, or a key held down, on the answer that is already
+  // on its way would reach the app after it has closed the request and come back as an error.
+  const settled = useRef<string | null>(null);
+  const once: Resolve = (...answer) => {
+    if (settled.current === pending.requestId) {
+      return;
+    }
+    settled.current = pending.requestId;
+    const outcome = onResolve(...answer);
+    if (outcome instanceof Promise) {
+      // An answer that did not go through can be given again.
+      void outcome.then((ok) => {
+        if (!ok && settled.current === pending.requestId) {
+          settled.current = null;
+        }
+      });
+    }
+  };
   return questions.length > 0 ? (
-    <Questions key={pending.requestId} questions={questions} onResolve={onResolve} />
+    <Questions key={pending.requestId} questions={questions} onResolve={once} />
   ) : (
-    <Approval key={pending.requestId} pending={pending} onResolve={onResolve} />
+    <Approval key={pending.requestId} pending={pending} onResolve={once} />
   );
 }
