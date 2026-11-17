@@ -40,6 +40,7 @@ pub struct Engine {
     pub(crate) busy: Mutex<std::collections::HashSet<String>>,
     /// Messages waiting for the agent of each chat to finish.
     pub(crate) queues: Mutex<HashMap<SessionId, super::queue::QueueState>>,
+    pub(crate) rate_waits: Mutex<HashMap<SessionId, (String, i64, bool)>>,
     /// Held while the first queued message is read and handed to the agent, so two ends of turn
     /// (or an end and a "send now") cannot both take the same message.
     pub(crate) sending: Mutex<()>,
@@ -82,6 +83,7 @@ impl Engine {
             waiters: Mutex::new(HashMap::new()),
             busy: Mutex::new(std::collections::HashSet::new()),
             queues: Mutex::new(HashMap::new()),
+            rate_waits: Mutex::new(HashMap::new()),
             sending: Mutex::new(()),
             schedule_lock: Mutex::new(()),
             task_timeout: TASK_TIMEOUT,
@@ -178,6 +180,7 @@ impl Engine {
             self.runtime.forget_session(&id);
         }
         self.queues.lock().remove(&session_id);
+        self.rate_waits.lock().remove(&session_id);
     }
 
     /// Called on startup: work a previous run left half done cannot continue.
@@ -205,6 +208,20 @@ impl Engine {
     /// Feed with every agent event. Cheap and non-blocking: heavy work moves to a thread.
     pub fn on_agent_event(self: &Arc<Self>, event: &AgentEvent) {
         match event {
+            AgentEvent::RateLimited {
+                session_id,
+                turn_id,
+                resets_at,
+            } => {
+                if self
+                    .session(*session_id)
+                    .is_ok_and(|session| session.kind == SessionKind::Chat)
+                {
+                    self.rate_waits
+                        .lock()
+                        .insert(*session_id, (turn_id.0.to_string(), *resets_at, false));
+                }
+            }
             AgentEvent::TurnDone {
                 session_id,
                 turn_id,
@@ -266,8 +283,22 @@ impl Engine {
                 if let Err(error) = self.record_turn_checkpoint(&session, turn_id) {
                     eprintln!("ataraxia: checkpoint failed: {error}");
                 }
-                // The next message the user queued goes out now that the agent is free.
+                if ok {
+                    let mut waits = self.rate_waits.lock();
+                    if waits.get(&session_id).is_some_and(|wait| wait.0 == turn_id) {
+                        waits.remove(&session_id);
+                    }
+                }
+                // The next message waits behind a continuation when a limit stopped this turn.
                 self.queue_advance(session_id, ok);
+                if !ok {
+                    let mut waits = self.rate_waits.lock();
+                    if let Some(wait) = waits.get_mut(&session_id) {
+                        if wait.0 == turn_id {
+                            wait.2 = true;
+                        }
+                    }
+                }
             }
             SessionKind::Btw | SessionKind::Delegate => self.btw_turn_finished(session_id, ok),
             _ => {}

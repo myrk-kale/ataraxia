@@ -10,6 +10,7 @@ A prompt addressed to the child session answers under the child's own session id
   crash -> writes to stderr and exits non-zero
   other -> short streamed reply
 """
+import datetime
 import json
 import sys
 
@@ -156,7 +157,21 @@ def main():
             send({"id": frame["id"], "result": {"stopReason": "end_turn"}})
         elif method == "session/prompt":
             text = frame["params"]["prompt"][0]["text"]
-            if text.startswith("tool"):
+            if text.startswith("limit_no_reset"):
+                update({"sessionUpdate": "session_info_update", "_meta": {"opencode/retry": {"error": {"type": "provider.rate-limit", "status": 429}}}})
+                send({"id": frame["id"], "result": {"stopReason": "cancelled"}})
+            elif text.startswith("limit"):
+                retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)).isoformat()
+                update({"sessionUpdate": "session_info_update", "_meta": {"opencode/retry": {"attempt": 1, "nextRetryAt": retry_at, "error": {"type": "provider.rate-limit", "status": 429}}}})
+                wait_for(lambda message: message.get("method") == "session/cancel")
+                send({"id": frame["id"], "result": {"stopReason": "cancelled"}})
+            elif text.startswith("reasoning"):
+                update({"sessionUpdate": "usage_update", "used": 42000, "size": 200000})
+                update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Consider "}})
+                update({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "this"}})
+                chunk("Answer")
+                send({"id": frame["id"], "result": {"stopReason": "end_turn"}})
+            elif text.startswith("tool"):
                 run_tool(frame["id"])
             elif text.startswith("child"):
                 run_child(frame["id"])

@@ -156,7 +156,9 @@ impl Engine {
                 let Some(engine) = engine.upgrade() else {
                     return;
                 };
-                engine.schedules_tick(unix_now());
+                let now = unix_now();
+                engine.schedules_tick(now);
+                engine.rate_limit_tick(now);
             }
         });
     }

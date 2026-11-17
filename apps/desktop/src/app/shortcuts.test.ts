@@ -26,6 +26,13 @@ function el(html: string): HTMLElement {
 }
 
 describe("shortcuts", () => {
+  it("switches workspaces with Alt+W outside text entry and overlays", () => {
+    const key = press("w", { altKey: true, code: "KeyW" });
+    expect(resolveShortcut(key, idle)).toEqual({ type: "previous-workspace" });
+    expect(resolveShortcut(key, { ...idle, overlay: true })).toBeNull();
+    expect(resolveShortcut(press("w", { altKey: true, code: "KeyW" }, el("<textarea></textarea>")), idle)).toBeNull();
+    expect(resolveShortcut(press("w", { altKey: true, code: "KeyW", repeat: true }), idle)).toBeNull();
+  });
   it("navigates spaces with Shift+Up and Shift+Down", () => {
     expect(resolveShortcut(press("ArrowDown", { shiftKey: true }), idle)).toEqual({ type: "space", delta: 1 });
     expect(resolveShortcut(press("ArrowUp", { shiftKey: true }), idle)).toEqual({ type: "space", delta: -1 });

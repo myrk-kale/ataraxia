@@ -57,9 +57,10 @@ impl RpcClient {
             spec,
             move |line| dispatch_line(&line, &line_pending, line_handler.as_ref()),
             move |info| {
-                // Dropping the senders wakes every blocked `request` with an error.
-                exit_pending.lock().clear();
+                // Record the process exit before waking blocked requests, so their errors can
+                // include the exit status and stderr rather than racing the exit notification.
                 exit_handler(Incoming::Closed(info));
+                exit_pending.lock().clear();
             },
         )?;
         Ok(Arc::new(Self {

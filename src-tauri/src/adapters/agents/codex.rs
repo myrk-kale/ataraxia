@@ -433,6 +433,9 @@ struct CodexState {
     codex_turn: Option<String>,
     cancel_requested: bool,
     last_error: Option<String>,
+    limit_reset: Option<i64>,
+    limit_announced: bool,
+    limit_error: bool,
     tools: HashMap<String, ToolMeta>,
     queue: VecDeque<QueuedPermission>,
     active: Option<QueuedPermission>,
@@ -478,6 +481,25 @@ impl CodexShared {
         let Some((plan, windows)) = snapshot.and_then(usage_from_snapshot) else {
             return;
         };
+        if let Some(raw) = snapshot {
+            let short = ["primary", "secondary"]
+                .into_iter()
+                .filter_map(|key| raw.get(key))
+                .find(|node| {
+                    node.get("windowDurationMins")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|minutes| {
+                            UsageWindowKind::from_minutes(minutes) == UsageWindowKind::FiveHour
+                        })
+                });
+            if let Some(short) = short {
+                self.state.lock().limit_reset = short
+                    .get("usedPercent")
+                    .and_then(Value::as_f64)
+                    .filter(|used| *used >= 100.0)
+                    .and_then(|_| short.get("resetsAt").and_then(Value::as_i64));
+            }
+        }
         (self.emit)(BackendEvent::Usage { plan, windows });
     }
 
@@ -510,6 +532,21 @@ impl CodexShared {
                 return;
             }
         }
+        if method == "thread/tokenUsage/updated" {
+            if let (Some(used), Some(size)) = (
+                params
+                    .pointer("/tokenUsage/last/totalTokens")
+                    .and_then(Value::as_u64),
+                params
+                    .pointer("/tokenUsage/modelContextWindow")
+                    .and_then(Value::as_u64),
+            ) {
+                if size > 0 {
+                    (self.emit)(BackendEvent::ContextUsage { used, size });
+                }
+            }
+            return;
+        }
         let mut state = self.state.lock();
         let Some(turn_id) = state.turn else {
             return;
@@ -533,6 +570,18 @@ impl CodexShared {
                     }
                 }
                 return;
+            }
+            "item/reasoning/summaryTextDelta" => {
+                if let Some(text) = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    (self.emit)(BackendEvent::Reasoning {
+                        turn_id,
+                        text: text.to_string(),
+                    });
+                }
             }
             "item/agentMessage/delta" => {
                 let text = params
@@ -575,6 +624,32 @@ impl CodexShared {
                     .get("willRetry")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                let limited = params
+                    .pointer("/error/codexErrorInfo")
+                    .and_then(Value::as_str)
+                    == Some("usageLimitExceeded");
+                if limited && !will_retry {
+                    state.limit_error = true;
+                }
+                if limited && will_retry && !state.limit_announced {
+                    if let Some(resets_at) = state
+                        .limit_reset
+                        .filter(|at| *at > time::OffsetDateTime::now_utc().unix_timestamp())
+                    {
+                        state.limit_announced = true;
+                        (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+                        let shared = self.me.get().cloned();
+                        drop(state);
+                        if let Some(shared) = shared {
+                            thread::spawn(move || {
+                                if let Some(shared) = shared.upgrade() {
+                                    shared.interrupt();
+                                }
+                            });
+                        }
+                        return;
+                    }
+                }
                 if !will_retry {
                     state.last_error = params
                         .pointer("/error/message")
@@ -595,6 +670,19 @@ impl CodexShared {
                 state.queue.clear();
                 state.active = None;
                 if status == "failed" && !cancelled {
+                    let limited = state.limit_error
+                        || params
+                            .pointer("/turn/error/codexErrorInfo")
+                            .and_then(Value::as_str)
+                            == Some("usageLimitExceeded");
+                    if limited && !state.limit_announced {
+                        if let Some(resets_at) = state
+                            .limit_reset
+                            .filter(|at| *at > time::OffsetDateTime::now_utc().unix_timestamp())
+                        {
+                            (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+                        }
+                    }
                     let message = params
                         .pointer("/turn/error/message")
                         .and_then(Value::as_str)
@@ -639,6 +727,22 @@ impl CodexShared {
         let title = Self::child_title(&state, thread);
         let id = thread.to_string();
         match method {
+            "item/reasoning/summaryTextDelta" => {
+                if let Some(text) = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    state.child_live.insert(id.clone());
+                    (self.emit)(BackendEvent::Subagent {
+                        id,
+                        title,
+                        update: SubagentUpdate::Reasoning {
+                            text: text.to_string(),
+                        },
+                    });
+                }
+            }
             "item/agentMessage/delta" => {
                 let text = params
                     .get("delta")
@@ -1178,6 +1282,8 @@ impl CodexSession {
             state.codex_turn = None;
             state.cancel_requested = false;
             state.last_error = None;
+            state.limit_announced = false;
+            state.limit_error = false;
         }
         if let Some(("compact", _)) = split_command(text) {
             let Some(thread_id) = self.shared.thread_id.get() else {
@@ -1571,6 +1677,107 @@ fn usage_from_snapshot(snapshot: &Value) -> Option<(Option<String>, Vec<UsageWin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interrupts_the_codex_retry_after_a_confirmed_limit() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit_retry")
+            .expect("prompt");
+        let seen = h.until("limit", |event| {
+            matches!(event, BackendEvent::RateLimited { .. })
+        });
+        assert!(
+            seen.iter()
+                .any(|event| matches!(event, BackendEvent::RateLimited { .. }))
+        );
+        let end = h.until("interrupted", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        assert!(
+            end.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: false, .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn missing_limit_reset_does_not_schedule_a_resume() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit_no_reset")
+            .expect("prompt");
+        let seen = h.until("failed", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::RateLimited { .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn rate_limit_is_reported_before_the_turn_ends() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit please")
+            .expect("prompt");
+        let seen = h.until("limit", |event| {
+            matches!(event, BackendEvent::RateLimited { .. })
+        });
+        assert!(seen.iter().any(|event| matches!(event, BackendEvent::RateLimited { resets_at, .. } if *resets_at > time::OffsetDateTime::now_utc().unix_timestamp())));
+        let end = h.until("turn end", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !end.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: true, .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn streams_reasoning_separately_from_the_answer() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "reasoning please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let reasoning: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ContextUsage {
+                used: 42000,
+                size: 200000
+            }
+        )));
+        assert_eq!(reasoning, "Consider this");
+        assert_eq!(answer, "Answer");
+    }
+
     #[test]
     fn portable_http_headers_become_codex_http_headers() {
         let servers = serde_json::from_value(json!({

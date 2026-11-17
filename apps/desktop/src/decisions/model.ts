@@ -34,6 +34,15 @@ export function countByTab(decisions: readonly Decision[]): Record<Tab, number> 
   return { open, closed: decisions.length - open };
 }
 
+/** The next pending decision in review order, wrapping once before returning to the list. */
+export function nextPendingDecision(decisions: readonly Decision[], currentId: string): string | null {
+  const ordered = orderDecisions(decisions);
+  const index = ordered.findIndex((item) => item.id === currentId);
+  if (index < 0) return null;
+  return [...ordered.slice(index + 1), ...ordered.slice(0, index)]
+    .find((item) => item.state === "pending")?.id ?? null;
+}
+
 /** The decisions of one tab whose number, title, summary or kind contain every word typed. */
 export function filterDecisions(decisions: readonly Decision[], tab: Tab, query: string): Decision[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);

@@ -24,7 +24,7 @@ export function QueuedMessages({
           ? "Paused because the last turn stopped. Send one now to carry on."
           : `Queued (${queue.items.length}). Sent one after another when the agent finishes.`}
       </p>
-      <ol className="flex flex-col gap-1">
+      <ol className="flex max-h-[30vh] flex-col gap-1 overflow-y-auto">
         {queue.items.map((item, index) => (
           <li
             key={item.id}

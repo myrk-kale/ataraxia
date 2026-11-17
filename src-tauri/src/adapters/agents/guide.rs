@@ -36,6 +36,7 @@ pub fn preamble(index: &Path) -> String {
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
          - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
          - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
+         - For Mermaid flowcharts, use the animated renderer's compatible subset: `flowchart TD` or `flowchart LR`, simple node IDs and quoted plain-text labels, and `-->` links with optional `|label|`. Avoid HTML, backticks, escaped newlines, styling, subgraphs and special link syntax; keep labels short and diagrams under 60 nodes and 100 edges. Do not replace an explicitly requested non-flowchart diagram type. Rendering also depends on device support.\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          The developer's message follows.\n\n",
@@ -92,6 +93,8 @@ mod tests {
         assert!(prompt.contains("one short question"));
         assert!(prompt.contains("ATARAXIA_API_URL"));
         assert!(prompt.contains("Flow diagram") && prompt.contains("Mermaid diagram"));
+        assert!(prompt.contains("Avoid HTML"));
+        assert!(prompt.contains("Do not replace an explicitly requested non-flowchart"));
         // The pages the index names all exist.
         let readme = std::fs::read_to_string(&index).expect("index");
         for (name, _) in FILES.iter().filter(|(name, _)| *name != "README.md") {
@@ -134,7 +137,7 @@ mod tests {
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 270,
+            text.split_whitespace().count() < 340,
             "{} words",
             text.split_whitespace().count()
         );

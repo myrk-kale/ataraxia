@@ -95,6 +95,8 @@ pub struct AgentConfiguration {
     pub mcp_config_path: Option<PathBuf>,
     /// Instructions and available skills to introduce to the current conversation.
     pub preamble: String,
+    /// Instructions without the portable skill catalog, for native skill integrations.
+    pub instructions_preamble: String,
     /// Skills discovered in the Ataraxia user and repository roots.
     pub skills: Vec<SkillDefinition>,
     /// Only the portable user and repository roots are exposed to harnesses.
@@ -171,6 +173,7 @@ impl AgentConfiguration {
             preamble.push_str(&instructions.join("\n\n"));
             preamble.push_str("\n\n");
         }
+        let instructions_preamble = preamble.clone();
         if !skills.is_empty() {
             preamble.push_str("Ataraxia skills available in this session. Read the listed SKILL.md before applying one that fits the task:\n");
             for skill in &skills {
@@ -196,6 +199,7 @@ impl AgentConfiguration {
             mcp_servers: servers,
             mcp_config_path,
             preamble,
+            instructions_preamble,
             skills,
             skill_roots,
         })
@@ -222,7 +226,7 @@ pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<
             ));
         }
     }
-    fs::write(&codex_config, "project_doc_max_bytes = 0\n").map_err(|error| {
+    fs::write(&codex_config, "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n").map_err(|error| {
         Error::new(
             ErrorCode::Io,
             format!("could not configure {}: {error}", codex_config.display()),
@@ -669,7 +673,7 @@ mod tests {
         prepare_isolated_home(&root.join("home"), Some(&profile_a)).expect("select profile A");
         assert_eq!(
             fs::read_to_string(root.join("home/config.toml")).expect("read private config"),
-            "project_doc_max_bytes = 0\n"
+            "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n"
         );
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile A"),

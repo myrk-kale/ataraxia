@@ -178,6 +178,7 @@ const forced = new Set<string>();
 let queueCounter = 0;
 let pictureCounter = 0;
 let turnCounter = 0;
+let previousWorkspaceId: string | null = null;
 
 function stateOf(sessionId: string) {
   let queue = queues.get(sessionId);
@@ -347,6 +348,7 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       return null;
     }
     case "agent_get_snapshot": return chat;
+    case "agent_cancel_rate_wait": return null;
     case "agent_repository_mcp_approval": return null;
     case "agent_trust_repository_mcp": return null;
     case "agent_start_session": return null;
@@ -355,6 +357,7 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       const capabilities = providers.find((item) => item.kind === activeSession.provider)?.capabilities;
       return [
         { kind: "command", name: "help", description: "List Ataraxia commands", hint: null, source: "Ataraxia" },
+        { kind: "command", name: "workspace", description: "Switch to the previous workspace", hint: null, source: "Ataraxia" },
         { kind: "command", name: "new", description: "Create a new chat and keep this one", hint: null, source: "Ataraxia" },
         {
           kind: "command",
@@ -422,9 +425,13 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return view();
     }
+    case "workspace_previous_workspace":
     case "workspace_select_workspace": {
-      const target = workspaces.find((item) => item.id === args?.workspaceId);
+      const id = cmd === "workspace_previous_workspace" ? previousWorkspaceId : args?.workspaceId;
+      const target = workspaces.find((item) => item.id === id);
+      if (!target && cmd === "workspace_previous_workspace") throw new Error("No previous workspace is available");
       if (target) {
+        if (target.id !== snapshot.selected_workspace_id) previousWorkspaceId = snapshot.selected_workspace_id;
         snapshot.selected_workspace_id = target.id;
         snapshot.selected_repository_id = target.repository_ids[0];
         snapshot.selected_worktree_id = worktrees.find((item) => item.repository_id === target.repository_ids[0])?.id ?? null;

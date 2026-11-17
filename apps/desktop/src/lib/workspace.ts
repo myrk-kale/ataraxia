@@ -118,6 +118,10 @@ export function workspaceSelectWorkspace(workspaceId: WorkspaceId) {
   return invoke<WorkspaceSnapshot>("workspace_select_workspace", { workspaceId });
 }
 
+export function workspacePreviousWorkspace() {
+  return invoke<WorkspaceSnapshot>("workspace_previous_workspace");
+}
+
 export function workspaceCreateWorkspace(name: string, repositoryIds: RepositoryId[]) {
   return invoke<WorkspaceSnapshot>("workspace_create_workspace", { name, repositoryIds });
 }

@@ -19,6 +19,28 @@ function apply(state: ChatState, ...events: AgentEvent[]): ChatState {
 }
 
 describe("chatReducer", () => {
+  it("keeps the automatic resume notice across the provider error and clears it on cancellation", () => {
+    const waiting = apply(initialChatState, { type: "rateLimited", sessionId: SESSION, turnId: TURN, resetsAt: 123 }, { type: "error", sessionId: SESSION, message: "limit" });
+    expect(waiting.rateLimitAt).toBe(123);
+    expect(waiting.error).toBeNull();
+    expect(chatReducer(waiting, { type: "cancelRateWait" }).rateLimitAt).toBeNull();
+  });
+  it("updates conversation context from a session event", () => {
+    const state = apply(initialChatState, { type: "contextUsage", sessionId: SESSION, usage: { used: 42000, size: 200000 } });
+    expect(state.contextUsage).toEqual({ used: 42000, size: 200000 });
+  });
+  it("keeps streamed reasoning separate and in order around tools and answers", () => {
+    const state = apply(initialChatState,
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "Think " },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "first" },
+      { type: "tool", sessionId: SESSION, turnId: TURN, callId: "c1", name: "read", input: "" },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "reasoning", text: "Then" },
+      { type: "delta", sessionId: SESSION, turnId: TURN, role: "assistant", text: "Answer" },
+    );
+    expect(state.items.map((item) => item.kind === "message" ? [item.role, item.text] : item.kind)).toEqual([
+      ["reasoning", "Think first"], "tool", ["reasoning", "Then"], ["assistant", "Answer"],
+    ]);
+  });
   it("merges consecutive deltas of the same turn and role", () => {
     const state = apply(
       initialChatState,

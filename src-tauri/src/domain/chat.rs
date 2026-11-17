@@ -41,6 +41,7 @@ impl Default for ToolCallId {
 pub enum ChatRole {
     User,
     Assistant,
+    Reasoning,
     System,
 }
 
@@ -49,6 +50,7 @@ impl ChatRole {
         match self {
             Self::User => "user",
             Self::Assistant => "assistant",
+            Self::Reasoning => "reasoning",
             Self::System => "system",
         }
     }
@@ -157,6 +159,9 @@ pub enum SubagentUpdate {
     Delta {
         text: String,
     },
+    Reasoning {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     Tool {
         call_id: ToolCallId,
@@ -205,9 +210,20 @@ pub struct QuestionOption {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
+    RateLimited {
+        session_id: SessionId,
+        turn_id: TurnId,
+        resets_at: i64,
+    },
+    #[serde(rename_all = "camelCase")]
     Status {
         session_id: SessionId,
         status: SessionStatus,
+    },
+    #[serde(rename_all = "camelCase")]
+    ContextUsage {
+        session_id: SessionId,
+        usage: ContextUsage,
     },
     /// A provider reported where its limits stand. Not about one chat: every chat on that
     /// provider shows it.
@@ -287,10 +303,21 @@ pub struct PendingPermission {
     pub questions: Vec<PermissionQuestion>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub used: u64,
+    pub size: u64,
+}
+
 /// Everything the UI needs to rebuild a chat view after (re)opening a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSnapshot {
+    #[serde(default)]
+    pub rate_limit_at: Option<i64>,
+    #[serde(default)]
+    pub context_usage: Option<ContextUsage>,
     pub items: Vec<ChatItem>,
     /// Subagent conversations of the running agent process (not persisted across restarts).
     #[serde(default)]

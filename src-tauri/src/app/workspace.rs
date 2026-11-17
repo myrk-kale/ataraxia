@@ -18,10 +18,16 @@ const PREF_SELECTED_REPO: &str = "selected_repository_id";
 const PREF_SELECTED_WORKTREE: &str = "selected_worktree_id";
 const PREF_SELECTED_SESSION: &str = "selected_session_id";
 const PREF_SELECTED_WORKSPACE: &str = "selected_workspace_id";
+const PREF_PREVIOUS_WORKSPACE: &str = "previous_workspace_id";
 
 /// The repository a workspace was last looking at.
 fn focus_key(workspace_id: WorkspaceId) -> String {
     format!("focus_repository:{}", workspace_id.0)
+}
+
+/// The chat last opened in a workspace.
+fn session_key(workspace_id: WorkspaceId) -> String {
+    format!("selected_session:{}", workspace_id.0)
 }
 
 /// The worktree of a repository the user last had selected.
@@ -168,11 +174,26 @@ impl<'a> WorkspaceService<'a> {
                         worktrees.extend(self.store.list_worktrees(*member)?);
                     }
                 }
-                let selected_session_id =
-                    self.preference_id(PREF_SELECTED_SESSION)?.and_then(|id| {
+                let remembered_session = self
+                    .preference_id(&session_key(workspace.id))?
+                    .or(self.preference_id(PREF_SELECTED_SESSION)?);
+                let selected_session_id = remembered_session
+                    .and_then(|id| {
                         sessions
                             .iter()
                             .find(|item| item.id.0.to_string() == id)
+                            .map(|item| item.id)
+                    })
+                    .or_else(|| {
+                        sessions
+                            .iter()
+                            .max_by(|a, b| {
+                                a.last_opened_at
+                                    .as_deref()
+                                    .unwrap_or(&a.updated_at)
+                                    .cmp(b.last_opened_at.as_deref().unwrap_or(&b.updated_at))
+                                    .then_with(|| a.created_at.cmp(&b.created_at))
+                            })
                             .map(|item| item.id)
                     });
                 (
@@ -250,13 +271,17 @@ impl<'a> WorkspaceService<'a> {
     /// Makes `workspace` the one on screen. Another workspace has other chats, so the chat that
     /// was open is left.
     fn show_workspace(&self, workspace_id: WorkspaceId) -> Result<()> {
-        let changed = self.preference_id(PREF_SELECTED_WORKSPACE)?.as_deref()
-            != Some(workspace_id.0.to_string().as_str());
-        self.store
-            .set_preference(PREF_SELECTED_WORKSPACE, &workspace_id.0.to_string())?;
+        let current = self.preference_id(PREF_SELECTED_WORKSPACE)?;
+        let changed = current.as_deref() != Some(workspace_id.0.to_string().as_str());
         if changed {
+            if let Some(current) = current {
+                self.store
+                    .set_preference(PREF_PREVIOUS_WORKSPACE, &current)?;
+            }
             self.store.set_preference(PREF_SELECTED_SESSION, "")?;
         }
+        self.store
+            .set_preference(PREF_SELECTED_WORKSPACE, &workspace_id.0.to_string())?;
         Ok(())
     }
 
@@ -396,6 +421,24 @@ impl<'a> WorkspaceService<'a> {
             }
         }
         self.bootstrap()
+    }
+
+    /// Returns to the previously active workspace, if it still exists.
+    pub fn previous_workspace(&self) -> Result<WorkspaceSnapshot> {
+        let previous = self.preference_id(PREF_PREVIOUS_WORKSPACE)?;
+        let workspaces = self.store.list_workspaces()?;
+        let target = previous.and_then(|id| {
+            workspaces
+                .iter()
+                .find(|workspace| workspace.id.0.to_string() == id)
+        });
+        match target {
+            Some(workspace) => self.select_workspace(workspace.id),
+            None => Err(Error::new(
+                ErrorCode::NotFound,
+                "No previous workspace is available",
+            )),
+        }
     }
 
     /// Puts a repository in focus. Inside the workspace on screen the chat stays open, because
@@ -854,6 +897,8 @@ impl<'a> WorkspaceService<'a> {
         self.remember_worktree(&worktree)?;
         self.store
             .set_preference(PREF_SELECTED_SESSION, &session.id.0.to_string())?;
+        self.store
+            .set_preference(&session_key(workspace.id), &session.id.0.to_string())?;
         self.bootstrap()
     }
 
@@ -883,6 +928,8 @@ impl<'a> WorkspaceService<'a> {
         self.remember_worktree(&worktree)?;
         self.store
             .set_preference(PREF_SELECTED_SESSION, &session.id.0.to_string())?;
+        self.store
+            .set_preference(&session_key(workspace.id), &session.id.0.to_string())?;
         self.bootstrap()
     }
 
@@ -1222,6 +1269,133 @@ mod tests {
         assert_eq!(
             other.selected_session_id, None,
             "another workspace has other chats"
+        );
+    }
+
+    #[test]
+    fn previous_workspace_toggles_the_last_two_and_keeps_their_chats() {
+        let git = git_with(&["/w/one", "/w/two", "/w/three"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        let one = service.open_repository("/w/one").unwrap();
+        assert!(service.previous_workspace().is_err());
+        let one_id = one.selected_workspace_id.unwrap();
+        let one_chat = service
+            .create_session(
+                one.selected_repository_id.unwrap(),
+                one.selected_worktree_id.unwrap(),
+                None,
+                ProviderKind::Fake,
+            )
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        let two = service.open_repository("/w/two").unwrap();
+        let two_id = two.selected_workspace_id.unwrap();
+        let two_chat = service
+            .create_session(
+                two.selected_repository_id.unwrap(),
+                two.selected_worktree_id.unwrap(),
+                None,
+                ProviderKind::Fake,
+            )
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        let back = service.previous_workspace().unwrap();
+        assert_eq!(
+            (back.selected_workspace_id, back.selected_session_id),
+            (Some(one_id), Some(one_chat))
+        );
+        let forward = service.previous_workspace().unwrap();
+        assert_eq!(
+            (forward.selected_workspace_id, forward.selected_session_id),
+            (Some(two_id), Some(two_chat))
+        );
+        service.open_repository("/w/three").unwrap();
+        assert_eq!(
+            service.previous_workspace().unwrap().selected_workspace_id,
+            Some(two_id)
+        );
+    }
+
+    #[test]
+    fn each_workspace_restores_its_last_open_chat_and_falls_back_after_deletion() {
+        let git = git_with(&["/w/one", "/w/two"]);
+        let store = FakeStore::healthy();
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        let first = service.open_repository("/w/one").unwrap();
+        let workspace_one = first.selected_workspace_id.unwrap();
+        let repo_one = first.selected_repository_id.unwrap();
+        let tree_one = first.selected_worktree_id.unwrap();
+        let first_chat = service
+            .create_session(repo_one, tree_one, None, ProviderKind::Fake)
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        let second_chat = service
+            .create_session(repo_one, tree_one, None, ProviderKind::Fake)
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        service.open_session(first_chat).unwrap();
+
+        let second = service.open_repository("/w/two").unwrap();
+        let workspace_two = second.selected_workspace_id.unwrap();
+        let other_chat = service
+            .create_session(
+                second.selected_repository_id.unwrap(),
+                second.selected_worktree_id.unwrap(),
+                None,
+                ProviderKind::Fake,
+            )
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        assert_eq!(
+            service
+                .select_workspace(workspace_one)
+                .unwrap()
+                .selected_session_id,
+            Some(first_chat)
+        );
+        assert_eq!(
+            service
+                .select_workspace(workspace_two)
+                .unwrap()
+                .selected_session_id,
+            Some(other_chat)
+        );
+        assert_eq!(
+            service
+                .select_workspace(workspace_one)
+                .unwrap()
+                .selected_session_id,
+            Some(first_chat)
+        );
+        assert_eq!(
+            service.bootstrap().unwrap().selected_session_id,
+            Some(first_chat)
+        );
+        assert_eq!(
+            service
+                .delete_session(first_chat)
+                .unwrap()
+                .selected_session_id,
+            Some(second_chat)
+        );
+        assert_eq!(
+            service
+                .delete_session(second_chat)
+                .unwrap()
+                .selected_session_id,
+            None
         );
     }
 

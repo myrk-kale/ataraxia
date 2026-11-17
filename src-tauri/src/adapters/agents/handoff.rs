@@ -41,6 +41,7 @@ fn items_into(out: &mut String, items: &[ChatItem], who: (&str, &str, &str)) {
                     ChatRole::User => who.0,
                     ChatRole::Assistant => who.1,
                     ChatRole::System => "system",
+                    ChatRole::Reasoning => continue,
                 };
                 let _ = writeln!(out, "[{label}]\n{}\n", message.text.trim());
             }

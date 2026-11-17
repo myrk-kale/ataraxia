@@ -61,6 +61,42 @@ enum Dispatch {
 }
 
 impl Engine {
+    pub fn cancel_rate_wait(&self, session_id: SessionId) {
+        self.rate_waits.lock().remove(&session_id);
+    }
+
+    pub(crate) fn rate_limit_tick(&self, now: i64) {
+        let due: Vec<_> = self
+            .rate_waits
+            .lock()
+            .iter()
+            .filter_map(|(id, (_, at, ready))| (*ready && *at <= now).then_some(*id))
+            .collect();
+        for session_id in due {
+            if self.is_working(session_id) {
+                continue;
+            }
+            let _sending = self.sending.lock();
+            if self.is_working(session_id) {
+                continue;
+            }
+            {
+                let mut waits = self.rate_waits.lock();
+                if !waits
+                    .get(&session_id)
+                    .is_some_and(|(_, at, ready)| *ready && *at <= now)
+                {
+                    continue;
+                }
+                waits.remove(&session_id);
+            }
+            self.turn_started(session_id);
+            if let Err(error) = self.runtime.prompt(&session_id, "Continue the task interrupted by the usage limit. Inspect the current state and continue from where you stopped, without repeating completed actions.") {
+                eprintln!("ataraxia: could not resume after the usage limit: {error}");
+            }
+        }
+    }
+
     pub fn queue(&self, session_id: SessionId) -> MessageQueue {
         self.queues
             .lock()
@@ -97,7 +133,7 @@ impl Engine {
             state.view()
         };
         self.emit_queue(session_id, view);
-        if !self.is_working(session_id) {
+        if !self.is_working(session_id) && !self.rate_waits.lock().contains_key(&session_id) {
             self.queue_advance(session_id, true);
         }
         Ok(self.queue(session_id))
@@ -124,6 +160,7 @@ impl Engine {
     /// Sends one queued message now: the running turn is stopped and this message goes next,
     /// ahead of the rest. With no turn running it simply goes out.
     pub fn queue_send_now(&self, session_id: SessionId, id: &str) -> Result<MessageQueue> {
+        self.cancel_rate_wait(session_id);
         let working = self.is_working(session_id);
         let view = {
             let mut queues = self.queues.lock();
@@ -158,6 +195,9 @@ impl Engine {
     /// A chat's turn ended: send the next message, or hold the queue if the turn did not end
     /// well.
     pub(crate) fn queue_advance(&self, session_id: SessionId, ok: bool) {
+        if ok && self.rate_waits.lock().contains_key(&session_id) {
+            return;
+        }
         // A turn that failed or was stopped holds the queue, unless it is an old end that reaches
         // here after another turn has begun (a forced message): that one is running, and its own
         // end decides.

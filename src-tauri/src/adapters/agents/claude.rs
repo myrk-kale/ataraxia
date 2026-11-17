@@ -36,6 +36,58 @@ const OVERRIDE_ENV: &str = "ATARAXIA_CLAUDE_BIN";
 const PERMISSION_MODE_ENV: &str = "ATARAXIA_CLAUDE_PERMISSION_MODE";
 const DEFAULT_PERMISSION_MODE: &str = "auto";
 
+fn prepare_skill_plugin(
+    skills: &[super::config::SkillDefinition],
+) -> Result<Option<tempfile::TempDir>> {
+    if skills.is_empty() {
+        return Ok(None);
+    }
+    let build = || -> std::io::Result<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("ataraxia-claude-skills-")
+            .tempdir()?;
+        std::fs::create_dir(dir.path().join(".claude-plugin"))?;
+        std::fs::write(
+            dir.path().join(".claude-plugin/plugin.json"),
+            r#"{"name":"ataraxia"}"#,
+        )?;
+        let target = dir.path().join("skills");
+        std::fs::create_dir(&target)?;
+        for skill in skills {
+            let source = skill
+                .path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("skill has no directory"))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(source, target.join(&skill.id))?;
+            #[cfg(windows)]
+            copy_skill_directory(source, &target.join(&skill.id))?;
+        }
+        Ok(dir)
+    };
+    build().map(Some).map_err(|error| {
+        Error::new(
+            ErrorCode::Io,
+            format!("could not prepare Claude skills: {error}"),
+        )
+    })
+}
+
+#[cfg(windows)]
+fn copy_skill_directory(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_skill_directory(&entry.path(), &target.join(entry.file_name()))?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 enum Launcher {
     Resolve,
     Fixed { program: PathBuf, args: Vec<String> },
@@ -70,6 +122,7 @@ impl ClaudeBackend {
         read_only: bool,
         extra_dirs: &[PathBuf],
         mcp_config: Option<&Path>,
+        plugin: Option<&Path>,
     ) -> std::result::Result<(PathBuf, Vec<String>), String> {
         match &self.launcher {
             Launcher::Fixed { program, args } => Ok((program.clone(), args.clone())),
@@ -84,10 +137,10 @@ impl ClaudeBackend {
                     permission_mode()
                 };
                 let mut args = launch_args(mode.as_deref(), model, effort, agent, conversation);
-                // Keep provider tools and settings out without disabling slash-command handling:
-                // Ataraxia's /compact still needs Claude's native command handler.
-                args.extend(["--disallowedTools".into(), "Skill".into()]);
                 args.extend(["--setting-sources".into(), "".into()]);
+                if let Some(path) = plugin {
+                    args.extend(["--plugin-dir".into(), path.to_string_lossy().into_owned()]);
+                }
                 if let Some(path) = mcp_config {
                     args.extend([
                         "--strict-mcp-config".into(),
@@ -271,13 +324,24 @@ impl Default for ClaudeBackend {
 impl AgentBackend for ClaudeBackend {
     fn availability(&self) -> std::result::Result<(), String> {
         let conversation = Conversation::New(String::new());
-        self.command(None, None, None, None, &conversation, false, &[], None)
-            .map(|_| ())
+        self.command(
+            None,
+            None,
+            None,
+            None,
+            &conversation,
+            false,
+            &[],
+            None,
+            None,
+        )
+        .map(|_| ())
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
         let conversation =
             Conversation::choose(ctx.resume.as_deref(), &ctx.cwd, ctx.launch.as_ref());
+        let plugin = prepare_skill_plugin(&ctx.config.skills)?;
         let mut accessible_dirs = ctx.extra_dirs.clone();
         accessible_dirs.extend(ctx.config.skill_roots.iter().cloned());
         accessible_dirs.sort();
@@ -292,6 +356,7 @@ impl AgentBackend for ClaudeBackend {
                 ctx.read_only,
                 &accessible_dirs,
                 ctx.config.mcp_config_path.as_deref(),
+                plugin.as_ref().map(|dir| dir.path()),
             )
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
         let shared = Arc::new(ClaudeShared {
@@ -336,6 +401,7 @@ impl AgentBackend for ClaudeBackend {
         Ok(Arc::new(ClaudeSession {
             shared,
             conversation,
+            _plugin: plugin,
         }))
     }
 }
@@ -364,6 +430,12 @@ struct ClaudeState {
     tools: HashMap<String, ToolMeta>,
     /// API message ids whose text already streamed as deltas (the `assistant` frame repeats it).
     streamed: HashSet<String>,
+    thinking_streamed: HashSet<String>,
+    limit_reset: Option<i64>,
+    limit_interrupted: bool,
+    context_input: Option<u64>,
+    context_output: u64,
+    context_model: Option<String>,
     current_message: Option<String>,
     /// Partial-stream block index → tool_use id, for blocks that are tool calls.
     tool_blocks: HashMap<u64, String>,
@@ -433,6 +505,39 @@ impl ClaudeShared {
             Some("user") => self.on_user(&frame),
             Some("result") => self.on_result(&frame),
             Some("rate_limit_event") => {
+                let info = frame.get("rate_limit_info").unwrap_or(&Value::Null);
+                let short = info.pointer("/unifiedWindows/five_hour").or_else(|| {
+                    (info.get("rateLimitType").and_then(Value::as_str) == Some("five_hour"))
+                        .then_some(info)
+                });
+                if let Some(short) = short {
+                    let denied = matches!(
+                        short.get("status").and_then(Value::as_str),
+                        Some("rejected" | "denied")
+                    );
+                    let resets_at = if denied {
+                        short.get("resetsAt").and_then(Value::as_i64)
+                    } else {
+                        None
+                    };
+                    let mut state = self.state.lock();
+                    state.limit_reset = resets_at;
+                    let interrupted = match (state.turn, resets_at) {
+                        (Some(turn_id), Some(resets_at))
+                            if !state.limit_interrupted
+                                && resets_at > time::OffsetDateTime::now_utc().unix_timestamp() =>
+                        {
+                            state.limit_interrupted = true;
+                            Some((turn_id, resets_at))
+                        }
+                        _ => None,
+                    };
+                    drop(state);
+                    if let Some((turn_id, resets_at)) = interrupted {
+                        (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+                        self.write(&json!({ "type": "control_request", "request_id": format!("interrupt-{}", Uuid::new_v4()), "request": { "subtype": "interrupt" } }));
+                    }
+                }
                 let windows = usage_windows(&frame);
                 if !windows.is_empty() {
                     (self.emit)(BackendEvent::Usage {
@@ -460,11 +565,45 @@ impl ClaudeShared {
         let index = event.get("index").and_then(Value::as_u64);
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
+                let usage = event.pointer("/message/usage");
+                state.context_input = usage.and_then(|usage| {
+                    usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .map(|input| {
+                            input
+                                .saturating_add(
+                                    usage
+                                        .get("cache_creation_input_tokens")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0),
+                                )
+                                .saturating_add(
+                                    usage
+                                        .get("cache_read_input_tokens")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0),
+                                )
+                        })
+                });
+                state.context_output = 0;
+                state.context_model = event
+                    .pointer("/message/model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 state.current_message = event
                     .pointer("/message/id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 state.tool_blocks.clear();
+            }
+            Some("message_delta") => {
+                if let Some(output) = event
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_u64)
+                {
+                    state.context_output = output;
+                }
             }
             Some("content_block_start") => {
                 let block = event.get("content_block").unwrap_or(&Value::Null);
@@ -480,7 +619,21 @@ impl ClaudeShared {
             }
             Some("content_block_delta") => {
                 let delta = event.get("delta").unwrap_or(&Value::Null);
-                if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
+                if delta.get("type").and_then(Value::as_str) == Some("thinking_delta") {
+                    if let Some(text) = delta
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        if let Some(message) = state.current_message.clone() {
+                            state.thinking_streamed.insert(message);
+                        }
+                        (self.emit)(BackendEvent::Reasoning {
+                            turn_id,
+                            text: text.to_string(),
+                        });
+                    }
+                } else if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
                     let text = delta
                         .get("text")
                         .and_then(Value::as_str)
@@ -512,11 +665,26 @@ impl ClaudeShared {
         let already_streamed = message_id
             .as_ref()
             .is_some_and(|id| state.streamed.contains(id));
+        let thinking_streamed = message_id
+            .as_ref()
+            .is_some_and(|id| state.thinking_streamed.contains(id));
         let Some(blocks) = frame.pointer("/message/content").and_then(Value::as_array) else {
             return;
         };
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
+                Some("thinking") if !thinking_streamed => {
+                    if let Some(text) = block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        (self.emit)(BackendEvent::Reasoning {
+                            turn_id,
+                            text: text.to_string(),
+                        });
+                    }
+                }
                 Some("text") if !already_streamed => {
                     let text = block
                         .get("text")
@@ -647,6 +815,21 @@ impl ClaudeShared {
         };
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
+                Some("thinking") => {
+                    if let Some(text) = block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        (self.emit)(BackendEvent::Subagent {
+                            id: parent.to_string(),
+                            title: title.clone(),
+                            update: SubagentUpdate::Reasoning {
+                                text: text.to_string(),
+                            },
+                        });
+                    }
+                }
                 Some("text") => {
                     let text = block
                         .get("text")
@@ -826,23 +1009,52 @@ impl ClaudeShared {
     }
 
     fn on_result(&self, frame: &Value) {
-        let (turn_id, cancelled) = {
+        let (turn_id, cancelled, limit_reset, limit_interrupted) = {
             let mut state = self.state.lock();
+            if let (Some(used), Some(model)) = (state.context_input, state.context_model.as_deref())
+            {
+                if let Some(size) = frame
+                    .get("modelUsage")
+                    .and_then(|models| models.get(model))
+                    .and_then(|model| model.get("contextWindow"))
+                    .and_then(Value::as_u64)
+                    .filter(|size| *size > 0)
+                {
+                    (self.emit)(BackendEvent::ContextUsage {
+                        used: used.saturating_add(state.context_output),
+                        size,
+                    });
+                }
+            }
+            state.context_input = None;
+            state.context_model = None;
             let Some(turn_id) = state.turn.take() else {
                 return;
             };
             state.queue.clear();
             state.active = None;
             state.streamed.clear();
+            state.thinking_streamed.clear();
             state.tool_blocks.clear();
             state.current_message = None;
-            (turn_id, std::mem::take(&mut state.cancel_requested))
+            (
+                turn_id,
+                std::mem::take(&mut state.cancel_requested),
+                state.limit_reset.take(),
+                std::mem::take(&mut state.limit_interrupted),
+            )
         };
         let is_error = frame
             .get("is_error")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if is_error && !cancelled {
+            if let Some(resets_at) = limit_reset
+                .filter(|_| !limit_interrupted)
+                .filter(|at| *at > time::OffsetDateTime::now_utc().unix_timestamp())
+            {
+                (self.emit)(BackendEvent::RateLimited { turn_id, resets_at });
+            }
             let message = frame
                 .get("result")
                 .and_then(Value::as_str)
@@ -855,7 +1067,7 @@ impl ClaudeShared {
         }
         (self.emit)(BackendEvent::TurnDone {
             turn_id,
-            ok: !is_error && !cancelled,
+            ok: !is_error && !cancelled && !limit_interrupted,
         });
     }
 
@@ -987,6 +1199,7 @@ impl ClaudeShared {
 struct ClaudeSession {
     shared: Arc<ClaudeShared>,
     conversation: Conversation,
+    _plugin: Option<tempfile::TempDir>,
 }
 
 impl ClaudeSession {
@@ -1413,6 +1626,84 @@ fn usage_windows(frame: &Value) -> Vec<UsageWindow> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn missing_limit_reset_does_not_schedule_a_resume() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit_no_reset")
+            .expect("prompt");
+        let seen = h.until("failed", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, BackendEvent::RateLimited { .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn rate_limit_is_reported_before_the_turn_ends() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "limit please")
+            .expect("prompt");
+        let seen = h.until("limit", |event| {
+            matches!(event, BackendEvent::RateLimited { .. })
+        });
+        assert!(seen.iter().any(|event| matches!(event, BackendEvent::RateLimited { resets_at, .. } if *resets_at > time::OffsetDateTime::now_utc().unix_timestamp())));
+        let end = h.until("turn end", |event| {
+            matches!(
+                event,
+                BackendEvent::Error { .. } | BackendEvent::TurnDone { .. }
+            )
+        });
+        assert!(
+            !end.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: true, .. }))
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn streams_reasoning_separately_from_the_answer() {
+        let h = start();
+        h.session
+            .prompt(TurnId::new(), "reasoning please")
+            .expect("prompt");
+        let seen = h.until("turn done", |event| {
+            matches!(event, BackendEvent::TurnDone { .. })
+        });
+        h.session.shutdown();
+        let reasoning: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            BackendEvent::ContextUsage {
+                used: 42000,
+                size: 200000
+            }
+        )));
+        assert_eq!(reasoning, "Consider this");
+        assert_eq!(answer, "Answer");
+    }
+
+    #[test]
     fn both_windows_come_out_of_a_rate_limit_event() {
         let frame = json!({
             "type": "rate_limit_event",
@@ -1592,15 +1883,16 @@ mod tests {
                 false,
                 &[],
                 Some(mcp_config),
+                Some(Path::new("/tmp/ataraxia-plugin")),
             )
             .expect("build Claude command");
 
-        assert!(args.contains(&"--disallowedTools".into()));
-        let denied_tool = args
+        assert!(!args.contains(&"--disallowedTools".into()));
+        let plugin = args
             .iter()
-            .position(|argument| argument == "--disallowedTools")
-            .expect("deny the provider skill tool");
-        assert_eq!(args[denied_tool + 1], "Skill");
+            .position(|argument| argument == "--plugin-dir")
+            .unwrap();
+        assert_eq!(args[plugin + 1], "/tmp/ataraxia-plugin");
         assert!(!args.contains(&"--disable-slash-commands".into()));
         assert!(args.contains(&"--strict-mcp-config".into()));
         let mcp_argument = args
@@ -2343,5 +2635,26 @@ mod tests {
             ),
             "Allow WebFetch: fetch docs"
         );
+    }
+    #[test]
+    fn plugin_exposes_selected_skill_and_its_supporting_files() {
+        let source = tempfile::tempdir().unwrap();
+        let skill = source.path().join("example");
+        std::fs::create_dir(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "skill instructions").unwrap();
+        std::fs::write(skill.join("reference.md"), "supporting text").unwrap();
+        let definition = super::super::config::SkillDefinition {
+            id: "example".into(),
+            name: "example".into(),
+            description: "Example".into(),
+            path: skill.join("SKILL.md"),
+        };
+        let plugin = prepare_skill_plugin(&[definition]).unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(plugin.path().join("skills/example/reference.md")).unwrap(),
+            "supporting text"
+        );
+        assert!(plugin.path().join(".claude-plugin/plugin.json").is_file());
+        assert!(prepare_skill_plugin(&[]).unwrap().is_none());
     }
 }

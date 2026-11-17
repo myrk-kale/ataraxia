@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   agentCancel,
+  agentCancelRateWait,
   agentConfigureSession,
   agentEnqueue,
   agentGetOptions,
@@ -41,6 +42,7 @@ import type { ChatSession, WorkspaceSnapshot } from "../lib/workspace";
 import { workspaceCreateSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
 import { toRows } from "./rows";
+import { completeWord, rememberWords } from "./autocomplete";
 import { AsciiMark } from "./AsciiMark";
 import {
   type Attachment,
@@ -62,6 +64,7 @@ import { ScheduledTasks } from "./ScheduledTasks";
 import { SessionSettings } from "./SessionSettings";
 import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
+import { ContextMeter } from "./ContextMeter";
 import { SubagentBar } from "./SubagentBar";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { VirtualTranscript } from "./VirtualTranscript";
@@ -102,6 +105,7 @@ export function ChatPanel({
   bare = false,
   onSessionChange,
   onNewSession,
+  onPreviousWorkspace,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
@@ -110,10 +114,17 @@ export function ChatPanel({
   bare?: boolean;
   onSessionChange: (session: ChatSession) => void;
   onNewSession?: (workspace: WorkspaceSnapshot) => void;
+  onPreviousWorkspace?: () => Promise<WorkspaceSnapshot>;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [draft, setDraft] = useState("");
+  const [completionCaret, setCompletionCaret] = useState(0);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [dismissedCompletion, setDismissedCompletion] = useState<string | null>(null);
+  const completionRef = useRef<HTMLDivElement>(null);
+  const learnedMessages = useRef(new Set<string>());
   const [atBottom, setAtBottom] = useState(true);
   const [options, setOptions] = useState<SessionOptions | null>(null);
   const [repositoryMcpApproval, setRepositoryMcpApproval] = useState<RepositoryMcpApproval | null>(null);
@@ -314,16 +325,17 @@ export function ChatPanel({
     if (element) {
       element.style.height = "auto";
       element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_PX)}px`;
-      // The background is as tall as the area above the field would be with the field at its
-      // smallest: what the field grows by is added back, so it stays where it is. The height
-      // that counts is the one on screen, which the style sheet may cap below the one asked for.
-      const least = parseFloat(getComputedStyle(element).minHeight) || 0;
-      element.closest<HTMLElement>(".cg-chat")?.style.setProperty(
-        "--composer-growth",
-        `${Math.max(0, element.offsetHeight - least)}px`,
-      );
     }
   }, [draft]);
+
+  useEffect(() => {
+    for (const item of state.items) {
+      if (item.kind === "message" && item.role === "user" && !item.pending && !learnedMessages.current.has(item.id)) {
+        learnedMessages.current.add(item.id);
+        rememberWords(sessionId, item.text);
+      }
+    }
+  }, [sessionId, state.items]);
 
   const busy = state.status === "working" || state.status === "waiting-permission";
 
@@ -417,6 +429,7 @@ export function ChatPanel({
 
   async function send() {
     let text = draft.trim();
+    rememberWords(sessionId, text);
     const sending = activeSubagent ? [] : attachments;
     const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
     if (commandName && activeSubagent !== null) {
@@ -432,11 +445,31 @@ export function ChatPanel({
       setAttachNotice(
         [
           "/help — list Ataraxia commands (available)",
+          `/workspace — switch to the previous workspace (${onPreviousWorkspace ? "available" : "unavailable here"})`,
           `/new — create a new chat and keep this one (${onNewSession ? "available" : "unavailable here"})`,
           `/compact${provider?.capabilities.compact_instructions ? " [instructions]" : ""} — compact this conversation (${provider?.capabilities.compact ? "available" : "unavailable"})`,
           `/stop — stop the current run (${busy ? "available" : "no run active"})`,
         ].join("\n"),
       );
+      return;
+    }
+    if (commandName === "workspace") {
+      if (text !== "/workspace") {
+        setAttachNotice("Use /workspace without arguments.");
+        return;
+      }
+      if (!onPreviousWorkspace || !onNewSession) {
+        setAttachNotice("Switching workspaces is unavailable here.");
+        return;
+      }
+      try {
+        const workspace = await onPreviousWorkspace();
+        setDraft("");
+        setAttachNotice(null);
+        onNewSession(workspace);
+      } catch (err) {
+        setAttachNotice(errorText(err));
+      }
       return;
     }
     if (commandName === "compact") {
@@ -649,8 +682,34 @@ export function ChatPanel({
     }
   }
 
+  const completion = composerFocused && !composing && !picker.open && completionCaret === draft.length && dismissedCompletion !== draft
+    ? completeWord(sessionId, draft)
+    : null;
+
+  useLayoutEffect(() => {
+    if (completionRef.current && composerRef.current) {
+      completionRef.current.scrollTop = composerRef.current.scrollTop;
+      completionRef.current.scrollLeft = composerRef.current.scrollLeft;
+    }
+  }, [completion, draft]);
+
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (picker.onKeyDown(event)) {
+      return;
+    }
+    if (completion && !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === "Tab" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      const next = draft + completion;
+      setDraft(next);
+      setCompletionCaret(next.length);
+      setDismissedCompletion(next);
+      rememberWords(sessionId, next);
+      return;
+    }
+    if (completion && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setDismissedCompletion(draft);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -700,20 +759,13 @@ export function ChatPanel({
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
-    <section className="cg-chat flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+    <section className="cg-chat relative flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+      {background.enabled ? (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+          <AsciiMark mark={emptyChat} />
+        </div>
+      ) : null}
       <div className="relative min-h-0 flex-1">
-        {background.enabled ? (
-          // It does not follow the area above the field as that shrinks when the field grows (the
-          // letter and the lit parts would rise with it): it reaches down behind the field by as
-          // much as the field has grown.
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0"
-            style={{ bottom: "calc(var(--composer-growth, 0px) * -1)" }}
-          >
-            <AsciiMark mark={emptyChat} />
-          </div>
-        ) : null}
         <div ref={scrollRef} className="relative h-full overflow-y-auto" onScroll={onScroll}>
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
@@ -835,6 +887,12 @@ export function ChatPanel({
         ) : null}
       </div>
 
+      {state.rateLimitAt ? (
+        <div role="status" className="mx-auto mb-2 flex w-full max-w-[780px] items-center justify-between gap-3 rounded-cg-md border border-cg-line bg-cg-panel px-3.5 py-2.5 text-small text-cg-ink">
+          <span>Usage limit reached. The task will resume after {new Date(state.rateLimitAt * 1000).toLocaleString()} while Ataraxia is open.</span>
+          <button type="button" className="shrink-0 underline" onClick={() => void agentCancelRateWait(sessionId).then(() => dispatch({ type: "cancelRateWait" })).catch((err: unknown) => dispatch({ type: "failed", message: errorText(err) }))}>Cancel automatic resume</button>
+        </div>
+      ) : null}
       {state.error ? (
         <div
           role="alert"
@@ -979,6 +1037,8 @@ export function ChatPanel({
             </p>
           ) : null}
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+          <div className="relative">
+          {completion ? <div ref={completionRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-body [overflow-wrap:anywhere]"><span className="invisible">{draft}</span><span className="text-cg-muted">{completion}</span></div> : null}
           <textarea
             ref={composerRef}
             aria-activedescendant={picker.activeId}
@@ -986,7 +1046,8 @@ export function ChatPanel({
             aria-expanded={picker.open}
             aria-haspopup="listbox"
             aria-label="Message"
-            className="block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
+            aria-description={completion ? `Suggestion: ${completion}. Press Tab or Right Arrow to accept.` : undefined}
+            className="relative block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
             disabled={!state.loaded || !canWrite}
             placeholder={
               activeSubagent
@@ -999,12 +1060,26 @@ export function ChatPanel({
             }
             rows={2}
             value={draft}
-            onChange={(event) => picker.onChange(event.currentTarget)}
-            onClick={(event) => picker.onSelect(event.currentTarget)}
+            onChange={(event) => {
+              const element = event.currentTarget;
+              picker.onChange(element);
+              setCompletionCaret(element.selectionStart);
+              setDismissedCompletion(null);
+              const beforeCaret = element.value.slice(0, element.selectionStart);
+              const completed = /([\p{L}\p{N}_-]{2,})[^\p{L}\p{N}_-]+$/u.exec(beforeCaret);
+              if (completed) rememberWords(sessionId, completed[1]);
+            }}
+            onFocus={(event) => { setComposerFocused(true); setCompletionCaret(event.currentTarget.selectionStart); }}
+            onBlur={() => setComposerFocused(false)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={() => setComposing(false)}
+            onScroll={(event) => { if (completionRef.current) completionRef.current.scrollTop = event.currentTarget.scrollTop; }}
+            onClick={(event) => { picker.onSelect(event.currentTarget); setCompletionCaret(event.currentTarget.selectionStart); }}
             onKeyDown={onComposerKeyDown}
-            onKeyUp={(event) => picker.onSelect(event.currentTarget)}
+            onKeyUp={(event) => { picker.onSelect(event.currentTarget); setCompletionCaret(event.currentTarget.selectionStart); }}
             onPaste={onPaste}
           />
+          </div>
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
             <div className="flex min-w-0 items-center gap-2.5">
               {activeSubagent ? null : (
@@ -1041,7 +1116,7 @@ export function ChatPanel({
                 </>
               )}
               <StatusDot status={state.status} />
-              {bare ? null : <UsageMeter label={providerLabel} provider={session.provider} />}
+              {bare ? null : <><UsageMeter label={providerLabel} provider={session.provider} /><ContextMeter usage={state.contextUsage} /></>}
             </div>
             {activeSubagent ? (
               <button

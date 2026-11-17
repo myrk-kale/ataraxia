@@ -2,6 +2,7 @@ import type { SpaceId } from "./spaces";
 
 export type ShortcutAction =
   | { type: "space"; delta: -1 | 1 }
+  | { type: "previous-workspace" }
   | { type: "btw" }
   | { type: "artifacts" }
   | { type: "terminal" }
@@ -89,6 +90,9 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (mod && !event.altKey && key === "k" && !inEditor) {
     return { type: "btw" };
   }
+  if (event.altKey && !mod && !event.shiftKey && event.code === "KeyW" && !typing && !event.repeat) {
+    return { type: "previous-workspace" };
+  }
   // Line wrapping flips from anywhere in Code; inside the editor Monaco wires the same chord.
   if (event.altKey && !mod && !event.shiftKey && event.code === "KeyZ" && context.space === "code" && !typing) {
     return { type: "wrap" };
@@ -133,6 +137,7 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
 
 /** The shortcuts shown in the legend, in reading order. */
 export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: string }[] = [
+  { keys: ["Alt", "W"], label: "Switch to the previous workspace", scope: "Everywhere" },
   { keys: ["Shift", "↑/↓"], label: "Previous / next space, even while typing or in the editor and terminal", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },

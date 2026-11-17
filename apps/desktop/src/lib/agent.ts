@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ProviderUsage } from "./usage";
 import type { ChatSession, ProviderKind, SessionId, SessionStatus, WorkspaceId } from "./workspace";
 
-export type ChatRole = "user" | "assistant" | "system";
+export type ChatRole = "user" | "assistant" | "reasoning" | "system";
 export type ToolStatus = "running" | "done" | "failed";
 
 /** A picture attached to a message. The file stays in the app; `agentAttachment` reads it. */
@@ -73,11 +73,16 @@ export type SubagentUpdate =
   | { kind: "detached" }
   | { kind: "user"; text: string }
   | { kind: "delta"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "tool"; callId: string; name: string; input: string }
   | { kind: "toolResult"; callId: string; output: string; ok: boolean }
   | { kind: "done"; ok: boolean };
 
+export type ContextUsage = { used: number; size: number };
+
 export type ChatSnapshot = {
+  rateLimitAt?: number | null;
+  contextUsage?: ContextUsage | null;
   items: ChatItem[];
   subagents: SubagentView[];
   restoredCount: number;
@@ -86,6 +91,8 @@ export type ChatSnapshot = {
 };
 
 type AgentEventBody =
+  | { type: "rateLimited"; sessionId: SessionId; turnId: string; resetsAt: number }
+  | { type: "contextUsage"; sessionId: SessionId; usage: ContextUsage }
   | { type: "status"; sessionId: SessionId; status: SessionStatus }
   /** A provider reported its limits. Not about one chat. */
   | { type: "usage"; usage: ProviderUsage }
@@ -419,6 +426,10 @@ export function parseScheduledMessage(text: string): { id: string; prompt: strin
   return match ? { id: match[1] ?? "", prompt: (match[2] ?? "").trim() } : null;
 }
 
+export function agentCancelRateWait(sessionId: SessionId) {
+  return invoke<void>("agent_cancel_rate_wait", { sessionId });
+}
+
 export function agentCancel(sessionId: SessionId) {
   return invoke<void>("agent_cancel", { sessionId, turnId: null });
 }
@@ -450,6 +461,8 @@ export function listenAgentEvents(
 }
 
 export type ChatState = {
+  rateLimitAt: number | null;
+  contextUsage: ContextUsage | null;
   /** The number of the last event applied, so a repeat of it is not applied again. */
   lastSeq: number;
   items: ChatItem[];
@@ -462,6 +475,8 @@ export type ChatState = {
 };
 
 export const initialChatState: ChatState = {
+  rateLimitAt: null,
+  contextUsage: null,
   lastSeq: 0,
   items: [],
   subagents: [],
@@ -480,7 +495,8 @@ export type ChatAction =
   | { type: "rollback"; id: string; status: SessionStatus }
   | { type: "event"; event: AgentEvent }
   | { type: "failed"; message: string }
-  | { type: "dismissError" };
+  | { type: "dismissError" }
+  | { type: "cancelRateWait" };
 
 /** The message shown ahead of the app that is this text, if there is one. */
 export function waitingFor(items: ChatItem[], text: string): ChatMessage | undefined {
@@ -598,6 +614,13 @@ export function applySubagent(
             },
           ],
         };
+      case "reasoning": {
+        const last = next.items[next.items.length - 1];
+        if (last && last.kind === "message" && last.role === "reasoning") {
+          return { ...next, items: [...next.items.slice(0, -1), { ...last, text: last.text + update.text }] };
+        }
+        return { ...next, items: [...next.items, { kind: "message", id: `${id}:${next.items.length}`, role: "reasoning", text: update.text, turnId: null }] };
+      }
       case "delta": {
         const last = next.items[next.items.length - 1];
         if (last && last.kind === "message" && last.role === "assistant") {
@@ -660,7 +683,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "loaded":
       return {
+        rateLimitAt: action.snapshot.rateLimitAt ?? state.rateLimitAt,
         lastSeq: state.lastSeq,
+        contextUsage: action.snapshot.contextUsage ?? null,
         items: action.snapshot.items,
         subagents: action.snapshot.subagents ?? [],
         restoredCount: action.snapshot.restoredCount,
@@ -693,6 +718,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, error: action.message, loaded: true };
     case "dismissError":
       return { ...state, error: null };
+    case "cancelRateWait":
+      return { ...state, rateLimitAt: null };
     case "event": {
       const event = action.event;
       if (event.seq !== undefined) {
@@ -703,8 +730,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         state = { ...state, lastSeq: event.seq };
       }
       switch (event.type) {
+        case "rateLimited":
+          return { ...state, rateLimitAt: event.resetsAt, error: null };
+        case "contextUsage":
+          return { ...state, contextUsage: event.usage };
         case "status":
-          return { ...state, status: event.status };
+          return { ...state, status: event.status, rateLimitAt: event.status === "working" ? null : state.rateLimitAt };
         case "delta": {
           const taken = event.role === "user" ? reconcile(state.items, event.text, event.turnId, event.images) : null;
           return {
@@ -793,7 +824,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ),
           };
         case "error":
-          return { ...state, error: event.message, pending: null };
+          return { ...state, error: state.rateLimitAt ? null : event.message, pending: null };
         case "usage":
           // About the provider, not this chat: the meter listens for it itself.
           return state;

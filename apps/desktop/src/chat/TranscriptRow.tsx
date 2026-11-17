@@ -1,3 +1,4 @@
+import { CopyButton } from "./CopyButton";
 import { Clock } from "lucide-react";
 import { memo } from "react";
 import { parseScheduledMessage, type ChatItem } from "../lib/agent";
@@ -51,6 +52,18 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
       </div>
     );
   }
+  if (item.role === "system") {
+    return (
+      <div className="flex items-center gap-3 text-small text-cg-muted" role="note">
+        <span className="h-px flex-1 bg-cg-line" />
+        <span>{item.text}</span>
+        <span className="h-px flex-1 bg-cg-line" />
+      </div>
+    );
+  }
+  if (item.role === "reasoning") {
+    return <details open className="max-w-[680px] min-w-0 text-small text-cg-muted-strong"><summary className="cursor-pointer font-medium">Thinking</summary><div className="mt-2 break-words whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</div></details>;
+  }
   if (item.role === "user") {
     if (parseBtwReport(item.text)) {
       return <BtwReport text={item.text} />;
@@ -90,18 +103,17 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
  */
 export const TranscriptRow = memo(
   function TranscriptRow({ row, sessionId }: { row: Row; sessionId: string }) {
-    if (!row.notice) {
-      return <Item item={row.item} sessionId={sessionId} />;
-    }
     return (
-      <div className="flex flex-col gap-9.5">
-        {RESTORED_NOTICE}
+      <div className={`flex flex-col ${row.notice ? "gap-9.5" : "gap-3"}`}>
+        {row.notice ? RESTORED_NOTICE : null}
         <Item item={row.item} sessionId={sessionId} />
+        {row.copyText ? <div className="self-start"><CopyButton inline what="interaction" read={() => ({ text: row.copyText ?? "" })} /></div> : null}
       </div>
     );
   },
   (before, after) =>
     before.row.item === after.row.item &&
     before.row.notice === after.row.notice &&
+    before.row.copyText === after.row.copyText &&
     before.sessionId === after.sessionId,
 );

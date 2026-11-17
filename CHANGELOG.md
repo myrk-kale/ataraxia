@@ -6,6 +6,29 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
+### Added
+
+- Stream reasoning and context usage from supported coding agents, with a copy action for each
+  interaction and a confirmation when conversation compaction finishes.
+- Suggest words locally in the chat composer, including words typed in the conversation.
+- Resume work after a reported usage limit while the app is open, ahead of queued messages.
+- Switch between the last two workspaces with `/workspace` or Alt+W.
+
+### Changed
+
+- Show account limits and conversation context as adjacent circular meters.
+- Move to the next pending decision after a verdict and make rejection with a comment explicit.
+- Load selected Claude Code skills through a native plugin while keeping resources isolated.
+
+### Fixed
+
+- Keep the animated chat background stationary as the queue grows and restore the last open chat
+  when returning to a workspace.
+- Preserve process exit details when an agent exits while a request is pending.
+- Exclude the local pnpm cache from version control.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added
@@ -347,7 +370,8 @@ First release.
   and `aarch64`: `.deb`, `.rpm`, `.AppImage` and a tarball), Windows (`.exe` installer and `.msi`), a
   Homebrew tap for macOS and Linux, and the `ataraxia-ide` crate.
 
-[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/myrk-kale/ataraxia/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/myrk-kale/ataraxia/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/myrk-kale/ataraxia/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/myrk-kale/ataraxia/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/myrk-kale/ataraxia/compare/v0.5.1...v0.6.0

@@ -55,6 +55,7 @@ struct Live {
     status: SessionStatus,
     transcript: Vec<ChatItem>,
     subagents: Vec<SubagentRecord>,
+    context_usage: Option<crate::domain::chat::ContextUsage>,
     active_turn: Option<TurnId>,
     pending: Option<PendingPermission>,
     /// Leading transcript items from before this agent process started.
@@ -251,6 +252,9 @@ impl Inner {
         let link = self.links.lock().get(&session_id)?.clone();
         let update = match event {
             BackendEvent::Delta { text, .. } => SubagentUpdate::Delta { text: text.clone() },
+            BackendEvent::Reasoning { text, .. } => {
+                SubagentUpdate::Reasoning { text: text.clone() }
+            }
             BackendEvent::Tool {
                 call_id,
                 name,
@@ -462,6 +466,23 @@ impl Inner {
             return;
         };
         match event {
+            BackendEvent::RateLimited { turn_id, resets_at } => {
+                if live.active_turn == Some(turn_id) {
+                    self.sink.emit_agent(AgentEvent::RateLimited {
+                        session_id,
+                        turn_id,
+                        resets_at,
+                    });
+                }
+            }
+            BackendEvent::ContextUsage { used, size } => {
+                if size > 0 {
+                    let usage = crate::domain::chat::ContextUsage { used, size };
+                    live.context_usage = Some(usage.clone());
+                    self.sink
+                        .emit_agent(AgentEvent::ContextUsage { session_id, usage });
+                }
+            }
             BackendEvent::Delta { turn_id, text } => {
                 if live.active_turn != Some(turn_id) {
                     return;
@@ -471,6 +492,19 @@ impl Inner {
                     session_id,
                     turn_id,
                     role: ChatRole::Assistant,
+                    text,
+                    images: Vec::new(),
+                });
+            }
+            BackendEvent::Reasoning { turn_id, text } => {
+                if live.active_turn != Some(turn_id) {
+                    return;
+                }
+                append_text(&mut live.transcript, ChatRole::Reasoning, turn_id, &text);
+                self.sink.emit_agent(AgentEvent::Delta {
+                    session_id,
+                    turn_id,
+                    role: ChatRole::Reasoning,
                     text,
                     images: Vec::new(),
                 });
@@ -595,6 +629,22 @@ impl Inner {
             BackendEvent::TurnDone { turn_id, ok } => {
                 if live.active_turn != Some(turn_id) {
                     return;
+                }
+                let compacted = ok && live.transcript.iter().any(|item| matches!(item,
+                    ChatItem::Message(message)
+                        if message.role == ChatRole::User && message.turn_id == Some(turn_id)
+                            && split_command(&message.text).is_some_and(|(command, _)| command == "compact")
+                ));
+                if compacted {
+                    let text = "Conversation compacted.";
+                    append_text(&mut live.transcript, ChatRole::System, turn_id, text);
+                    self.sink.emit_agent(AgentEvent::Delta {
+                        session_id,
+                        turn_id,
+                        role: ChatRole::System,
+                        text: text.to_string(),
+                        images: Vec::new(),
+                    });
                 }
                 finish_turn(live, turn_id, ok);
                 self.persist(session_id, &live.transcript);
@@ -725,6 +775,21 @@ fn apply_subagent(
             record.items.push(ChatItem::Message(ChatMessage {
                 id: Uuid::new_v4().to_string(),
                 role: ChatRole::User,
+                text: text.clone(),
+                turn_id: None,
+                images: Vec::new(),
+            }));
+        }
+        SubagentUpdate::Reasoning { text } => {
+            if let Some(ChatItem::Message(last)) = record.items.last_mut() {
+                if last.role == ChatRole::Reasoning {
+                    last.text.push_str(text);
+                    return;
+                }
+            }
+            record.items.push(ChatItem::Message(ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: ChatRole::Reasoning,
                 text: text.clone(),
                 turn_id: None,
                 images: Vec::new(),
@@ -1584,7 +1649,11 @@ impl AgentRuntime for AgentHost {
             )?,
             None => AgentConfiguration::default(),
         };
-        let agent_config_preamble = agent_config.preamble.clone();
+        let agent_config_preamble = if session.provider == ProviderKind::Claude {
+            agent_config.instructions_preamble.clone()
+        } else {
+            agent_config.preamble.clone()
+        };
         let mcp_servers = agent_config.mcp_servers.clone();
         let skills = agent_config.skills.clone();
 
@@ -1685,6 +1754,7 @@ impl AgentRuntime for AgentHost {
                 restored_count: if resumed { 0 } else { carried.len() },
                 transcript: carried,
                 subagents: carried_subagents,
+                context_usage: None,
                 active_turn: None,
                 pending: None,
                 read_only: session.kind.read_only(),
@@ -2142,6 +2212,8 @@ impl AgentRuntime for AgentHost {
         let sessions = self.inner.sessions.lock();
         Ok(match sessions.get(session_id) {
             Some(live) => ChatSnapshot {
+                rate_limit_at: None,
+                context_usage: live.context_usage.clone(),
                 items: live.transcript.clone(),
                 subagents: live.subagents.clone(),
                 restored_count: live.restored_count,
@@ -2149,6 +2221,8 @@ impl AgentRuntime for AgentHost {
                 pending_permission: live.pending.clone(),
             },
             None => ChatSnapshot {
+                rate_limit_at: None,
+                context_usage: None,
                 items: Vec::new(),
                 subagents: Vec::new(),
                 restored_count: 0,
@@ -2294,6 +2368,111 @@ mod tests {
             host,
             sink,
             session,
+        }
+    }
+
+    #[test]
+    fn reasoning_stays_ordered_and_separate_in_subagent_transcripts() {
+        let mut agents = Vec::new();
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "First ".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "thought".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Delta {
+                text: "Answer".into(),
+            },
+        );
+        apply_subagent(
+            &mut agents,
+            "child",
+            "Child",
+            &SubagentUpdate::Reasoning {
+                text: "Next".into(),
+            },
+        );
+        assert_eq!(agents[0].items.len(), 3);
+        assert!(
+            matches!(&agents[0].items[0], ChatItem::Message(m) if m.role == ChatRole::Reasoning && m.text == "First thought")
+        );
+        assert!(
+            matches!(&agents[0].items[1], ChatItem::Message(m) if m.role == ChatRole::Assistant && m.text == "Answer")
+        );
+        assert!(
+            matches!(&agents[0].items[2], ChatItem::Message(m) if m.role == ChatRole::Reasoning && m.text == "Next")
+        );
+    }
+
+    #[test]
+    fn context_usage_is_scoped_to_the_session_and_available_in_snapshots() {
+        let h = harness();
+        h.host.inner.handle_event(
+            h.session.id,
+            BackendEvent::ContextUsage {
+                used: 42000,
+                size: 200000,
+            },
+        );
+        let snapshot = h.host.snapshot(&h.session.id).unwrap();
+        assert_eq!(
+            snapshot.context_usage,
+            Some(crate::domain::chat::ContextUsage {
+                used: 42000,
+                size: 200000
+            })
+        );
+        assert!(h.sink.snapshot().iter().any(|event| matches!(event, AgentEvent::ContextUsage { session_id, usage } if *session_id == h.session.id && usage.used == 42000 && usage.size == 200000)));
+        h.host.inner.handle_event(
+            h.session.id,
+            BackendEvent::ContextUsage { used: 1, size: 0 },
+        );
+        assert_eq!(
+            h.host.snapshot(&h.session.id).unwrap().context_usage,
+            snapshot.context_usage
+        );
+        h.host.shutdown_all();
+    }
+
+    #[test]
+    fn compact_notice_is_persisted_only_after_success() {
+        for (prompt, ok, expected) in [
+            ("/compact keep tests", true, true),
+            ("/compact", false, false),
+            ("hello", true, false),
+        ] {
+            let h = harness();
+            let turn = TurnId::new();
+            {
+                let mut sessions = h.host.inner.sessions.lock();
+                let live = sessions.get_mut(&h.session.id).unwrap();
+                live.active_turn = Some(turn);
+                append_user_message(&mut live.transcript, turn, prompt, Vec::new());
+            }
+            h.host
+                .inner
+                .handle_event(h.session.id, BackendEvent::TurnDone { turn_id: turn, ok });
+            let items = h
+                .store
+                .list_chat_items(h.session.id)
+                .expect("stored transcript");
+            assert_eq!(items.iter().any(|item| matches!(item, ChatItem::Message(message) if message.role == ChatRole::System && message.text == "Conversation compacted.")), expected);
+            assert_eq!(h.sink.snapshot().iter().any(|event| matches!(event, AgentEvent::Delta { role: ChatRole::System, text, .. } if text == "Conversation compacted.")), expected);
+            h.host.shutdown_all();
         }
     }
 

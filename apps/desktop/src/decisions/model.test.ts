@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Artifact, Decision } from "../lib/insights";
-import { ago, buildTimeline, countByTab, filterDecisions, generationLabel, generationState, openedBy, orderDecisions, refLabel } from "./model";
+import { ago, buildTimeline, countByTab, filterDecisions, generationLabel, generationState, nextPendingDecision, openedBy, orderDecisions, refLabel } from "./model";
 
 const decision = (seq: number, state: Decision["state"]) => ({ id: String(seq), seq, state }) as unknown as Decision;
 
 describe("decisions model", () => {
+  it("advances to the next pending decision and wraps before returning to the list", () => {
+    const list = [decision(1, "pending"), decision(2, "approved"), decision(3, "pending"), decision(4, "rejected")];
+    expect(nextPendingDecision(list, "3")).toBe("1");
+    expect(nextPendingDecision(list, "1")).toBe("3");
+    expect(nextPendingDecision([decision(1, "pending")], "1")).toBeNull();
+    expect(nextPendingDecision(list, "missing")).toBeNull();
+  });
   it("lists the newest first, like an issue list", () => {
     const ordered = orderDecisions([decision(1, "approved"), decision(3, "pending"), decision(2, "superseded")]);
     expect(ordered.map((item) => item.seq)).toEqual([3, 2, 1]);
