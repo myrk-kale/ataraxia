@@ -36,6 +36,7 @@ import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { QuietSelect } from "../ui/QuietSelect";
 import { ReferenceSelect } from "./ReferenceSelect";
 import { RepositorySelect } from "./RepositorySelect";
+import { NewBranchDialog } from "./NewBranchDialog";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { McpServersDialog } from "./McpServersDialog";
 import { Tip } from "../ui/Overlay";
@@ -52,6 +53,9 @@ import {
   workspacePreviousWorkspace,
   workspaceListBranches,
   workspaceSelectBranch,
+  workspaceCheckoutRemoteBranch,
+  workspaceCreateBranch,
+  workspaceFetchBranches,
   type BranchView,
   type ProviderKind,
   type RepositoryId,
@@ -72,6 +76,7 @@ import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
 import { useAppearance } from "./appearance/store";
 import { useFailedArtifacts, useSessionActivity } from "./useSessionActivity";
+import { forgetDraft } from "../chat/draftStore";
 
 const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
 
@@ -99,6 +104,9 @@ function sameBranches(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
     ]);
   return key(a) === key(b);
 }
+
+/** Marks an option of the branch selector as a remote branch, so choosing it makes a local one. */
+const REMOTE_PREFIX = "remote:";
 
 /** A deleted chat leaves no remembered comparisons behind. */
 function forgetComparisons(chatId: string) {
@@ -399,15 +407,20 @@ export function AppShell() {
 
   // Every local branch, read from git when the selector opens and when the worktree changes.
   const [branches, setBranches] = useState<BranchView[]>([]);
+  const [remoteBranches, setRemoteBranches] = useState<string[]>([]);
+  const [newBranchOpen, setNewBranchOpen] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const worktreeId = selectedWorktree?.id ?? null;
   const refreshBranches = useCallback(async () => {
     if (!worktreeId) {
       setBranches([]);
+      setRemoteBranches([]);
       return;
     }
     try {
       const list = await workspaceListBranches(worktreeId);
       setBranches(list.branches);
+      setRemoteBranches(list.remotes ?? []);
       // The branch label of each worktree may have moved under us (a checkout outside the app).
       setWorkspace((current) =>
         sameBranches(current, list.workspace) ? current : { ...current, worktrees: list.workspace.worktrees },
@@ -464,10 +477,40 @@ export function AppShell() {
           ? "open in another worktree"
           : undefined,
     }));
-    return listed.some((item) => item.value === currentBranch) || !currentBranch
-      ? listed
-      : [{ value: currentBranch, label: currentBranch, hint: undefined }, ...listed];
-  }, [branches, currentBranch]);
+    const withCurrent =
+      listed.some((item) => item.value === currentBranch) || !currentBranch
+        ? listed
+        : [{ value: currentBranch, label: currentBranch, hint: undefined }, ...listed];
+    // A remote branch is checked out as a local one that tracks it.
+    const remote = remoteBranches.map((name) => ({ value: `${REMOTE_PREFIX}${name}`, label: name, hint: "remote" as string | undefined }));
+    return [...withCurrent, ...remote];
+  }, [branches, remoteBranches, currentBranch]);
+
+  async function fetchRemotes() {
+    if (!worktreeId || fetching) {
+      return;
+    }
+    setFetching(true);
+    setError(null);
+    try {
+      const list = await workspaceFetchBranches(worktreeId);
+      setBranches(list.branches);
+      setRemoteBranches(list.remotes ?? []);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  async function createBranch(name: string, base: string) {
+    if (!worktreeId) {
+      return;
+    }
+    // A failure goes back to the dialog, which stays open and says why.
+    setWorkspace(await workspaceCreateBranch(worktreeId, name, base));
+    void refreshBranches();
+  }
 
   // With a chat open the selector shows (and changes) that chat's provider; otherwise it picks
   // the provider for the next new chat.
@@ -682,13 +725,22 @@ export function AppShell() {
             aria-label="Branch"
             className="max-w-[175px] text-ui font-medium text-cg-muted-strong"
             disabled={!selectedRepository || !selectedWorktree || busy}
+            actions={[
+              { label: "New branch…", onSelect: () => setNewBranchOpen(true) },
+              { label: fetching ? "Fetching…" : "Fetch from remote", onSelect: () => void fetchRemotes() },
+            ]}
             options={branchOptions}
             placeholder="branch"
             searchable
             title="Branch of this worktree. Choosing another one switches to it, and says why if git refuses."
             value={currentBranch}
             onChange={(value) => {
-              if (selectedWorktree && value !== currentBranch) {
+              if (!selectedWorktree) {
+                return;
+              }
+              if (value.startsWith(REMOTE_PREFIX)) {
+                void runWorkspace(() => workspaceCheckoutRemoteBranch(selectedWorktree.id, value.slice(REMOTE_PREFIX.length)));
+              } else if (value !== currentBranch) {
                 void runWorkspace(() => workspaceSelectBranch(selectedWorktree.id, value));
               }
             }}
@@ -878,6 +930,7 @@ export function AppShell() {
             onClose={closeSessions}
             onDelete={(id) => {
               forgetComparisons(id);
+              forgetDraft(id);
               void runWorkspace(() => workspaceDeleteSession(id));
             }}
             onSelect={(id) => {
@@ -929,12 +982,24 @@ export function AppShell() {
       <SettingsDialog
         isOpen={settingsOpen}
         provider={selectedSession?.provider ?? null}
+        repository={selectedRepository ? { id: selectedRepository.id, name: selectedRepository.name } : null}
+        workspace={inWorkspace ? { id: inWorkspace.workspace.id, name: inWorkspace.workspace.name } : null}
         onClose={() => setSettingsOpen(false)}
       />
       <McpServersDialog
         isOpen={mcpOpen}
         onClose={() => setMcpOpen(false)}
         onOpenSession={openMcpSession}
+      />
+      <NewBranchDialog
+        currentBranch={currentBranch}
+        isOpen={newBranchOpen}
+        localBranches={branches.map((branch) => branch.name)}
+        remoteBranches={remoteBranches}
+        repositoryId={focusRepositoryId}
+        sessionId={selectedSession?.id ?? null}
+        onClose={() => setNewBranchOpen(false)}
+        onCreate={createBranch}
       />
       <WorkspaceDialog
         isOpen={workspaceDialog !== null}

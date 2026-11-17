@@ -3,6 +3,8 @@
 mod autocomplete;
 mod events;
 mod insights;
+mod lsp;
+mod resources;
 mod state;
 
 use base64::Engine as _;
@@ -21,6 +23,8 @@ use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
 pub use autocomplete::*;
 pub use insights::*;
+pub use lsp::*;
+pub use resources::*;
 pub use state::{AppState, build_app_state, follow_git};
 
 fn map_error(error: Error) -> String {
@@ -150,6 +154,40 @@ pub fn workspace_select_branch(
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| {
         workspace.select_branch(worktree_id, &name)
+    })
+}
+
+/// Brings the remotes up to date and lists the branches again.
+#[tauri::command(async)]
+pub fn workspace_fetch_branches(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+) -> std::result::Result<crate::app::workspace::BranchList, String> {
+    with_workspace(&state, |workspace| workspace.fetch_branches(worktree_id))
+}
+
+/// Checks out a remote branch (`origin/feature`), as a local branch that tracks it.
+#[tauri::command(async)]
+pub fn workspace_checkout_remote_branch(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    remote: String,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.checkout_remote_branch(worktree_id, &remote)
+    })
+}
+
+/// Makes a branch from another branch, a remote one, a tag or a commit, and moves to it.
+#[tauri::command(async)]
+pub fn workspace_create_branch(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    name: String,
+    base: String,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.create_branch(worktree_id, &name, &base)
     })
 }
 

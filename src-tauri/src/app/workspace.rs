@@ -65,6 +65,9 @@ pub struct BranchView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchList {
     pub branches: Vec<BranchView>,
+    /// Remote branches (`origin/feature`) that have no local branch of the same name yet.
+    #[serde(default)]
+    pub remotes: Vec<String>,
     pub workspace: WorkspaceSnapshot,
 }
 
@@ -635,7 +638,7 @@ impl<'a> WorkspaceService<'a> {
         let (repository, worktree) = self.worktree_of(worktree_id)?;
         let now = now_rfc3339()?;
         let worktrees = self.sync_worktrees(repository.id, &repository.root, &now)?;
-        let branches = self
+        let branches: Vec<BranchView> = self
             .git
             .list_branches(&worktree.path)?
             .into_iter()
@@ -650,10 +653,113 @@ impl<'a> WorkspaceService<'a> {
                 current: branch.current,
             })
             .collect();
+        let remotes = self
+            .git
+            .list_remote_branches(&worktree.path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|remote| {
+                let local = remote
+                    .split_once('/')
+                    .map_or(remote.as_str(), |(_, name)| name);
+                !branches
+                    .iter()
+                    .any(|branch: &BranchView| branch.name == local)
+            })
+            .collect();
         Ok(BranchList {
             branches,
+            remotes,
             workspace: self.bootstrap()?,
         })
+    }
+
+    /// Brings the remotes up to date and lists the branches again.
+    pub fn fetch_branches(&self, worktree_id: WorktreeId) -> Result<BranchList> {
+        let (_, worktree) = self.worktree_of(worktree_id)?;
+        self.git.fetch(&worktree.path)?;
+        self.list_branches(worktree_id)
+    }
+
+    /// Checks out a branch of a remote: the local branch of the same name when there is one,
+    /// otherwise a new one that tracks it.
+    pub fn checkout_remote_branch(
+        &self,
+        worktree_id: WorktreeId,
+        remote: &str,
+    ) -> Result<WorkspaceSnapshot> {
+        let local = remote
+            .split_once('/')
+            .map(|(_, name)| name)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("`{remote}` is not a remote branch"),
+                )
+            })?;
+        let (_, worktree) = self.worktree_of(worktree_id)?;
+        let exists = self
+            .git
+            .list_branches(&worktree.path)?
+            .iter()
+            .any(|branch| branch.name == local);
+        if exists {
+            return self.select_branch(worktree_id, local);
+        }
+        self.create_branch(worktree_id, local, remote)
+    }
+
+    /// Makes a branch that starts at `base` (a branch, remote branch, tag or commit) and moves
+    /// to it. Not while an agent is working in the worktree, and never forced.
+    pub fn create_branch(
+        &self,
+        worktree_id: WorktreeId,
+        name: &str,
+        base: &str,
+    ) -> Result<WorkspaceSnapshot> {
+        let (repository, worktree) = self.worktree_of(worktree_id)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::new(ErrorCode::Invalid, "give the new branch a name"));
+        }
+        let base = base.trim();
+        if base.is_empty() {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "choose what the new branch starts from",
+            ));
+        }
+        if self
+            .git
+            .list_branches(&worktree.path)?
+            .iter()
+            .any(|branch| branch.name == name)
+        {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("there is already a branch `{name}`"),
+            ));
+        }
+        self.git.resolve_rev(&worktree.path, base)?;
+        if self.agent_working_in(&repository, worktree_id)? {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!(
+                    "could not create `{name}`: an agent is working in this worktree, try after it finishes"
+                ),
+            ));
+        }
+        self.git
+            .create_branch(&worktree.path, name, base)
+            .map_err(|error| {
+                Error::new(
+                    ErrorCode::Invalid,
+                    format!("could not create `{name}`: {}", error.message),
+                )
+            })?;
+        self.sync_worktrees(repository.id, &repository.root, &now_rfc3339()?)?;
+        self.select_worktree(worktree_id)
     }
 
     /// Moves to a branch. One a worktree already has open selects that worktree; any other is

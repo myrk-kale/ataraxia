@@ -6,6 +6,38 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- The code editor understands the tools of the repository. Linters and checkers it uses (ruff, mypy,
+  flake8, eslint, biome) run when a file is opened and saved, and what they find is underlined with
+  its message. Language servers it has installed (pyright, typescript-language-server,
+  rust-analyzer, gopls) give completions as in VS Code, with their kinds, details, snippets and
+  automatic imports, plus definitions and their own diagnostics. Nothing runs until you allow it,
+  once per repository.
+- Cmd or Ctrl+click on a name in the editor goes to where it is declared, by language server when
+  there is one and by the syntax analyzer otherwise.
+- Settings > Skills & MCP manages skills and MCP servers at three scopes: global, workspace and
+  project. Each scope turns an item on, off or leaves it to the broader one, the narrowest wins, and
+  each can define skills and MCP servers of its own, which workspaces could not before. Agents read
+  it when a session starts.
+- The branch selector lists the branches of the remote and fetches them, and "New branch…" opens a
+  dialog to create one from another branch, a remote branch, a tag or a commit.
+- An agent that left something undone can hold your message queue with a new API call, which every
+  agent is told about. The queue waits when that turn ends, shows why, and goes on when you send a
+  message or press Send now.
+- What you type in a chat and do not send is kept per chat, across workspaces, tabs and restarts.
+
+### Changed
+
+- Tab in the message field brings the next word of the suggestion, or does nothing without one,
+  instead of leaving the field. The Right arrow still takes all of it.
+- Without a comparison picked, Code shows what is pending in the working tree against `HEAD`, and
+  falls back to the agent's last turn when nothing is pending.
+
+### Fixed
+
+- Selected text in the editor was nearly invisible, above all on added, removed and reviewed lines.
+
 ## [0.10.0] - 2026-11-17
 
 ### Added

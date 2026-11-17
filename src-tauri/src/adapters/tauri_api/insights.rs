@@ -1,9 +1,10 @@
 //! Commands for Code, Decisions, BTW, Flow, artifacts and settings.
 
 use super::{AppState, map_error};
-use crate::app::artifacts::{ReviewView, Side};
+use crate::app::artifacts::{DefinitionHit, ReviewView, Side};
 use crate::app::btw::BtwContext;
 use crate::app::decisions::DecisionDetail;
+use crate::app::lint::{Diagnostic, LintStatus};
 use crate::domain::agent::MentionPath;
 use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
@@ -49,6 +50,59 @@ pub fn code_read(
     state
         .engine
         .code_read(worktree_id, &path)
+        .map_err(map_error)
+}
+
+/// Where a symbol is declared in the worktree, for Cmd/Ctrl+click in the editor.
+#[tauri::command(async)]
+pub fn code_definitions(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    name: String,
+) -> Res<Vec<DefinitionHit>> {
+    state
+        .engine
+        .code_definitions(worktree_id, &name)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn code_lint_status(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+) -> Res<LintStatus> {
+    let mut status = state
+        .engine
+        .code_lint_status(worktree_id)
+        .map_err(map_error)?;
+    if let Some(worktree) = state.store.get_worktree(worktree_id).map_err(map_error)? {
+        status.servers = crate::adapters::lsp::available_servers(&worktree.path);
+    }
+    Ok(status)
+}
+
+/// Allows (or stops allowing) running the repository's linters and checkers.
+#[tauri::command(async)]
+pub fn code_lint_trust(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    trusted: bool,
+) -> Res<()> {
+    state
+        .engine
+        .code_lint_trust(worktree_id, trusted)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn code_lint_file(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    path: String,
+) -> Res<Vec<Diagnostic>> {
+    state
+        .engine
+        .code_lint_file(worktree_id, &path)
         .map_err(map_error)
 }
 

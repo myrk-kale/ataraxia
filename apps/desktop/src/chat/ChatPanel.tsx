@@ -1,5 +1,6 @@
 import { ArrowDown, ListPlus, Paperclip, Square } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -72,6 +73,7 @@ import { takesBack, withTakenBack } from "./takeBack";
 import { useComposerPicker } from "./useComposerPicker";
 import { useMessageQueue } from "./useMessageQueue";
 import { useSchedules } from "./useSchedules";
+import { loadDraft, saveDraft } from "./draftStore";
 import { expandGlobMentions } from "./pickerChoices";
 import { Dialog } from "../ui/Overlay";
 
@@ -118,7 +120,21 @@ export function ChatPanel({
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
-  const [draft, setDraft] = useState("");
+  // The draft belongs to a chat and is stored as it is typed: another workspace, tab or a closed
+  // app brings it back. Switching chats reads that chat's own.
+  const [draftState, setDraftState] = useState(() => ({ id: sessionId, text: loadDraft(sessionId) }));
+  const draft = draftState.id === sessionId ? draftState.text : loadDraft(sessionId);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const setDraft = useCallback(
+    (value: string | ((current: string) => string)) => {
+      const next = typeof value === "function" ? value(draftRef.current) : value;
+      draftRef.current = next;
+      saveDraft(sessionId, next);
+      setDraftState({ id: sessionId, text: next });
+    },
+    [sessionId],
+  );
   const [completionCaret, setCompletionCaret] = useState(0);
   const [composerFocused, setComposerFocused] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -689,7 +705,22 @@ export function ChatPanel({
     if (picker.onKeyDown(event)) {
       return;
     }
-    if (completion && !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === "Tab" || event.key === "ArrowRight")) {
+    const plain = !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    if (plain && event.key === "Tab") {
+      // Tab never leaves the field: it brings the next word of the suggestion, or does nothing.
+      event.preventDefault();
+      if (completion) {
+        const word = /^\s*\S+/.exec(completion)?.[0] ?? completion;
+        const next = draft + word;
+        setDraft(next);
+        setCompletionCaret(next.length);
+        if (word.length === completion.length) {
+          setDismissedCompletion(next);
+        }
+      }
+      return;
+    }
+    if (completion && plain && event.key === "ArrowRight") {
       event.preventDefault();
       const next = draft + completion;
       setDraft(next);
@@ -1045,7 +1076,7 @@ export function ChatPanel({
             aria-expanded={picker.open}
             aria-haspopup="listbox"
             aria-label="Message"
-            aria-description={completion ? `Suggestion: ${completion}. Press Tab or Right Arrow to accept.` : undefined}
+            aria-description={completion ? `Suggestion: ${completion}. Press Tab for the next word, or Right Arrow for all of it.` : undefined}
             className="relative block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
             disabled={!state.loaded || !canWrite}
             placeholder={

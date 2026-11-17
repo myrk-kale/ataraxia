@@ -15,6 +15,7 @@ pub mod opencode;
 pub mod process;
 pub mod process_tree;
 pub mod registry;
+pub mod resources;
 pub mod rpc;
 pub mod subagent_tail;
 

@@ -15,6 +15,7 @@ const FILES: &[(&str, &str)] = &[
     ("flow.md", include_str!("../../../guide/flow.md")),
     ("review.md", include_str!("../../../guide/review.md")),
     ("schedule.md", include_str!("../../../guide/schedule.md")),
+    ("queue.md", include_str!("../../../guide/queue.md")),
     ("api.md", include_str!("../../../guide/api.md")),
 ];
 
@@ -38,10 +39,12 @@ pub fn preamble(index: &Path) -> String {
          - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
          - For Mermaid flowcharts, use the animated renderer's compatible subset: `flowchart TD` or `flowchart LR`, simple node IDs and quoted plain-text labels, and `-->` links with optional `|label|`. Avoid HTML, backticks, escaped newlines, styling, subgraphs and special link syntax; keep labels short and diagrams under 60 nodes and 100 edges. Do not replace an explicitly requested non-flowchart diagram type. Rendering also depends on device support.\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
+         - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          The developer's message follows.\n\n",
         index.display(),
-        index.with_file_name("schedule.md").display()
+        index.with_file_name("schedule.md").display(),
+        index.with_file_name("queue.md").display()
     )
 }
 
@@ -92,6 +95,10 @@ mod tests {
         assert!(prompt.contains("Never generate"));
         assert!(prompt.contains("one short question"));
         assert!(prompt.contains("ATARAXIA_API_URL"));
+        // Every agent is told, in the prompt itself, when and how to hold the developer's queue.
+        assert!(prompt.contains("/v1/queue/pause"));
+        assert!(prompt.contains("hold their queue"));
+        assert!(prompt.contains("Do not pause when the work is done"));
         assert!(prompt.contains("Flow diagram") && prompt.contains("Mermaid diagram"));
         assert!(prompt.contains("Avoid HTML"));
         assert!(prompt.contains("Do not replace an explicitly requested non-flowchart"));
@@ -137,7 +144,7 @@ mod tests {
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 340,
+            text.split_whitespace().count() < 430,
             "{} words",
             text.split_whitespace().count()
         );

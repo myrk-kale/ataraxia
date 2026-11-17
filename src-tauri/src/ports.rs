@@ -236,6 +236,23 @@ pub trait Git: Send + Sync {
         unsupported("list_branches")
     }
 
+    /// Branches of the remotes as last fetched (`origin/feature`), without the `HEAD` pointers.
+    fn list_remote_branches(&self, _worktree: &Path) -> Result<Vec<String>> {
+        unsupported("list_remote_branches")
+    }
+
+    /// Brings the branches of every remote up to date. Never asks for a password: one that is
+    /// needed is an error.
+    fn fetch(&self, _worktree: &Path) -> Result<()> {
+        unsupported("fetch")
+    }
+
+    /// Makes a branch `name` that starts at `start` (a branch, remote branch, tag or commit) and
+    /// checks it out in `worktree`. Never forced.
+    fn create_branch(&self, _worktree: &Path, _name: &str, _start: &str) -> Result<()> {
+        unsupported("create_branch")
+    }
+
     /// Checks a local branch out in `worktree`. Never forced: a dirty tree that would be
     /// overwritten, or a branch another worktree holds, is an error carrying git's own words.
     fn switch_branch(&self, _worktree: &Path, _name: &str) -> Result<()> {

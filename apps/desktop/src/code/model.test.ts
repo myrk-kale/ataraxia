@@ -129,13 +129,13 @@ describe("diff target and unit queue", () => {
     expect(shownLabel(cp({ source: "manual" }), null, "feature/x")).toBe("Edits since the last check");
     expect(shownLabel(null, null, null)).toBe("No comparison chosen");
     // A comparison that is no longer chosen is never presented as something else.
-    expect(shownLabel(cp({ source: "compare" }), null, "feature/x")).toBe("No comparison chosen");
+    expect(shownLabel(cp({ source: "compare" }), null, "feature/x")).toBe("Pending changes");
   });
 
   it("says why nothing is compared and what to do, whichever way there is no diff", () => {
     // No reference picked, on a branch.
     const onBranch = noDiffMessage(null, null, "feature/x");
-    expect(onBranch).toContain("No comparison chosen");
+    expect(onBranch).toContain("No pending changes");
     expect(onBranch).toContain("Pick a branch or a commit in Compare with…");
     expect(onBranch).toContain("feature/x");
     expect(onBranch).toContain("agent");

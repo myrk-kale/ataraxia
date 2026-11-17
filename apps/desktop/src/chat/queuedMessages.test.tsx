@@ -39,6 +39,18 @@ describe("QueuedMessages", () => {
     expect(html).not.toContain("Queued (2)");
   });
 
+  it("says what the agent left undone when it asked for the pause", () => {
+    const html = renderToStaticMarkup(
+      <QueuedMessages
+        queue={{ items: ITEMS, paused: true, reason: "The deploy needs a token." }}
+        onRemove={() => {}}
+        onSendNow={() => {}}
+      />,
+    );
+    expect(html).toContain("Paused by the agent: The deploy needs a token. Send a message");
+    expect(html).not.toContain("last turn stopped");
+  });
+
   it("shows a message that is still being added, but does not let it be sent or removed yet", () => {
     const html = renderToStaticMarkup(
       <QueuedMessages

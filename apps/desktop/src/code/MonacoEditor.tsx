@@ -3,6 +3,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type 
 import { useAppearance } from "../app/appearance/store";
 import { familyFor } from "../app/appearance/fonts";
 import { placeMenu } from "./menuPlacement";
+import type { Diagnostic, LspCompletions } from "../lib/insights";
 import { defineAppTheme, loadMonaco, type Monaco } from "./monacoSetup";
 
 /** Pause after the last change of the selection before the menu shows: it waits for the hand to stop. */
@@ -28,6 +29,22 @@ export type EditorHandle = {
   selection: () => EditorSelection | null;
 };
 
+export type DefinitionPlace = { path: string; line: number; column?: number };
+
+export type CompletionRequest = {
+  /** 1-based, as Monaco counts. */
+  line: number;
+  column: number;
+  /** The character that opened the list, when one did. */
+  trigger: string | null;
+};
+
+/** What typing one of these asks the language server for, without waiting for a word. */
+const TRIGGER_CHARACTERS = [".", ":", "<", '"', "'", "/", "@", "#", "(", "[", ",", "$", "-", "="];
+
+/** Scheme of the locations a definition lookup returns: the file is not a Monaco model, the app opens it. */
+const DEFINITION_SCHEME = "ataraxia-definition";
+
 export type LineMarks = {
   added: number[];
   removed: number[];
@@ -52,6 +69,11 @@ export function MonacoEditor({
   onToggleVersion,
   onToggleWrap,
   onSelection,
+  onDefinition,
+  onOpenDefinition,
+  onComplete,
+  lspActive = false,
+  diagnostics,
   selectionMenu,
 }: {
   /** Identifies the document; each key keeps its own buffer and undo history. */
@@ -71,6 +93,16 @@ export function MonacoEditor({
   /** Wrap or unwrap long lines (Alt+Z, as in VS Code). */
   onToggleWrap?: () => void;
   onSelection?: (selection: EditorSelection) => void;
+  /** What linters and checkers found in this document: drawn as underlines with the message on hover. */
+  diagnostics?: readonly Diagnostic[];
+  /** Where the symbol under Cmd/Ctrl+click is declared; the first place is the one opened. */
+  onDefinition?: (name: string, line: number, column: number) => Promise<DefinitionPlace[]>;
+  /** Completions from the document's language server; `null` when there is none. */
+  onComplete?: (request: CompletionRequest) => Promise<LspCompletions | null>;
+  /** A language server serves this document: its suggestions stand in for the guesses of the editor. */
+  lspActive?: boolean;
+  /** Takes the user to a declaration, in this file or another. */
+  onOpenDefinition?: (place: DefinitionPlace) => void;
   /**
    * A small bar shown next to selected text, once the selection has settled. `dismiss` takes it
    * away (the selection itself stays).
@@ -81,8 +113,8 @@ export function MonacoEditor({
   const monacoRef = useRef<Monaco | null>(null);
   const editorRef = useRef<MonacoApi.editor.IStandaloneCodeEditor | null>(null);
   const decorations = useRef<MonacoApi.editor.IEditorDecorationsCollection | null>(null);
-  const callbacks = useRef({ onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection });
-  callbacks.current = { onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection };
+  const callbacks = useRef({ onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection, onDefinition, onOpenDefinition, onComplete });
+  callbacks.current = { onChange, onSave, onBtw, onToggleVersion, onToggleWrap, onSelection, onDefinition, onOpenDefinition, onComplete };
   const appearance = useAppearance();
   // The editor is created once; what it was created with is read back through a ref.
   const look = useRef(appearance);
@@ -149,6 +181,14 @@ export function MonacoEditor({
         guides: { indentation: false },
         scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
         accessibilitySupport: "auto",
+        // As in VS Code: suggestions while typing and on trigger characters, Enter or Tab to accept.
+        quickSuggestions: { other: true, comments: false, strings: true },
+        suggestOnTriggerCharacters: true,
+        acceptSuggestionOnEnter: "on",
+        tabCompletion: "on",
+        snippetSuggestions: "inline",
+        fixedOverflowWidgets: true,
+        suggest: { showWords: true, preview: true },
       });
       editorRef.current = editor;
       decorations.current = editor.createDecorationsCollection([]);
@@ -158,6 +198,81 @@ export function MonacoEditor({
       editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyZ, () => callbacks.current.onToggleWrap?.());
       // Old and new version: Alt+V, since a bare V would be typed into the code.
       editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyV, () => callbacks.current.onToggleVersion?.());
+      // Cmd/Ctrl+click on a name goes to where it is declared. Monaco has no project here, so the
+      // app looks the name up and the opener below carries the user there.
+      const definitions = monaco.languages.registerDefinitionProvider("*", {
+        async provideDefinition(model, position) {
+          const lookup = callbacks.current.onDefinition;
+          const word = model.getWordAtPosition(position);
+          if (!lookup || !word) {
+            return null;
+          }
+          const places = await lookup(word.word, position.lineNumber, position.column).catch(() => []);
+          const place = places[0];
+          if (!place) {
+            return null;
+          }
+          const uri = monaco.Uri.from({ scheme: DEFINITION_SCHEME, path: `/${place.path}` });
+          const column = place.column ?? model.getLineContent(Math.min(place.line, model.getLineCount())).indexOf(word.word) + 1;
+          return [{ uri, range: new monaco.Range(place.line, Math.max(1, column), place.line, Math.max(1, column)) }];
+        },
+      });
+      // Suggestions as in VS Code: the language server's own, with its kinds, details, snippets and
+      // the edits that come with them (an import added when a name is picked).
+      const kinds = monaco.languages.CompletionItemKind;
+      const kindOf = [
+        kinds.Text, kinds.Text, kinds.Method, kinds.Function, kinds.Constructor, kinds.Field, kinds.Variable,
+        kinds.Class, kinds.Interface, kinds.Module, kinds.Property, kinds.Unit, kinds.Value, kinds.Enum,
+        kinds.Keyword, kinds.Snippet, kinds.Color, kinds.File, kinds.Reference, kinds.Folder, kinds.EnumMember,
+        kinds.Constant, kinds.Struct, kinds.Event, kinds.Operator, kinds.TypeParameter,
+      ];
+      const completions = monaco.languages.registerCompletionItemProvider("*", {
+        triggerCharacters: TRIGGER_CHARACTERS,
+        async provideCompletionItems(model, position, context) {
+          const ask = callbacks.current.onComplete;
+          if (!ask) {
+            return null;
+          }
+          const trigger =
+            context.triggerKind === monaco.languages.CompletionTriggerKind.TriggerCharacter
+              ? (context.triggerCharacter ?? null)
+              : null;
+          const result = await ask({ line: position.lineNumber, column: position.column, trigger }).catch(() => null);
+          if (!result) {
+            return null;
+          }
+          const word = model.getWordUntilPosition(position);
+          const own = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+          const toRange = ([sl, sc, el, ec]: [number, number, number, number]) =>
+            new monaco.Range(sl + 1, sc + 1, el + 1, ec + 1);
+          return {
+            incomplete: result.incomplete,
+            suggestions: result.items.map((item) => ({
+              label: item.label,
+              kind: kindOf[item.kind] ?? kinds.Text,
+              detail: item.detail ?? undefined,
+              documentation: item.documentation ? { value: item.documentation } : undefined,
+              insertText: item.insertText,
+              insertTextRules: item.snippet ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+              sortText: item.sortText ?? undefined,
+              filterText: item.filterText ?? undefined,
+              tags: item.deprecated ? [monaco.languages.CompletionItemTag.Deprecated] : undefined,
+              range: item.range ? toRange(item.range) : own,
+              additionalTextEdits: item.additionalEdits.map((edit) => ({ range: toRange(edit.range), text: edit.newText })),
+            })),
+          };
+        },
+      });
+      const opener = monaco.editor.registerEditorOpener({
+        openCodeEditor(_source, resource, selection) {
+          if (resource.scheme !== DEFINITION_SCHEME) {
+            return false;
+          }
+          const line = selection && "startLineNumber" in selection ? selection.startLineNumber : 1;
+          callbacks.current.onOpenDefinition?.({ path: resource.path.replace(/^\//, ""), line });
+          return true;
+        },
+      });
       const content = editor.onDidChangeModelContent(() => callbacks.current.onChange?.(editor.getValue()));
       const cursor = editor.onDidChangeCursorSelection((event) => {
         const model = editor.getModel();
@@ -262,6 +377,9 @@ export function MonacoEditor({
         typed.dispose();
         keys.dispose();
         content.dispose();
+        definitions.dispose();
+        completions.dispose();
+        opener.dispose();
         cursor.dispose();
         editor.getModel()?.dispose();
         editor.dispose();
@@ -302,6 +420,39 @@ export function MonacoEditor({
     }
   }, [ready, docKey, value, language]);
 
+  // After the model effect above, so the markers land on the document that is showing.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const model = editorRef.current?.getModel();
+    if (!ready || !monaco || !model) {
+      return;
+    }
+    const severity = {
+      error: monaco.MarkerSeverity.Error,
+      warning: monaco.MarkerSeverity.Warning,
+      info: monaco.MarkerSeverity.Info,
+      hint: monaco.MarkerSeverity.Hint,
+    };
+    monaco.editor.setModelMarkers(
+      model,
+      "ataraxia-lint",
+      (diagnostics ?? []).map((item) => {
+        const startLineNumber = Math.min(item.line, model.getLineCount());
+        const endLineNumber = Math.min(Math.max(item.endLine, startLineNumber), model.getLineCount());
+        return {
+          severity: severity[item.severity],
+          message: item.message,
+          source: item.tool,
+          code: item.code ?? undefined,
+          startLineNumber,
+          startColumn: item.column,
+          endLineNumber,
+          endColumn: Math.max(item.endColumn, endLineNumber === startLineNumber ? item.column + 1 : 1),
+        };
+      }),
+    );
+  }, [ready, docKey, value, diagnostics]);
+
   useEffect(() => {
     editorRef.current?.updateOptions({ readOnly, domReadOnly: readOnly });
   }, [ready, readOnly]);
@@ -327,6 +478,23 @@ export function MonacoEditor({
       lineHeight: Math.round(codeFont.size * 1.6),
     });
   }, [ready, codeFont]);
+
+  // With a language server the editor stops guessing: no words picked out of the file, and no
+  // project-less TypeScript service answering next to the real one.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    editorRef.current?.updateOptions({
+      wordBasedSuggestions: lspActive ? "off" : "matchingDocuments",
+      suggest: { showWords: !lspActive, preview: true },
+    });
+    const services = (monaco as unknown as { typescript?: Record<string, { modeConfiguration: Record<string, boolean>; setModeConfiguration: (mode: Record<string, boolean>) => void } | undefined> } | null)
+      ?.typescript;
+    for (const defaults of [services?.typescriptDefaults, services?.javascriptDefaults]) {
+      if (defaults && defaults.modeConfiguration.completionItems === lspActive) {
+        defaults.setModeConfiguration({ ...defaults.modeConfiguration, completionItems: !lspActive });
+      }
+    }
+  }, [ready, lspActive]);
 
   useEffect(() => {
     editorRef.current?.updateOptions({ wordWrap: wrap ? "on" : "off" });

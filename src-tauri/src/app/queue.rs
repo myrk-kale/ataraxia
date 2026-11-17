@@ -21,6 +21,10 @@ use super::engine::Engine;
 pub(crate) struct QueueState {
     items: VecDeque<Entry>,
     paused: bool,
+    /// The agent said something is left undone: hold the queue when this turn ends, whatever
+    /// the user queued meanwhile. The reason is shown with the pause.
+    hold: bool,
+    reason: Option<String>,
     /// The first message was asked for by name: it goes out when the running turn ends, however
     /// that turn ends.
     force: bool,
@@ -49,6 +53,7 @@ impl QueueState {
         MessageQueue {
             items: self.items.iter().map(Entry::view).collect(),
             paused: self.paused,
+            reason: self.paused.then(|| self.reason.clone()).flatten(),
         }
     }
 }
@@ -157,6 +162,33 @@ impl Engine {
         view
     }
 
+    /// The agent says something it was asked to do is left undone: what is queued must not run on
+    /// top of it. The queue is held when the turn that said so ends (at once when no turn is
+    /// running) and stays held until the user sends a message or presses Send now.
+    pub fn queue_pause(&self, session_id: SessionId, reason: Option<&str>) -> Result<MessageQueue> {
+        if self.session(session_id)?.kind != SessionKind::Chat {
+            return Err(Error::new(ErrorCode::Invalid, "only chats have a queue"));
+        }
+        let reason = reason
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(300).collect::<String>());
+        let working = self.is_working(session_id);
+        let view = {
+            let mut queues = self.queues.lock();
+            let state = queues.entry(session_id).or_default();
+            state.reason = reason;
+            if working {
+                state.hold = true;
+            } else {
+                state.paused = true;
+            }
+            state.view()
+        };
+        self.emit_queue(session_id, view);
+        Ok(self.queue(session_id))
+    }
+
     /// Sends one queued message now: the running turn is stopped and this message goes next,
     /// ahead of the rest. With no turn running it simply goes out.
     pub fn queue_send_now(&self, session_id: SessionId, id: &str) -> Result<MessageQueue> {
@@ -177,6 +209,8 @@ impl Engine {
             }
             state.force = true;
             state.paused = false;
+            state.hold = false;
+            state.reason = None;
             state.view()
         };
         self.emit_queue(session_id, view);
@@ -211,6 +245,16 @@ impl Engine {
             };
             if state.items.is_empty() {
                 queues.remove(&session_id);
+                return;
+            }
+            // The agent said something is left undone: the turn that said it ends here, and what
+            // was queued waits for the user. A message asked for by name still goes.
+            if ok && state.hold && !state.force {
+                state.hold = false;
+                state.paused = true;
+                let view = state.view();
+                drop(queues);
+                self.emit_queue(session_id, view);
                 return;
             }
             if !ok && !state.force {
@@ -252,6 +296,8 @@ impl Engine {
                     state.items.retain(|queued| queued.id != item.id);
                     state.force = false;
                     state.paused = false;
+                    state.hold = false;
+                    state.reason = None;
                     if state.items.is_empty() {
                         queues.remove(&session_id);
                         MessageQueue::default()

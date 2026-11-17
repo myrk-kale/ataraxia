@@ -21,7 +21,9 @@ export function QueuedMessages({
     <section aria-label="Queued messages" className="mb-2 flex flex-col gap-1.5">
       <p className="px-1 text-small text-cg-muted">
         {queue.paused
-          ? "Paused because the last turn stopped. Send one now to carry on."
+          ? queue.reason
+            ? `Paused by the agent: ${queue.reason.replace(/[.!?\s]+$/, "")}. Send a message, or send one of these now, to carry on.`
+            : "Paused because the last turn stopped. Send one now to carry on."
           : `Queued (${queue.items.length}). Sent one after another when the agent finishes.`}
       </p>
       <ol className="flex max-h-[30vh] flex-col gap-1 overflow-y-auto">

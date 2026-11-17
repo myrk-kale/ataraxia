@@ -25,6 +25,25 @@ pub struct SkillDefinition {
     pub path: PathBuf,
 }
 
+/// What the user switched off, and where a workspace keeps its own skills and MCP servers. Skills
+/// are named by id and MCP servers by name; anything not listed stays on.
+#[derive(Debug, Clone, Default)]
+pub struct ResourcePolicy {
+    pub workspace_dir: Option<PathBuf>,
+    pub disabled_skills: std::collections::HashSet<String>,
+    pub disabled_mcps: std::collections::HashSet<String>,
+}
+
+/// The folder of the user's Ataraxia configuration (`~/.config/ataraxia` or under `XDG_CONFIG_HOME`).
+pub(super) fn user_config_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|path| path.join(".config")))
+        .map(|path| path.join("ataraxia"))
+}
+
 /// Describes repository MCP servers without exposing their environment or header values.
 pub fn repository_mcp_approval(cwd: &Path) -> Result<Option<RepositoryMcpApproval>> {
     let Some(root) = repository_root(cwd) else {
@@ -110,16 +129,33 @@ impl AgentConfiguration {
         data_dir: Option<&Path>,
         repository_mcp_fingerprint: Option<&str>,
     ) -> Result<Self> {
+        Self::load_with(
+            cwd,
+            session_id,
+            data_dir,
+            repository_mcp_fingerprint,
+            &ResourcePolicy::default(),
+        )
+    }
+
+    /// [`Self::load`] with a policy: the workspace's own skills and MCP servers join the user's
+    /// and the repository's, and what the user switched off is left out.
+    pub fn load_with(
+        cwd: &Path,
+        session_id: SessionId,
+        data_dir: Option<&Path>,
+        repository_mcp_fingerprint: Option<&str>,
+        policy: &ResourcePolicy,
+    ) -> Result<Self> {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let user_config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| home.as_ref().map(|path| path.join(".config")))
-            .map(|path| path.join("ataraxia"));
+        let user_config = user_config_dir();
         let repository = repository_root(cwd);
 
         let mut servers = Map::new();
         if let Some(root) = &user_config {
+            merge_mcp_file(&root.join("mcp.json"), &mut servers)?;
+        }
+        if let Some(root) = &policy.workspace_dir {
             merge_mcp_file(&root.join("mcp.json"), &mut servers)?;
         }
         if let Some(root) = &repository {
@@ -145,8 +181,14 @@ impl AgentConfiguration {
             }
         }
 
+        servers.retain(|name, _| !policy.disabled_mcps.contains(name));
+
         let skill_roots: Vec<PathBuf> = [
             home.as_ref().map(|root| root.join(".agents/skills")),
+            policy
+                .workspace_dir
+                .as_ref()
+                .map(|root| root.join("skills")),
             repository.as_ref().map(|root| root.join(".agents/skills")),
         ]
         .into_iter()
@@ -157,7 +199,11 @@ impl AgentConfiguration {
         for root in &skill_roots {
             collect_skills(root, &mut skills_by_id);
         }
-        let skills: Vec<SkillDefinition> = skills_by_id.into_values().take(MAX_SKILLS).collect();
+        let skills: Vec<SkillDefinition> = skills_by_id
+            .into_values()
+            .filter(|skill| !policy.disabled_skills.contains(&skill.id))
+            .take(MAX_SKILLS)
+            .collect();
 
         let mut instructions = Vec::new();
         if let Some(path) = user_config.as_ref().map(|root| root.join("AGENTS.md")) {
@@ -327,7 +373,7 @@ pub fn forget_session_config(data_dir: &Path, session_id: &SessionId) -> Result<
     Ok(())
 }
 
-fn repository_root(cwd: &Path) -> Option<PathBuf> {
+pub(super) fn repository_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|path| path.join(".git").exists())
         .map(Path::to_path_buf)
@@ -341,7 +387,7 @@ fn merge_mcp_file(path: &Path, servers: &mut Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-fn read_mcp_entries(path: &Path) -> Result<Option<(Map<String, Value>, String)>> {
+pub(super) fn read_mcp_entries(path: &Path) -> Result<Option<(Map<String, Value>, String)>> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -370,7 +416,7 @@ fn read_mcp_entries(path: &Path) -> Result<Option<(Map<String, Value>, String)>>
     Ok(Some((entries.clone(), contents)))
 }
 
-fn validate_mcp_server(path: &Path, name: &str, config: &Value) -> Result<()> {
+pub(super) fn validate_mcp_server(path: &Path, name: &str, config: &Value) -> Result<()> {
     let invalid = |detail: &str| {
         Error::new(
             ErrorCode::Invalid,
@@ -446,7 +492,7 @@ fn append_instructions(path: &Path, instructions: &mut Vec<String>) -> Result<()
     Ok(())
 }
 
-fn collect_skills(root: &Path, skills: &mut BTreeMap<String, SkillDefinition>) {
+pub(super) fn collect_skills(root: &Path, skills: &mut BTreeMap<String, SkillDefinition>) {
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     let mut visited = 0;
     while let Some((dir, depth)) = pending.pop() {
@@ -480,7 +526,7 @@ fn collect_skills(root: &Path, skills: &mut BTreeMap<String, SkillDefinition>) {
     }
 }
 
-fn parse_skill(path: &Path, skill_dir: &Path) -> Option<SkillDefinition> {
+pub(super) fn parse_skill(path: &Path, skill_dir: &Path) -> Option<SkillDefinition> {
     if fs::metadata(path).ok()?.len() > MAX_SKILL_BYTES {
         return None;
     }

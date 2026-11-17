@@ -303,4 +303,12 @@ impl crate::api::Scheduling for Engine {
     fn cancel(&self, session: SessionId, id: &str) -> Result<()> {
         self.schedule_cancel(session, id).map(|_| ())
     }
+
+    fn pause_queue(
+        &self,
+        session: SessionId,
+        reason: Option<&str>,
+    ) -> Result<crate::domain::MessageQueue> {
+        self.queue_pause(session, reason)
+    }
 }

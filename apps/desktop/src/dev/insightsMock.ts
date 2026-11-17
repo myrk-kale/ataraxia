@@ -238,6 +238,14 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
   const ok = (value: unknown) => ({ handled: true, value });
   switch (cmd) {
     case "code_tree": return ok(tree.filter((path) => !removed.has(path)));
+    case "code_definitions": return ok([]);
+    case "code_lint_status": return ok({ trusted: false, tools: [], servers: [] });
+    case "code_lint_trust": return ok(null);
+    case "code_lint_file": return ok([]);
+    case "lsp_sync": return ok(null);
+    case "lsp_saved": case "lsp_close": return ok(null);
+    case "lsp_complete": return ok({ items: [], incomplete: false });
+    case "lsp_definition": return ok([]);
     case "code_read":
       if (removed.has(String(args?.path))) {
         throw new Error(`error[not-found]: ${String(args?.path)} does not exist`);

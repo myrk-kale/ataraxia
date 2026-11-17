@@ -324,6 +324,9 @@ export function importVsCodeTheme(text: string, fileName = ""): CustomTheme {
     "editor.findMatchBackground": `${toHex(accent)}59`,
     "editor.findMatchHighlightBackground": `${toHex(accent)}33`,
   });
+  // A theme that says nothing about selections would get Monaco's own pale one, lost on tinted lines.
+  colors["editor.selectionBackground"] ??= `${toHex(accent)}73`;
+  colors["editor.inactiveSelectionBackground"] ??= `${toHex(accent)}4d`;
   const rules = monacoRules(tokenColors, panel);
   rules.unshift({ token: "", foreground: toHex(ink).slice(1) });
 
