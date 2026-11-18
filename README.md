@@ -204,10 +204,10 @@ Prerequisites:
 - Rust 1.85+ (`cargo` / `rustc` on `PATH`; Homebrew Rust works if rustup cannot reach `static.rust-lang.org`)
 - The Tauri system libraries for your OS:
   - **macOS:** `xcode-select --install`, and CMake (`brew install cmake`)
-  - **Debian, Ubuntu:** `sudo apt install build-essential cmake curl wget file patchelf pkg-config libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`
-  - **Fedora:** `sudo dnf install @development-tools gcc-c++ cmake openssl-devel gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel libxdo-devel patchelf`
-  - **Arch:** `sudo pacman -S --needed base-devel cmake webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg xdotool openssl patchelf`
-  - **Windows:** the Visual Studio Build Tools with the "Desktop development with C++" workload (it brings CMake), Rust with the MSVC toolchain, and WebView2 (already there on Windows 11)
+  - **Debian, Ubuntu:** `sudo apt install build-essential cmake libclang-dev curl wget file patchelf pkg-config libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`
+  - **Fedora:** `sudo dnf install @development-tools gcc-c++ cmake clang-devel openssl-devel gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel libxdo-devel patchelf`
+  - **Arch:** `sudo pacman -S --needed base-devel cmake clang webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg xdotool openssl patchelf`
+  - **Windows:** the Visual Studio Build Tools with the "Desktop development with C++" workload (it brings CMake) and LLVM (`winget install LLVM.LLVM`; whisper.cpp's bindings are generated with it), Rust with the MSVC toolchain, and WebView2 (already there on Windows 11)
 
 ```bash
 git clone https://github.com/myrk-kale/ataraxia.git

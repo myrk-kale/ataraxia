@@ -6,6 +6,3 @@ GGML_NATIVE = "OFF"
 # A `ccache` that is installed but broken (a missing library after a Homebrew upgrade) makes the
 # build of whisper.cpp abort on every file; the compiler cache is not worth that risk.
 GGML_CCACHE = "OFF"
-# The bindings that ship with whisper-rs are used as they are, so no machine that builds the app
-# needs libclang.
-WHISPER_DONT_GENERATE_BINDINGS = "1"
