@@ -18,6 +18,7 @@ use super::config::{
     ResourcePolicy, collect_skills, parse_skill, read_mcp_entries, repository_root,
     user_config_dir, validate_mcp_server,
 };
+use super::mcp_oauth;
 use crate::domain::ids::{RepositoryId, WorkspaceId};
 use crate::domain::{Error, ErrorCode, Result};
 use crate::ports::Store;
@@ -80,6 +81,8 @@ pub struct ResourceItem {
     /// What it would be if this scope said nothing, and the scope that decides that.
     pub inherited: bool,
     pub inherited_from: Option<Scope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_auth: Option<mcp_oauth::Status>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -323,7 +326,7 @@ impl ResourceManager {
             .collect();
         let mut out = ResourceList::default();
         let mut skills: BTreeMap<String, (String, Scope)> = BTreeMap::new();
-        let mut mcps: BTreeMap<String, (String, Scope)> = BTreeMap::new();
+        let mut mcps = BTreeMap::new();
         for (scope, _) in &chain {
             let dir = self.skills_dir(*scope, context.workspace_id, context.repository_id);
             if let Some(dir) = dir.ok().filter(|dir| dir.is_dir()) {
@@ -337,7 +340,7 @@ impl ResourceManager {
                 match read_mcp_entries(&file) {
                     Ok(Some((entries, _))) => {
                         for (name, config) in entries {
-                            mcps.insert(name, (mcp_summary(&config), *scope));
+                            mcps.insert(name, (config, *scope));
                         }
                     }
                     Ok(None) => {}
@@ -377,6 +380,7 @@ impl ResourceManager {
                     effective,
                     inherited,
                     inherited_from: below.map(|(scope, _)| scope),
+                    mcp_auth: None,
                 }
             };
         out.skills = skills
@@ -385,7 +389,11 @@ impl ResourceManager {
             .collect();
         out.mcps = mcps
             .into_iter()
-            .map(|(id, (text, scope))| resolve(Kind::Mcp, &id, text, scope))
+            .map(|(id, (config, scope))| {
+                let mut item = resolve(Kind::Mcp, &id, mcp_summary(&config), scope);
+                item.mcp_auth = mcp_oauth::status(&self.data_dir, &config);
+                item
+            })
             .collect();
         Ok(out)
     }
@@ -523,6 +531,16 @@ impl ResourceManager {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "this scope has no such MCP server"))
+    }
+
+    pub fn sign_in_mcp(
+        &self,
+        context: Context,
+        name: &str,
+        open_browser: impl FnOnce(&str) -> Result<()>,
+    ) -> Result<()> {
+        let config = self.read_mcp(context, name)?;
+        mcp_oauth::sign_in(&self.data_dir, &config, open_browser)
     }
 
     /// Adds or replaces an MCP server in this scope's file.

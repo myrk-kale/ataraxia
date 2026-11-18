@@ -14,6 +14,7 @@ import {
   resourcesSaveMcp,
   resourcesSaveSkill,
   resourcesSetState,
+  resourcesSignInMcp,
   type McpForm,
   type ResourceContext,
   type ResourceItem,
@@ -197,16 +198,23 @@ export function ResourcesSettings({
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-small text-cg-muted-strong">{markSummary(item)}</span>
-                {item.definedIn === shown ? (
-                  <span className="flex gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {item.mcpAuth ? (
+                    <McpSignIn
+                      item={item}
+                      context={{ ...context, scope: item.definedIn }}
+                      key={JSON.stringify([item.definedIn, item.description, context.workspaceId, context.repositoryId])}
+                    />
+                  ) : null}
+                  {item.definedIn === shown ? <>
                     <Button variant="quiet" onClick={() => setForm({ kind: item.kind, editing: item.id })}>
                       Edit
                     </Button>
                     <Button variant="quiet" onClick={() => void remove(item)}>
                       Delete
                     </Button>
-                  </span>
-                ) : null}
+                  </> : null}
+                </div>
               </div>
             </li>
           ))}
@@ -227,6 +235,39 @@ export function ResourcesSettings({
         onClose={() => setForm(null)}
         onSaved={() => void reload()}
       />
+    </div>
+  );
+}
+
+function McpSignIn({ item, context }: { item: ResourceItem; context: ResourceContext }) {
+  const [pending, setPending] = useState(false);
+  const [completed, setCompleted] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const authorized = completed || item.mcpAuth === "authorized";
+  const action = authorized ? "Sign in again" : "Sign in";
+
+  async function signIn() {
+    setPending(true);
+    setProblem(null);
+    try {
+      await resourcesSignInMcp(context, item.id);
+      setCompleted(true);
+    } catch (err) {
+      setProblem(errorText(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-small text-cg-muted-strong" role="status">
+        {pending ? "Complete sign-in in your browser" : authorized ? "Authorized for new sessions" : ""}
+      </span>
+      {problem ? <p className="text-small text-cg-red" role="alert">{problem}</p> : null}
+      <Button variant="quiet" disabled={pending} aria-label={`${action} to ${item.id}`} onClick={signIn}>
+        {action}
+      </Button>
     </div>
   );
 }

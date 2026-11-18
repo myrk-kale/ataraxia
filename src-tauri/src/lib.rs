@@ -97,6 +97,7 @@ pub fn run() {
             tauri_api::resources_save_skill,
             tauri_api::resources_delete_skill,
             tauri_api::resources_read_mcp,
+            tauri_api::resources_sign_in_mcp,
             tauri_api::resources_save_mcp,
             tauri_api::resources_delete_mcp,
             tauri_api::lsp_sync,

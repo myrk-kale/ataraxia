@@ -237,7 +237,10 @@ impl AgentConfiguration {
             root.join("agent-config")
                 .join(format!("{}.mcp.json", session_id.0))
         });
-        if let Some(path) = &mcp_config_path {
+        if let (Some(root), Some(path)) = (data_dir, &mcp_config_path) {
+            for server in servers.values_mut() {
+                super::mcp_oauth::apply(root, server);
+            }
             write_mcp_config(path, &servers)?;
         }
 
@@ -252,27 +255,27 @@ impl AgentConfiguration {
     }
 }
 
-/// Creates a clean Codex home while carrying over only its authentication file.
-pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<PathBuf> {
+/// Writes the session's Codex config while carrying over the selected account's credentials.
+pub fn prepare_isolated_home(
+    root: &Path,
+    auth_source: Option<&Path>,
+    mcp_servers: &Map<String, Value>,
+) -> Result<PathBuf> {
     prepare_private_dir(root)?;
     let codex_config = root.join("config.toml");
-    match fs::symlink_metadata(&codex_config) {
-        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {
-            return Err(Error::new(
-                ErrorCode::Io,
-                format!("{} is not a Codex config file", codex_config.display()),
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(Error::new(
-                ErrorCode::Io,
-                format!("could not inspect {}: {error}", codex_config.display()),
-            ));
-        }
-    }
-    fs::write(&codex_config, "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n").map_err(|error| {
+    let config = toml::to_string(&json!({
+        "project_doc_max_bytes": 0,
+        "features": { "apps": false, "plugins": false, "remote_plugin": false },
+        "mcp_servers": mcp_servers
+    }))
+    .map_err(|_| Error::new(ErrorCode::Invalid, "could not encode Codex configuration"))?;
+    let write_config = || -> std::io::Result<()> {
+        let mut file = tempfile::NamedTempFile::new_in(root)?;
+        file.write_all(config.as_bytes())?;
+        file.persist(&codex_config)?;
+        Ok(())
+    };
+    write_config().map_err(|error| {
         Error::new(
             ErrorCode::Io,
             format!("could not configure {}: {error}", codex_config.display()),
@@ -302,29 +305,32 @@ pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<
     }
     if let Some(source) = auth_source.filter(|source| source.is_file()) {
         link_credentials(source, &destination)?;
-        // Remote MCP servers the developer signed in to keep their OAuth tokens here when Codex
-        // stores them in a file instead of the keychain; without it they would need signing in
-        // again for every chat.
-        if let Some(store) = source
-            .parent()
-            .map(|home| home.join(".credentials.json"))
-            .filter(|store| store.is_file())
-        {
-            let target = root.join(".credentials.json");
-            match fs::symlink_metadata(&target) {
-                Ok(metadata) if !metadata.is_dir() => {
-                    let _ = fs::remove_file(&target);
-                }
-                _ => {}
-            }
-            if let Err(error) = link_credentials(&store, &target) {
-                eprintln!(
-                    "ataraxia: Codex MCP sign-ins not carried over: {}",
-                    error.message
-                );
+    }
+    // Codex refreshes file-backed MCP credentials in place and refuses to write through symlinks.
+    let oauth_target = root.join(".credentials.json");
+    let oauth_store = auth_source
+        .and_then(Path::parent)
+        .map(|home| home.join(".credentials.json"));
+    let sync_oauth = || -> std::io::Result<()> {
+        if let Some(source) = oauth_store.filter(|store| store.is_file()) {
+            let mut file = tempfile::NamedTempFile::new_in(root)?;
+            std::io::copy(&mut fs::File::open(source)?, &mut file)?;
+            file.persist(&oauth_target)?;
+        } else {
+            match fs::remove_file(&oauth_target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
         }
-    }
+        Ok(())
+    };
+    sync_oauth().map_err(|error| {
+        Error::new(
+            ErrorCode::Io,
+            format!("could not prepare Codex MCP credentials: {error}"),
+        )
+    })?;
     Ok(root.to_path_buf())
 }
 
@@ -785,21 +791,32 @@ mod tests {
         fs::write(&profile_a, "account-a").expect("write profile A");
         fs::write(&profile_b, "account-b").expect("write profile B");
 
-        prepare_isolated_home(&root.join("home"), Some(&profile_a)).expect("select profile A");
-        assert_eq!(
-            fs::read_to_string(root.join("home/config.toml")).expect("read private config"),
-            "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n"
-        );
+        let servers = Map::new();
+        let oauth = profiles.join(".credentials.json");
+        fs::write(&oauth, "{}").expect("write profile MCP credentials");
+        prepare_isolated_home(&root.join("home"), Some(&profile_a), &servers)
+            .expect("select profile A");
+        let config =
+            fs::read_to_string(root.join("home/config.toml")).expect("read private config");
+        let config: toml::Table = toml::from_str(&config).expect("parse private config");
+        assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
+        assert_eq!(config["features"]["plugins"].as_bool(), Some(false));
+        let oauth_target = root.join("home/.credentials.json");
+        assert!(fs::symlink_metadata(&oauth_target).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&oauth_target).unwrap(), "{}");
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile A"),
             "account-a"
         );
-        prepare_isolated_home(&root.join("home"), Some(&profile_b)).expect("switch to profile B");
+        fs::remove_file(oauth).expect("clear profile MCP credentials");
+        prepare_isolated_home(&root.join("home"), Some(&profile_b), &servers)
+            .expect("switch to profile B");
+        assert!(!oauth_target.exists());
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile B"),
             "account-b"
         );
-        prepare_isolated_home(&root.join("home"), None).expect("clear profile auth");
+        prepare_isolated_home(&root.join("home"), None, &servers).expect("clear profile auth");
         assert!(fs::symlink_metadata(root.join("home/auth.json")).is_err());
 
         fs::remove_dir_all(root).expect("clean temporary directory");
