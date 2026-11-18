@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-18
+
 ### Added
 
 - Tasks, a screen of your own list. Type a title and press Enter and the task exists; click its card to
