@@ -251,11 +251,15 @@ impl Engine {
     pub fn turn_started(&self, session_id: SessionId) {
         let result = (|| -> Result<()> {
             let session = self.session(session_id)?;
-            if session.kind != SessionKind::Chat {
-                return Ok(());
-            }
+            // A change delegated through BTW is the chat's work too: its edits are watched
+            // from here, and become a checkpoint of the chat that asked for them.
+            let owner = match (session.kind, session.parent_session_id) {
+                (SessionKind::Chat, _) => session.clone(),
+                (SessionKind::Delegate, Some(parent)) => self.session(parent)?,
+                _ => return Ok(()),
+            };
             // Every repository of the workspace: the agent may change any of them.
-            for target in self.session_targets(&session)? {
+            for target in self.session_targets(&owner)? {
                 let rev = match self
                     .git
                     .snapshot(&target.path, &format!("turn-base/{}", session_id.0))
@@ -302,7 +306,18 @@ impl Engine {
                     }
                 }
             }
-            SessionKind::Btw | SessionKind::Delegate => self.btw_turn_finished(session_id, ok),
+            SessionKind::Btw => self.btw_turn_finished(session_id, ok),
+            SessionKind::Delegate => {
+                if let Some(parent) = session
+                    .parent_session_id
+                    .and_then(|parent| self.session(parent).ok())
+                {
+                    if let Err(error) = self.record_checkpoint_of(&parent, session_id, turn_id) {
+                        eprintln!("ataraxia: checkpoint of a delegated change failed: {error}");
+                    }
+                }
+                self.btw_turn_finished(session_id, ok)
+            }
             _ => {}
         }
     }
@@ -315,8 +330,19 @@ impl Engine {
         session: &ChatSession,
         turn_id: &str,
     ) -> Result<()> {
+        self.record_checkpoint_of(session, session.id, turn_id)
+    }
+
+    /// Like [`Self::record_turn_checkpoint`], for the turn of `worker` (a chat, or a change it
+    /// delegated) whose changes belong to the checkpoints of `session`.
+    fn record_checkpoint_of(
+        self: &Arc<Self>,
+        session: &ChatSession,
+        worker: SessionId,
+        turn_id: &str,
+    ) -> Result<()> {
         for target in self.session_targets(session)? {
-            let key = turn_base_key(session.id, target.repository_id);
+            let key = turn_base_key(worker, target.repository_id);
             let Some(base) = self
                 .db
                 .get_preference(&key)?
@@ -326,10 +352,10 @@ impl Engine {
             };
             // A turn ends once: forget the base so a stray event cannot record it twice.
             self.db.set_preference(&key, "")?;
-            let head = match self.git.snapshot(
-                &target.path,
-                &format!("turn-head/{}/{turn_id}", session.id.0),
-            ) {
+            let head = match self
+                .git
+                .snapshot(&target.path, &format!("turn-head/{}/{turn_id}", worker.0))
+            {
                 Ok(head) => head,
                 Err(error) => {
                     eprintln!("ataraxia: could not read a repository after the turn: {error}");

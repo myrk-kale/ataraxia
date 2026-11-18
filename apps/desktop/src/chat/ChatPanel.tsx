@@ -1,4 +1,4 @@
-import { ArrowDown, ListPlus, Paperclip, Square } from "lucide-react";
+import { ArrowDown, ListPlus, Loader2, Mic, Paperclip, Square, Zap } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -70,10 +70,16 @@ import { SubagentBar } from "./SubagentBar";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { VirtualTranscript } from "./VirtualTranscript";
 import { takesBack, withTakenBack } from "./takeBack";
+import { isUpwardKey, stickAfterScroll } from "./stick";
 import { useComposerPicker } from "./useComposerPicker";
 import { useMessageQueue } from "./useMessageQueue";
 import { useSchedules } from "./useSchedules";
 import { loadDraft, saveDraft } from "./draftStore";
+import { FileLinksContext, type FileLinks } from "./fileLinks";
+import type { FileCite } from "./fileRefs";
+import { useFileIndex } from "./useFileIndex";
+import { useDictation } from "./useDictation";
+import { appendDictation } from "./wav";
 import { expandGlobMentions } from "./pickerChoices";
 import { Dialog } from "../ui/Overlay";
 
@@ -108,6 +114,8 @@ export function ChatPanel({
   onSessionChange,
   onNewSession,
   onPreviousWorkspace,
+  ownRoot = null,
+  onOpenFile,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
@@ -117,6 +125,10 @@ export function ChatPanel({
   onSessionChange: (session: ChatSession) => void;
   onNewSession?: (workspace: WorkspaceSnapshot) => void;
   onPreviousWorkspace?: () => Promise<WorkspaceSnapshot>;
+  /** The folder of the chat's own repository: absolute paths in messages are read against it. */
+  ownRoot?: string | null;
+  /** Opens a file the chat named in the editor. Without it, files named in messages are plain text. */
+  onOpenFile?: (cite: FileCite) => void;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
@@ -326,6 +338,33 @@ export function ChatPanel({
     commands: activeSubagent === null,
   });
 
+  // Dictation: what is said is turned into text on this computer and lands in the field.
+  const dictation = useDictation({
+    onText: (text) => {
+      setDraft((current) => appendDictation(current, text));
+      setAttachNotice(null);
+      composerRef.current?.focus();
+    },
+    onProblem: (message) => setAttachNotice(message),
+  });
+  const dictateRef = useRef(dictation.toggle);
+  dictateRef.current = dictation.toggle;
+  const cancelDictationRef = useRef(dictation.cancel);
+  cancelDictationRef.current = dictation.cancel;
+  useEffect(() => {
+    if (bare) {
+      return;
+    }
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.code === "KeyM" && !event.repeat) {
+        event.preventDefault();
+        dictateRef.current();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [bare]);
+
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -345,16 +384,36 @@ export function ChatPanel({
 
   const busy = state.status === "working" || state.status === "waiting-permission";
 
+  // The files a message names become links. They are read again when the agent stops, since that is
+  // when files appear.
+  const fileIndex = useFileIndex(sessionId, ownRoot, busy, Boolean(onOpenFile) && state.loaded);
+  const fileLinks = useMemo<FileLinks | null>(
+    () => (fileIndex && onOpenFile ? { index: fileIndex, open: onOpenFile } : null),
+    [fileIndex, onOpenFile],
+  );
+
+  const lastTopRef = useRef(0);
   function onScroll() {
     const element = scrollRef.current;
     if (!element) {
       return;
     }
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    const near = distance < STICK_THRESHOLD_PX;
-    stickRef.current = near;
-    setAtBottom(near);
+    const stuck = stickAfterScroll(stickRef.current, element.scrollTop, lastTopRef.current, distance);
+    lastTopRef.current = element.scrollTop;
+    stickRef.current = stuck;
+    setAtBottom(stuck || distance < STICK_THRESHOLD_PX);
   }
+
+  // The reader's hand is heard before the scroll event arrives, and a token can pin the view to
+  // the bottom in between: so what means "up" lets go of the stream right away.
+  function leaveTheStream() {
+    if (stickRef.current) {
+      stickRef.current = false;
+      setAtBottom(false);
+    }
+  }
+  const touchY = useRef(0);
 
   function jumpToLatest() {
     const element = scrollRef.current;
@@ -433,7 +492,8 @@ export function ChatPanel({
     window.setTimeout(() => release(waiting.id), 1000);
   }
 
-  async function send() {
+  /** `now` skips the line: while the agent works, the message stops it and goes next. */
+  async function send(now = false) {
     let text = draft.trim();
     const sending = activeSubagent ? [] : attachments;
     const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
@@ -596,7 +656,16 @@ export function ChatPanel({
       } else {
         // The queue takes it after what is still on its way to the agent, in order.
         await inFlight.current.catch(() => undefined);
-        setQueue(await agentEnqueue(sessionId, text, images));
+        const known = new Set(queue.items.map((item) => item.id));
+        const queued = await agentEnqueue(sessionId, text, images);
+        setQueue(queued);
+        if (now) {
+          // Sending it now is putting it in the queue and asking for it to go first.
+          const mine = queued.items.find((item) => !known.has(item.id)) ?? queued.items[queued.items.length - 1];
+          if (mine) {
+            setQueue(await agentQueueSendNow(sessionId, mine.id));
+          }
+        }
       }
     })();
     if (pendingId) {
@@ -736,11 +805,24 @@ export function ChatPanel({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      void send();
+      // Ctrl or Cmd with Enter sends at once instead of joining the queue.
+      void send((event.metaKey || event.ctrlKey) && queues);
     }
   }
 
   function onPanelKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape" && dictation.state === "recording") {
+      // Escape first throws a recording away; it never stops the agent as well.
+      event.preventDefault();
+      event.stopPropagation();
+      dictation.cancel();
+      return;
+    }
+    const target = event.target as HTMLElement;
+    const typing = target.closest("textarea, input, select, [contenteditable='true']") !== null;
+    if (!typing && isUpwardKey(event.key, event.shiftKey)) {
+      leaveTheStream();
+    }
     if (event.key !== "Escape") {
       return;
     }
@@ -791,6 +873,7 @@ export function ChatPanel({
   const emptyChat = state.loaded && state.items.length === 0 && !activeSubagent;
 
   return (
+    <FileLinksContext.Provider value={fileLinks}>
     <section className="cg-chat relative flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       {background.enabled ? (
         <div aria-hidden="true" className="pointer-events-none absolute inset-0">
@@ -798,7 +881,26 @@ export function ChatPanel({
         </div>
       ) : null}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} className="relative h-full overflow-y-auto" onScroll={onScroll}>
+        <div
+          ref={scrollRef}
+          className="relative h-full overflow-y-auto"
+          onScroll={onScroll}
+          onTouchMove={(event) => {
+            const y = event.touches[0]?.clientY ?? touchY.current;
+            if (y > touchY.current) {
+              leaveTheStream();
+            }
+            touchY.current = y;
+          }}
+          onTouchStart={(event) => {
+            touchY.current = event.touches[0]?.clientY ?? 0;
+          }}
+          onWheel={(event) => {
+            if (event.deltaY < 0) {
+              leaveTheStream();
+            }
+          }}
+        >
           <div
             className={`mx-auto flex max-w-[780px] flex-col gap-9.5 px-8 ${
               emptyChat ? "min-h-full py-6" : "pt-10 pb-20"
@@ -1134,6 +1236,42 @@ export function ChatPanel({
                   >
                     <Paperclip aria-hidden="true" size={15} />
                   </button>
+                  {dictation.supported ? (
+                    <button
+                      aria-label={
+                        dictation.state === "recording"
+                          ? "Stop recording and turn it into text"
+                          : dictation.state === "transcribing"
+                            ? "Turning your voice into text"
+                            : "Dictate"
+                      }
+                      aria-pressed={dictation.state === "recording"}
+                      className={`relative grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${
+                        dictation.state === "recording" ? "bg-cg-del-bg text-cg-del-fg" : "text-cg-muted-strong"
+                      }`}
+                      disabled={!state.loaded || dictation.state === "starting" || dictation.state === "transcribing"}
+                      title={
+                        dictation.state === "recording"
+                          ? "Stop and write what you said (Ctrl/⌘ Shift M). Esc throws it away"
+                          : "Dictate: speak, and it is written here on this computer (Ctrl/⌘ Shift M)"
+                      }
+                      type="button"
+                      onClick={dictation.toggle}
+                    >
+                      {dictation.state === "transcribing" || dictation.state === "starting" ? (
+                        <Loader2 aria-hidden="true" className="animate-spin" size={15} />
+                      ) : (
+                        <Mic aria-hidden="true" size={15} />
+                      )}
+                      {dictation.state === "recording" ? (
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-0 rounded-cg-md border border-cg-del-fg"
+                          style={{ opacity: 0.25 + dictation.loudness * 4, transform: `scale(${1 + Math.min(0.35, dictation.loudness * 3)})` }}
+                        />
+                      ) : null}
+                    </button>
+                  ) : null}
                 </>
               )}
               {bare ? null : (
@@ -1168,15 +1306,27 @@ export function ChatPanel({
                 }}
               />
               {queues ? (
-                <button
-                  className="flex h-[29px] items-center gap-1.5 rounded-cg-md border border-cg-line-strong px-2.5 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={draft.trim() === "" && attachments.length === 0}
-                  title="Add to the queue (Enter)"
-                  type="submit"
-                >
-                  <ListPlus aria-hidden="true" size={13} />
-                  Queue
-                </button>
+                <>
+                  <button
+                    className="flex h-[29px] items-center gap-1.5 rounded-cg-md border border-cg-line-strong px-2.5 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={draft.trim() === "" && attachments.length === 0}
+                    title="Stop the agent and send this message next (Ctrl/⌘ Enter)"
+                    type="button"
+                    onClick={() => void send(true)}
+                  >
+                    <Zap aria-hidden="true" size={13} />
+                    Send now
+                  </button>
+                  <button
+                    className="flex h-[29px] items-center gap-1.5 rounded-cg-md border border-cg-line-strong px-2.5 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={draft.trim() === "" && attachments.length === 0}
+                    title="Add to the queue (Enter)"
+                    type="submit"
+                  >
+                    <ListPlus aria-hidden="true" size={13} />
+                    Queue
+                  </button>
+                </>
               ) : null}
               {busy ? (
                 <button
@@ -1194,5 +1344,6 @@ export function ChatPanel({
         </div>
       </form>
     </section>
+    </FileLinksContext.Provider>
   );
 }

@@ -26,6 +26,7 @@ import { ChatPanel } from "../chat/ChatPanel";
 import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsSpace } from "../decisions/DecisionsSpace";
 import { FlowSpace } from "../flow/FlowSpace";
+import { TasksSpace } from "../tasks/TasksSpace";
 import { codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
 import { useInsightEvents } from "../lib/useInsightEvents";
 import { NewContext } from "../chat/NewContext";
@@ -37,6 +38,7 @@ import { QuietSelect } from "../ui/QuietSelect";
 import { ReferenceSelect } from "./ReferenceSelect";
 import { RepositorySelect } from "./RepositorySelect";
 import { NewBranchDialog } from "./NewBranchDialog";
+import { GoToBranchDialog } from "./GoToBranchDialog";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { McpServersDialog } from "./McpServersDialog";
 import { Tip } from "../ui/Overlay";
@@ -56,6 +58,7 @@ import {
   workspaceCheckoutRemoteBranch,
   workspaceCreateBranch,
   workspaceFetchBranches,
+  workspaceGoToBranch,
   type BranchView,
   type ProviderKind,
   type RepositoryId,
@@ -72,6 +75,7 @@ import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCom
 import { isSpaceKey, resolveShortcut } from "./shortcuts";
 import { TRAFFIC_LIGHTS_INSET, useTitlebarInset } from "./titlebar";
 import { referenceKey, resolveFileRef, selectedWorkspace } from "./workspaceView";
+import type { BranchTarget } from "./branchLink";
 import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
 import { useAppearance } from "./appearance/store";
@@ -163,6 +167,7 @@ export function AppShell() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [goToBranchOpen, setGoToBranchOpen] = useState(false);
   const [btwOpen, setBtwOpen] = useState(false);
   const [btwResume, setBtwResume] = useState<BtwTask | null>(null);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
@@ -170,7 +175,7 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The workspace dialog: a new workspace, or the one on screen.
   const [workspaceDialog, setWorkspaceDialog] = useState<"new" | "edit" | null>(null);
-  const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; n: number } | null>(null);
+  const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; endLine: number | null; n: number } | null>(null);
   // Spaces stay mounted once visited, so the open file, the selected decision and the diagram
   // are still there when you come back.
   const [visited, setVisited] = useState<ReadonlySet<SpaceId>>(new Set<SpaceId>(["chat"]));
@@ -233,7 +238,8 @@ export function AppShell() {
     setVisited((current) => (current.has(space) ? current : new Set([...current, space])));
   }, [space]);
 
-  const overlayOpen = sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen || mcpOpen;
+  const overlayOpen =
+    sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen || mcpOpen || goToBranchOpen;
   // A dialog a view opens by itself (a diagram full screen) owns the keyboard as well.
   const anOverlay = () => overlayOpen || document.querySelector("dialog[open]") !== null;
   const hasChat = workspace.sessions.some((item) => item.id === workspace.selected_session_id);
@@ -258,6 +264,13 @@ export function AppShell() {
           break;
         case "btw":
           openBtw(null);
+          break;
+        case "branch":
+          if (selectedWorktree) {
+            setGoToBranchOpen(true);
+          } else {
+            setError("Open a repository first.");
+          }
           break;
         case "artifacts":
           setArtifactsOpen((open) => !open);
@@ -314,7 +327,7 @@ export function AppShell() {
 
   // A path a chat named is the chat's own repository's, or `<repository>/<path>` for another member.
   // Opening one in another repository puts that repository in focus first.
-  async function openInCode(path: string, line: number | null) {
+  async function openInCode(path: string, line: number | null, endLine: number | null = null) {
     const target = resolveFileRef(path, selectedSession?.repository_id ?? null, members);
     if (target.repositoryId && target.repositoryId !== workspace.selected_repository_id) {
       setBusy(true);
@@ -327,9 +340,19 @@ export function AppShell() {
         setBusy(false);
       }
     }
-    setCodeRequest((current) => ({ path: target.path, line, n: (current?.n ?? 0) + 1 }));
+    setCodeRequest((current) => ({ path: target.path, line, endLine, n: (current?.n ?? 0) + 1 }));
     setSpace("code");
   }
+
+  // Files named in the chat open through a function that never changes, so messages are not
+  // drawn again each time this component is.
+  const openInCodeRef = useRef(openInCode);
+  openInCodeRef.current = openInCode;
+  const openCite = useCallback(
+    (cite: { path: string; line: number | null; endLine: number | null }) =>
+      void openInCodeRef.current(cite.path, cite.line, cite.endLine),
+    [],
+  );
 
   const selectedSession = useMemo(
     () =>
@@ -503,6 +526,15 @@ export function AppShell() {
     }
   }
 
+  async function goToBranch(target: BranchTarget) {
+    if (!worktreeId) {
+      throw new Error("Open a repository first.");
+    }
+    // A failure goes back to the dialog, which stays open and says why.
+    setWorkspace(await workspaceGoToBranch(worktreeId, target.branch, target.repository));
+    void refreshBranches();
+  }
+
   async function createBranch(name: string, base: string) {
     if (!worktreeId) {
       return;
@@ -624,7 +656,9 @@ export function AppShell() {
           contextLabel={contextLabel}
           provider={providers?.find((item) => item.kind === selectedSession.provider) ?? null}
           session={selectedSession}
+          ownRoot={workspace.worktrees.find((item) => item.id === selectedSession.worktree_id)?.path ?? null}
           onNewSession={setWorkspace}
+          onOpenFile={openCite}
           onPreviousWorkspace={workspacePreviousWorkspace}
           onSessionChange={(updated) =>
             setWorkspace((current) => ({
@@ -813,9 +847,9 @@ export function AppShell() {
               <Plus size={16} />
             </Button>
           </Tip>
-          <Tip label={multi ? "Sessions in this workspace" : "Sessions in this repository"}>
+          <Tip label="Chats, by workspace">
             <Button
-              aria-label={multi ? "Sessions in this workspace" : "Sessions in this repository"}
+              aria-label="Chats, by workspace"
               aria-pressed={sessionsOpen}
               data-sessions-toggle
               disabled={!selectedRepository}
@@ -896,6 +930,13 @@ export function AppShell() {
             </ErrorBoundary>
           </div>
         ) : null}
+        {visited.has("tasks") ? (
+          <div className={space === "tasks" ? "h-full" : "hidden"}>
+            <ErrorBoundary label="Tasks">
+              <TasksSpace active={space === "tasks"} onError={setError} />
+            </ErrorBoundary>
+          </div>
+        ) : null}
         {visited.has("decisions") ? (
           <div className={space === "decisions" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Decisions">
@@ -924,8 +965,11 @@ export function AppShell() {
         {sessionsOpen ? (
           <SessionsPanel
             selectedId={workspace.selected_session_id}
+            currentWorkspaceId={workspace.selected_workspace_id}
+            otherSessions={workspace.other_sessions ?? []}
             repositoryNames={repositoryNames}
             sessions={workspace.sessions}
+            workspaces={workspace.workspaces}
             worktrees={workspace.worktrees}
             onClose={closeSessions}
             onDelete={(id) => {
@@ -990,6 +1034,12 @@ export function AppShell() {
         isOpen={mcpOpen}
         onClose={() => setMcpOpen(false)}
         onOpenSession={openMcpSession}
+      />
+      <GoToBranchDialog
+        currentBranch={currentBranch}
+        isOpen={goToBranchOpen}
+        onClose={() => setGoToBranchOpen(false)}
+        onGo={goToBranch}
       />
       <NewBranchDialog
         currentBranch={currentBranch}

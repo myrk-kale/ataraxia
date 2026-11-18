@@ -58,8 +58,10 @@ understands Rust, TypeScript, JavaScript, Python, Go and Java. Any other file ap
 
 `Ctrl/Cmd+K` opens a bar from any screen. Ask about the component, file, decision or diagram you have
 open, and a read-only session answers on the model you choose, which starts as the one your chat is on.
-It never edits your files. It also appears among the chat's subagents, and when it finishes the main
-agent is told what you asked.
+It only reads, until you say otherwise: the pencil in the bar (or `Ctrl/Cmd+Enter` instead of `Enter`)
+lets that one question edit files, and a read-only conversation has an "Allow edits" button. What it
+changes counts as the chat's work and reaches the review queue. It also appears among the chat's
+subagents, and when it finishes the main agent is told what you asked.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/btw-dark.png">
@@ -132,6 +134,13 @@ the terminal. Settings has the rest, including a switch for the few sounds the a
     <td><img alt="Code in Catppuccin, light" src="docs/images/theme-catppuccin.png"></td>
   </tr>
 </table>
+
+Small things are one key away: `Ctrl/Cmd+Shift+B` goes to a branch from a pasted Azure DevOps link or a name
+(fetching it when the remote has it and you do not yet), `Ctrl/Cmd+Enter` sends a message at once instead of
+queueing it behind the agent, and `Ctrl/Cmd+Shift+M` dictates into the message field with a Whisper engine on
+your own computer. A file the agent names in the chat, `src/app.ts:42-50` or a markdown link, opens in the
+editor at those lines, and a Jupyter notebook opens as a notebook. The Tasks screen is a list of your own, one
+line each, numbered: say `#12` in a chat and the agent reads task 12.
 
 Everything has a shortcut: `Shift+↑/↓` changes screen, `` Ctrl/Cmd+` `` opens a terminal in the current worktree,
 `J` and `K` step through the queue, `C` comments, and `?` lists them all.

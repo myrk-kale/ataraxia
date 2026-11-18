@@ -88,6 +88,8 @@ const LANGUAGES: Record<string, string> = {
   xml: "xml",
   svg: "xml",
   dockerfile: "dockerfile",
+  // A notebook is JSON; the notebook view reads it, the editor shows the text.
+  ipynb: "json",
 };
 
 export function languageFor(path: string): string {

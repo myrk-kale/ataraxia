@@ -279,6 +279,56 @@ describe("spaces render with real data shapes", () => {
     expect(start.args).toMatchObject({ mode: "ask", authorized: false, returnPolicy: "on-completion", provider: "fake", model: null });
   });
 
+  it("BTW edits files only when the developer asks: Ctrl/Cmd+Enter, or the pencil switched on", async () => {
+    const { BtwPalette } = await import("../btw/BtwPalette");
+    const providers = [
+      { kind: "fake", display_name: "Demo", available: true, detail: null, settings: { models: [{ id: "quick", label: "Quick", efforts: [] }] } },
+    ] as never;
+    const task = { id: "t1", session_id: "h1", parent_session_id: "s1", mode: "change", status: "running" };
+    const hidden = { ...session, id: "h1", kind: "delegate", title: "BTW: fix it", parent_session_id: "s1" };
+    forced = {
+      btw_start: task,
+      btw_session: hidden,
+      agent_get_snapshot: { items: [], subagents: [], restoredCount: 0, status: "ready", pendingPermission: null },
+      schedule_list: [],
+      agent_queue: { items: [], paused: false, reason: null },
+    };
+    act(() =>
+      root.render(
+        <BtwPalette
+          isOpen
+          item={null}
+          others={[]}
+          providers={providers}
+          resume={null}
+          session={session}
+          space="chat"
+          onClose={() => undefined}
+          onError={(m) => { throw new Error(m); }}
+        />,
+      ),
+    );
+    await flush();
+    const dialog = document.body.querySelector("[role=dialog]")!;
+    const pencil = dialog.querySelector("button[aria-label='Allow BTW to edit files']") as HTMLButtonElement;
+    expect(pencil.getAttribute("aria-pressed")).toBe("false");
+    const input = dialog.querySelector("input[aria-label='Ask about what you are looking at']") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(input, "Rename the helper everywhere");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    });
+    await flush();
+    const start = calls.find((c) => c.cmd === "btw_start")!;
+    // The explicit chord is the authorization; the conversation opens to show what it does.
+    expect(start.args).toMatchObject({ mode: "change", authorized: true });
+    expect(calls.some((c) => c.cmd === "btw_session")).toBe(true);
+    expect(document.body.querySelector("[role=dialog]")?.textContent).toContain("Can edit files");
+  });
+
   it("the review queue is a flat list of components, most critical first, with no file names and no reasons", async () => {
     const { ComponentQueue } = await import("../code/FileLists");
     const review = handleInsights("code_review", { checkpointId: null }, () => undefined).value as { priority: never };

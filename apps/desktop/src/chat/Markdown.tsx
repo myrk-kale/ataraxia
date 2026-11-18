@@ -1,10 +1,12 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { isValidElement, memo, useRef, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import { isValidElement, memo, useMemo, useRef, type ReactNode } from "react";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "./CopyButton";
 import { codeText, languageOf, tableCopy } from "./markdownCopy";
 import { Mermaid } from "./Mermaid";
+import { readFileHref, remarkFileLinks, useFileLinks, type FileLinks } from "./fileLinks";
+import { resolveCite } from "./fileRefs";
 
 /** A table, with a button that copies it as cells (tab separated, and as a table where HTML is taken). */
 function CopyableTable({ children }: { children: ReactNode }) {
@@ -47,19 +49,61 @@ function openExternal(href: string | undefined) {
   }
 }
 
-const components: Components = {
-  a: ({ href, children }) => (
-    <a
-      className="cursor-pointer text-cg-accent underline underline-offset-2"
-      href={href}
+/** A link to a file of the chat: it opens in the editor, at the lines it names. */
+function FileLink({ href, children }: { href: string | undefined; children: ReactNode }) {
+  const links = useFileLinks();
+  // What the writer put in the link, when it is not one the app made: a path, with or without lines.
+  const cite = readFileHref(href) ?? (links && href ? resolveCite(links.index, safeDecode(href)) : null);
+  if (!cite || !links) {
+    return <>{children}</>;
+  }
+  const open = () => links.open(cite);
+  return (
+    <span
+      className="cursor-pointer text-cg-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"
+      role="link"
+      tabIndex={0}
+      title={`Open ${cite.path}${cite.line ? `:${cite.line}${cite.endLine ? `-${cite.endLine}` : ""}` : ""} in the editor`}
       onClick={(event) => {
         event.preventDefault();
-        openExternal(href);
+        open();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
       }}
     >
       {children}
-    </a>
-  ),
+    </span>
+  );
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+const components: Components = {
+  a: ({ href, children }) =>
+    href && /^(?:https?:|mailto:)/i.test(href) ? (
+      <a
+        className="cursor-pointer text-cg-accent underline underline-offset-2"
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          openExternal(href);
+        }}
+      >
+        {children}
+      </a>
+    ) : (
+      <FileLink href={href}>{children}</FileLink>
+    ),
   p: ({ children }) => <p className="my-3.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc pl-6">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal pl-6">{children}</ol>,
@@ -88,11 +132,24 @@ const components: Components = {
   ),
 };
 
-/** Parsing is the costly part, so a message is parsed again only when its text changes. */
+/**
+ * Links are kept as written: what is not a web link only ever opens a file of the chat, or nothing.
+ * Anything that is fetched (an image's source) still goes through the usual filter.
+ */
+const keepUrl = (url: string, key: string) => (key === "href" ? url : defaultUrlTransform(url));
+
+/** Parsing is the costly part, so a message is parsed again only when its text or the files it can name change. */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
+  const links = useFileLinks();
+  const plugins = useMemo(
+    () => (links ? [remarkGfm, remarkFileLinks(links.index)] : [remarkGfm]),
+    [links],
+  );
   return (
-    <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>
+    <ReactMarkdown components={components} remarkPlugins={plugins} urlTransform={keepUrl}>
       {text}
     </ReactMarkdown>
   );
 });
+
+export type { FileLinks };

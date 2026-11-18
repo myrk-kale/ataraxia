@@ -48,8 +48,13 @@ pub struct WorkspaceSnapshot {
     /// The worktrees of every repository of the selected workspace, the one in focus first.
     pub worktrees: Vec<Worktree>,
     pub selected_worktree_id: Option<WorktreeId>,
+    /// The chats of the selected workspace. A chat belongs to its workspace, whichever of its
+    /// repositories it started in.
     pub sessions: Vec<ChatSession>,
     pub selected_session_id: Option<SessionId>,
+    /// The chats of every other workspace, so the list can show them all, grouped by workspace.
+    #[serde(default)]
+    pub other_sessions: Vec<ChatSession>,
 }
 
 /// A branch as the selector shows it.
@@ -134,6 +139,29 @@ pub fn known_files(
     Ok(known)
 }
 
+/// A branch name as git knows it, from what a person pasted: `refs/heads/` and `refs/remotes/`
+/// prefixes and stray whitespace or quotes go. `origin/x` stays as it is (it names a remote branch).
+pub fn clean_branch_name(input: &str) -> Result<String> {
+    let name = input
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    let name = name
+        .strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name)
+        .trim();
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(Error::new(
+            ErrorCode::Invalid,
+            format!("`{}` is not a branch name", input.trim()),
+        ));
+    }
+    Ok(name.to_string())
+}
+
 pub struct WorkspaceService<'a> {
     pub git: &'a dyn Git,
     pub store: &'a dyn Store,
@@ -209,6 +237,13 @@ impl<'a> WorkspaceService<'a> {
                 (Vec::new(), Vec::new(), None, None)
             };
 
+        let mut other_sessions = Vec::new();
+        for other in &workspaces {
+            if Some(other.id) != selected_workspace_id {
+                other_sessions.extend(self.store.list_workspace_sessions(other.id)?);
+            }
+        }
+
         Ok(WorkspaceSnapshot {
             repositories,
             workspaces,
@@ -218,6 +253,7 @@ impl<'a> WorkspaceService<'a> {
             selected_worktree_id,
             sessions,
             selected_session_id,
+            other_sessions,
         })
     }
 
@@ -708,6 +744,98 @@ impl<'a> WorkspaceService<'a> {
             return self.select_branch(worktree_id, local);
         }
         self.create_branch(worktree_id, local, remote)
+    }
+
+    /// Goes to a branch by its name, whichever way it is found: a local branch is switched to, a
+    /// branch only the remote has is checked out as a local one that tracks it, and one the remote
+    /// has not told us about yet is fetched for first. `repository` is the name of the repository
+    /// the branch is in when it is known (an Azure DevOps link names it): in a workspace of several,
+    /// that member is switched, not the one in focus.
+    pub fn go_to_branch(
+        &self,
+        worktree_id: WorktreeId,
+        name: &str,
+        repository: Option<&str>,
+    ) -> Result<WorkspaceSnapshot> {
+        let wanted = clean_branch_name(name)?;
+        let worktree_id = self.worktree_for_repository_named(worktree_id, repository)?;
+        let (_, worktree) = self.worktree_of(worktree_id)?;
+        let local_exists = |this: &Self| -> Result<bool> {
+            Ok(this
+                .git
+                .list_branches(&worktree.path)?
+                .iter()
+                .any(|branch| branch.name == wanted))
+        };
+        if local_exists(self)? {
+            return self.select_branch(worktree_id, &wanted);
+        }
+        let remote_of = |this: &Self| -> Option<String> {
+            let remotes = this.git.list_remote_branches(&worktree.path).ok()?;
+            remotes
+                .iter()
+                .find(|remote| **remote == wanted)
+                .or_else(|| {
+                    remotes.iter().find(|remote| {
+                        remote
+                            .split_once('/')
+                            .is_some_and(|(_, local)| local == wanted)
+                    })
+                })
+                .cloned()
+        };
+        if let Some(remote) = remote_of(self) {
+            return self.checkout_remote_branch(worktree_id, &remote);
+        }
+        // Not known yet: it may be new on the remote.
+        let fetched = self.git.fetch(&worktree.path);
+        if local_exists(self)? {
+            return self.select_branch(worktree_id, &wanted);
+        }
+        if let Some(remote) = remote_of(self) {
+            return self.checkout_remote_branch(worktree_id, &remote);
+        }
+        Err(Error::new(
+            ErrorCode::NotFound,
+            match fetched {
+                Ok(()) => format!("there is no branch `{wanted}`, here or on the remote"),
+                Err(error) => format!(
+                    "there is no branch `{wanted}` here, and the remote could not be fetched: {}",
+                    error.message
+                ),
+            },
+        ))
+    }
+
+    /// The worktree to switch: the one given, or, when `repository` names another member of its
+    /// workspace, the checkout of that member the app would show.
+    fn worktree_for_repository_named(
+        &self,
+        worktree_id: WorktreeId,
+        repository: Option<&str>,
+    ) -> Result<WorktreeId> {
+        let Some(wanted) = repository.map(str::trim).filter(|name| !name.is_empty()) else {
+            return Ok(worktree_id);
+        };
+        let (current, _) = self.worktree_of(worktree_id)?;
+        if current.name.eq_ignore_ascii_case(wanted) {
+            return Ok(worktree_id);
+        }
+        let Some(workspace) = self.workspace_for(current.id)? else {
+            return Ok(worktree_id);
+        };
+        for member in &workspace.repository_ids {
+            let Some(member) = self.store.get_repository(*member)? else {
+                continue;
+            };
+            if member.name.eq_ignore_ascii_case(wanted) {
+                let _ = self.sync_worktrees(member.id, &member.root, &now_rfc3339()?);
+                if let Some(found) = self.default_worktree(&member)? {
+                    return Ok(found.id);
+                }
+            }
+        }
+        Ok(worktree_id)
     }
 
     /// Makes a branch that starts at `base` (a branch, remote branch, tag or commit) and moves
@@ -1416,6 +1544,15 @@ mod tests {
             (back.selected_workspace_id, back.selected_session_id),
             (Some(one_id), Some(one_chat))
         );
+        // The chats of the other workspace are listed too, to be grouped by workspace.
+        assert_eq!(back.sessions.len(), 1);
+        assert_eq!(
+            back.other_sessions
+                .iter()
+                .map(|item| (item.id, item.workspace_id))
+                .collect::<Vec<_>>(),
+            vec![(two_chat, Some(two_id))]
+        );
         let forward = service.previous_workspace().unwrap();
         assert_eq!(
             (forward.selected_workspace_id, forward.selected_session_id),
@@ -1733,6 +1870,80 @@ mod tests {
             assert!(again.branches.iter().any(|b| b.name == "made-later"));
             let _ = other;
             let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+        }
+
+        #[test]
+        fn a_branch_is_reached_by_name_local_remote_or_new_on_the_remote() {
+            let (repo, _other, store) = setup();
+            let base = repo.parent().unwrap().to_path_buf();
+            let origin = base.join("origin.git");
+            git(&base, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+            git(
+                &repo,
+                &["remote", "add", "origin", origin.to_str().unwrap()],
+            );
+            git(&repo, &["push", "-q", "origin", "main", "feature/a"]);
+            // Another clone publishes a branch this one has never heard of.
+            let clone = base.join("clone");
+            git(
+                &base,
+                &[
+                    "clone",
+                    "-q",
+                    origin.to_str().unwrap(),
+                    clone.to_str().unwrap(),
+                ],
+            );
+            git(&clone, &["config", "user.email", "a@b.c"]);
+            git(&clone, &["config", "user.name", "t"]);
+            git(&clone, &["config", "commit.gpgsign", "false"]);
+            git(&clone, &["checkout", "-q", "-b", "from-azure"]);
+            std::fs::write(clone.join("b.txt"), "new\n").unwrap();
+            git(&clone, &["add", "."]);
+            git(&clone, &["commit", "-q", "-m", "work"]);
+            git(&clone, &["push", "-q", "origin", "from-azure"]);
+
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            let id = service
+                .open_repository(&repo)
+                .unwrap()
+                .selected_worktree_id
+                .unwrap();
+
+            // A local branch, written the way a ref is.
+            service
+                .go_to_branch(id, " refs/heads/feature/a ", None)
+                .unwrap();
+            assert_eq!(head_name(&repo), "feature/a");
+            // One only the remote has: fetched for, then checked out tracking it.
+            service
+                .go_to_branch(id, "from-azure", Some("repo"))
+                .unwrap();
+            assert_eq!(head_name(&repo), "from-azure");
+            assert!(repo.join("b.txt").exists());
+            // Naming it as a remote branch works too, and one nobody has is a plain error.
+            service.go_to_branch(id, "main", None).unwrap();
+            service.go_to_branch(id, "origin/from-azure", None).unwrap();
+            assert_eq!(head_name(&repo), "from-azure");
+            let error = service.go_to_branch(id, "nope/never", None).unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotFound);
+            assert!(service.go_to_branch(id, "  ", None).is_err());
+            let _ = std::fs::remove_dir_all(base);
+        }
+
+        #[test]
+        fn pasted_branch_names_are_cleaned_and_odd_ones_refused() {
+            assert_eq!(
+                clean_branch_name(" refs/heads/feature/x ").unwrap(),
+                "feature/x"
+            );
+            assert_eq!(clean_branch_name("\"origin/main\"").unwrap(), "origin/main");
+            assert!(clean_branch_name("two words").is_err());
+            assert!(clean_branch_name("--force").is_err());
+            assert!(clean_branch_name("").is_err());
         }
 
         #[test]

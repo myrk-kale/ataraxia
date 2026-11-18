@@ -6,6 +6,7 @@ import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
 import { ProfileSettings } from "./ProfileSettings";
 import { AutocompletePanel } from "./AutocompleteSettings";
+import { VoicePanel } from "./VoiceSettings";
 import { ResourcesSettings } from "./ResourcesSettings";
 import type { RepositoryId, WorkspaceId } from "../lib/workspace";
 
@@ -14,6 +15,7 @@ const TABS = [
   { id: "profiles", label: "Agent profiles" },
   { id: "resources", label: "Skills & MCP" },
   { id: "autocomplete", label: "Autocomplete" },
+  { id: "voice", label: "Voice" },
   { id: "sound", label: "Sound" },
   { id: "privacy", label: "Privacy" },
 ] as const;
@@ -102,6 +104,8 @@ export function SettingsDialog({
 
             {tab === "autocomplete" ? <AutocompletePanel /> : null}
 
+            {tab === "voice" ? <VoicePanel /> : null}
+
             {tab === "sound" ? (
               <>
                 <SettingRow
@@ -146,7 +150,7 @@ export function SettingsDialog({
                   <>
                     The review queue is computed on this machine from the syntax tree and git. Decisions, diagrams and BTW
                     questions run only when you start them, on the provider you pick
-                    {provider ? ` (this chat uses ${PROVIDER_LABELS[provider]})` : ""}, and that provider then receives the diff.
+                    {provider ? ` (this chat uses ${PROVIDER_LABELS[provider]})` : ""}, and that provider then receives the diff. Dictation runs on this computer, and the recording is deleted once it is text.
                   </>
                 }
                 title="Nothing is sent by itself"

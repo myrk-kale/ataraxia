@@ -1,11 +1,15 @@
 import { Check, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
-import type { ChatSession, RepositoryId, SessionId, Worktree } from "../lib/workspace";
+import type { ChatSession, RepositoryId, SessionId, Workspace, WorkspaceId, Worktree } from "../lib/workspace";
 
-function worktreeLabel(worktree: Worktree | undefined, repositoryNames: Record<RepositoryId, string> | undefined): string {
+/** Where a chat runs, for its second line: the repository (when the workspace has several) and the branch. */
+export function placeLabel(
+  worktree: Worktree | undefined,
+  repositoryNames: Record<RepositoryId, string> | undefined,
+): string | null {
   if (!worktree) {
-    return "unknown worktree";
+    return null;
   }
   const parts = worktree.path.split(/[/\\]/).filter(Boolean);
   const place = worktree.branch ?? parts.slice(-2).join("/");
@@ -13,8 +17,32 @@ function worktreeLabel(worktree: Worktree | undefined, repositoryNames: Record<R
   return repository ? `${repository} · ${place}` : place;
 }
 
+/**
+ * The chats, grouped by workspace: the one on screen first, then each other, in the order the
+ * workspaces are listed. A workspace with no chats is not shown, except the one on screen.
+ */
+export function groupByWorkspace(
+  workspaces: readonly Workspace[],
+  currentId: WorkspaceId | null,
+  current: readonly ChatSession[],
+  others: readonly ChatSession[],
+): { workspace: Workspace; sessions: ChatSession[]; current: boolean }[] {
+  const groups: { workspace: Workspace; sessions: ChatSession[]; current: boolean }[] = [];
+  for (const workspace of workspaces) {
+    const isCurrent = workspace.id === currentId;
+    const sessions = isCurrent ? [...current] : others.filter((item) => item.workspace_id === workspace.id);
+    if (isCurrent || sessions.length > 0) {
+      groups.push({ workspace, sessions, current: isCurrent });
+    }
+  }
+  return groups.sort((a, b) => Number(b.current) - Number(a.current));
+}
+
 export function SessionsPanel({
   sessions,
+  otherSessions = [],
+  workspaces = [],
+  currentWorkspaceId = null,
   worktrees,
   repositoryNames,
   selectedId,
@@ -22,7 +50,12 @@ export function SessionsPanel({
   onDelete,
   onClose,
 }: {
+  /** The chats of the workspace on screen. */
   sessions: ChatSession[];
+  /** The chats of every other workspace. Choosing one moves to its workspace. */
+  otherSessions?: ChatSession[];
+  workspaces?: Workspace[];
+  currentWorkspaceId?: WorkspaceId | null;
   worktrees: Worktree[];
   /** Names of the repositories, given when the workspace has more than one: each group then says which. */
   repositoryNames?: Record<RepositoryId, string>;
@@ -68,7 +101,7 @@ export function SessionsPanel({
     };
   }, [onClose]);
 
-  const groups = [...new Set(sessions.map((session) => session.worktree_id))];
+  const groups = groupByWorkspace(workspaces, currentWorkspaceId, sessions, otherSessions);
 
   return (
     <aside
@@ -88,18 +121,19 @@ export function SessionsPanel({
         </button>
       </div>
       <div className="overflow-auto px-2.5 pt-3.5 pb-5">
-        {sessions.length === 0 ? (
-          <p className="px-4 py-7 text-center text-ui text-cg-muted">
-            {repositoryNames ? "No sessions in this workspace yet." : "No sessions in this repository yet."}
-          </p>
+        {groups.length === 0 ? (
+          <p className="px-4 py-7 text-center text-ui text-cg-muted">No chats yet.</p>
         ) : (
-          groups.map((worktreeId) => (
-            <div key={worktreeId} className="mb-4">
-              <div className="mx-3 mt-2 mb-2.5 font-mono text-small text-cg-muted">
-                {worktreeLabel(worktrees.find((item) => item.id === worktreeId), repositoryNames)}
+          groups.map((group) => (
+            <div key={group.workspace.id} className="mb-4">
+              <div className="mx-3 mt-2 mb-2.5 flex items-baseline justify-between gap-2 text-small text-cg-muted">
+                <span className="truncate font-semibold text-cg-muted-strong">{group.workspace.name}</span>
+                {group.current ? <span className="flex-none">this workspace</span> : null}
               </div>
-              {sessions
-                .filter((session) => session.worktree_id === worktreeId)
+              {group.sessions.length === 0 ? (
+                <p className="px-3 py-2 text-small text-cg-muted">No chats in this workspace yet.</p>
+              ) : null}
+              {group.sessions
                 .map((session) => {
                   const selected = session.id === selectedId;
                   const asking = confirming === session.id;
@@ -128,7 +162,12 @@ export function SessionsPanel({
                           <small className="mt-1.5 block text-small text-cg-muted">
                             {asking
                               ? "Its messages, decisions and diagrams are deleted. The code is not touched."
-                              : PROVIDER_LABELS[session.provider]}
+                              : [
+                                  PROVIDER_LABELS[session.provider],
+                                  group.current ? placeLabel(worktrees.find((item) => item.id === session.worktree_id), repositoryNames) : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
                           </small>
                         </span>
                       </button>

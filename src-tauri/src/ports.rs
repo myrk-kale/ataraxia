@@ -13,8 +13,8 @@ use crate::domain::ids::{
 };
 use crate::domain::{
     AgentEvent, ChatItem, ChatSession, ChatSnapshot, Error, ErrorCode, ImageUpload,
-    PermissionDecision, ProviderUsage, RepoInfo, Repository, Result, SessionStatus, Workspace,
-    Worktree, WorktreeInfo,
+    PermissionDecision, ProviderUsage, RepoInfo, Repository, Result, SessionKind, SessionStatus,
+    Task, TaskPatch, Workspace, Worktree, WorktreeInfo,
 };
 
 /// What an agent process needs to reach Ataraxia's local API: the address and its own token.
@@ -430,6 +430,13 @@ pub trait Store: Send + Sync {
         agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()>;
+    /// Changes what a hidden session is for (a read-only BTW becomes a delegated change).
+    fn update_session_kind(&self, _id: SessionId, _kind: SessionKind, _now: &str) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this store cannot change what a session is for",
+        ))
+    }
     /// The harness's own id of the conversation this chat keeps, if it has one to pick up.
     fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>>;
     /// Remembers that conversation; `None` makes the next start begin a new one.
@@ -464,6 +471,28 @@ pub trait Store: Send + Sync {
     }
     /// Forgets one scope, or all of them.
     fn autocomplete_clear(&self, _scope: Option<&str>) -> Result<()> {
+        Ok(())
+    }
+
+    /// The developer's tasks, newest first.
+    fn tasks_list(&self) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+    fn task_get(&self, _number: i64) -> Result<Option<Task>> {
+        Ok(None)
+    }
+    /// Adds a task with the next number; the title is already clean.
+    fn task_create(&self, _title: &str, _now: &str) -> Result<Task> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "tasks are not available here",
+        ))
+    }
+    /// Applies a patch with clean values; `None` when no task has that number.
+    fn task_update(&self, _number: i64, _patch: &TaskPatch, _now: &str) -> Result<Option<Task>> {
+        Ok(None)
+    }
+    fn task_delete(&self, _number: i64) -> Result<()> {
         Ok(())
     }
 }
