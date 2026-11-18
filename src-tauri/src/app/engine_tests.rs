@@ -635,6 +635,54 @@ fn btw_is_read_only_by_default_and_queues_each_reply_for_the_main_chat() {
 }
 
 #[test]
+fn a_read_only_btw_can_be_allowed_to_edit_and_keeps_its_conversation() {
+    let w = world();
+    let context = BtwContext {
+        space: "chat".into(),
+        item: None,
+        active: Vec::new(),
+    };
+    let task = w
+        .engine
+        .btw_start(
+            w.session.id,
+            BtwMode::Ask,
+            "Why is this slow?",
+            &context,
+            ReturnPolicy::OnCompletion,
+            false,
+        )
+        .unwrap();
+    wait_for("btw answer", || {
+        let task = w.db.get_btw_task(task.id).unwrap().unwrap();
+        (task.status == ArtifactStatus::Ready).then_some(task)
+    });
+    let hidden = w.engine.btw_session(task.id).unwrap();
+    assert_eq!(hidden.kind, SessionKind::Btw);
+
+    let allowed = w.engine.btw_allow_edits(task.id).unwrap();
+    assert_eq!(
+        (allowed.id, allowed.kind),
+        (hidden.id, SessionKind::Delegate)
+    );
+    assert_eq!(
+        w.db.get_session(hidden.id).unwrap().unwrap().kind,
+        SessionKind::Delegate
+    );
+    // Asking again is harmless, and a chat that is not a BTW is refused.
+    assert_eq!(
+        w.engine.btw_allow_edits(task.id).unwrap().kind,
+        SessionKind::Delegate
+    );
+    assert!(
+        w.engine
+            .btw_allow_edits(crate::domain::BtwTaskId::new())
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn btw_does_what_it_was_asked_in_ataraxia_and_the_main_agent_hears_what_was_done() {
     let w = world();
     std::fs::write(

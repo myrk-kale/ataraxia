@@ -11,6 +11,7 @@ pub mod queue;
 pub mod repo;
 pub mod schedule;
 pub mod session;
+pub mod task;
 pub mod time;
 pub mod usage;
 
@@ -32,4 +33,5 @@ pub use queue::{MessageQueue, QueuedMessage};
 pub use repo::{BranchInfo, RepoInfo, Repository, Workspace, Worktree, WorktreeInfo};
 pub use schedule::{SCHEDULED_PREFIX, Schedule};
 pub use session::{ChatSession, SessionKind, SessionStatus};
+pub use task::{Task, TaskPatch, TaskStatus};
 pub use usage::{ProviderUsage, UsageWindow, UsageWindowKind};

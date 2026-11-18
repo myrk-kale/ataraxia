@@ -128,6 +128,8 @@ pub enum Endpoint {
     AddSchedule,
     CancelSchedule,
     PauseQueue,
+    ListTasks,
+    GetTask,
 }
 
 pub struct Route {
@@ -267,6 +269,22 @@ pub const ROUTES: &[Route] = &[
         status: 200,
         description: "Hold the developer's message queue because something you were asked to do is left undone (a blocker, a step you could not finish, a question that stops the work). The queue is held when your turn ends and stays held until the developer acts, so the next queued message does not run on top of the problem. Body: reason? (one short sentence of what is pending). Do not call it when the work is done.",
         write: true,
+    },
+    Route {
+        endpoint: Endpoint::ListTasks,
+        method: "GET",
+        path: "/v1/tasks",
+        status: 200,
+        description: "List the developer's own tasks, newest first, each with its number, title, notes and status (draft, ready for development, or done). Query: status=draft|ready|done. The developer names a task by its number (\"#12\"); read it with GET /v1/tasks/12.",
+        write: false,
+    },
+    Route {
+        endpoint: Endpoint::GetTask,
+        method: "GET",
+        path: "/v1/tasks/{number}",
+        status: 200,
+        description: "Read one of the developer's tasks by its number (the 12 of \"#12\"): title, notes and status.",
+        write: false,
     },
 ];
 
@@ -662,6 +680,34 @@ impl ApiService {
                 let id = arg_str(args, "schedule_id");
                 self.scheduler()?.cancel(session, &id)?;
                 Ok(json!({ "cancelled": id }))
+            }
+            Endpoint::ListTasks => {
+                let status = match args.get("status").and_then(Value::as_str) {
+                    None => None,
+                    Some(status) => {
+                        Some(crate::domain::TaskStatus::parse(status).ok_or_else(|| {
+                            ApiError::invalid("`status` must be draft, ready or done")
+                        })?)
+                    }
+                };
+                let tasks = self.db.tasks_list()?;
+                Ok(json!(
+                    tasks
+                        .into_iter()
+                        .filter(|task| status.is_none_or(|wanted| task.status == wanted))
+                        .collect::<Vec<_>>()
+                ))
+            }
+            Endpoint::GetTask => {
+                let number = arg_str(args, "number")
+                    .trim_start_matches('#')
+                    .parse::<i64>()
+                    .map_err(|_| ApiError::invalid("`number` must be a task number, like 12"))?;
+                let task = self
+                    .db
+                    .task_get(number)?
+                    .ok_or_else(|| not_found("task not found"))?;
+                Ok(json!(task))
             }
             Endpoint::PauseQueue => {
                 let session = self.session_arg(args)?;
@@ -2461,7 +2507,7 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body["version"], 1);
         let endpoints = answer.body["endpoints"].as_array().unwrap();
-        assert_eq!(endpoints.len(), 14);
+        assert_eq!(endpoints.len(), 16);
         assert!(
             endpoints
                 .iter()
@@ -2488,6 +2534,58 @@ mod tests {
         assert!(has("POST", "/v1/comments", true));
         assert!(has("PUT", "/v1/priority", true));
         assert!(has("POST", "/v1/flows", true));
+        assert!(has("GET", "/v1/tasks", false));
+        assert!(has("GET", "/v1/tasks/{number}", false));
+    }
+
+    #[test]
+    fn the_agent_reads_the_developers_tasks_by_number_even_with_a_read_only_token() {
+        let (db, a, ..) = seeded();
+        let first = crate::app::tasks::create(db.as_ref(), "ship the thing").unwrap();
+        let second = crate::app::tasks::create(db.as_ref(), "write the docs").unwrap();
+        crate::app::tasks::update(
+            db.as_ref(),
+            second.number,
+            crate::domain::TaskPatch {
+                status: Some(crate::domain::TaskStatus::Ready),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let server = start(&db);
+        let token = server.issue_token(a, false).token;
+
+        let all = req("GET", "/v1/tasks", Some(&token)).go(&server);
+        assert_eq!(all.status, 200);
+        let numbers: Vec<i64> = all
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["number"].as_i64().unwrap())
+            .collect();
+        assert_eq!(numbers, vec![second.number, first.number]);
+
+        let ready = req("GET", "/v1/tasks?status=ready", Some(&token)).go(&server);
+        assert_eq!(ready.body.as_array().unwrap().len(), 1);
+        assert_eq!(ready.body[0]["status"], "ready");
+
+        let one = req("GET", "/v1/tasks/1", Some(&token)).go(&server);
+        assert_eq!(one.body["title"], "ship the thing");
+        assert_eq!(
+            req("GET", "/v1/tasks/99", Some(&token)).go(&server).status,
+            404
+        );
+        assert_eq!(
+            req("GET", "/v1/tasks/abc", Some(&token)).go(&server).status,
+            400
+        );
+        assert_eq!(
+            req("GET", "/v1/tasks?status=soon", Some(&token))
+                .go(&server)
+                .status,
+            400
+        );
     }
 
     #[test]

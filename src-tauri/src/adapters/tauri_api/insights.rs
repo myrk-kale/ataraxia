@@ -398,6 +398,12 @@ pub fn btw_list(state: tauri::State<'_, AppState>, session_id: SessionId) -> Res
     state.engine.btw_tasks(session_id).map_err(map_error)
 }
 
+/// Lets a read-only BTW conversation edit files from now on.
+#[tauri::command(async)]
+pub fn btw_allow_edits(state: tauri::State<'_, AppState>, task_id: BtwTaskId) -> Res<ChatSession> {
+    state.engine.btw_allow_edits(task_id).map_err(map_error)
+}
+
 #[tauri::command(async)]
 pub fn btw_session(state: tauri::State<'_, AppState>, task_id: BtwTaskId) -> Res<ChatSession> {
     state.engine.btw_session(task_id).map_err(map_error)

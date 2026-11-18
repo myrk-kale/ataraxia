@@ -24,6 +24,8 @@ export type EditorHandle = {
   /** First line in view, to keep your place when the text underneath is swapped. */
   topLine: () => number;
   reveal: (line: number) => void;
+  /** Brings lines into view and marks them for a moment, to say where a link pointed. */
+  showLines: (start: number, end: number | null) => void;
   focus: () => void;
   value: () => string;
   selection: () => EditorSelection | null;
@@ -134,6 +136,20 @@ export function MonacoEditor({
     () => ({
       topLine: () => editorRef.current?.getVisibleRanges()[0]?.startLineNumber ?? 1,
       reveal: (line) => editorRef.current?.revealLineNearTop(Math.max(1, line)),
+      showLines: (start, end) => {
+        const editor = editorRef.current;
+        const model = editor?.getModel();
+        if (!editor || !model) {
+          return;
+        }
+        const first = Math.min(Math.max(1, start), model.getLineCount());
+        const last = Math.min(Math.max(first, end ?? first), model.getLineCount());
+        editor.revealLinesNearTop(Math.max(1, first - 3), last);
+        const marks = editor.createDecorationsCollection([
+          { range: new (monacoRef.current!.Range)(first, 1, last, 1), options: { isWholeLine: true, className: "cg-cited-lines" } },
+        ]);
+        window.setTimeout(() => marks.clear(), 2800);
+      },
       focus: () => editorRef.current?.focus(),
       value: () => editorRef.current?.getValue() ?? "",
       selection: () => {

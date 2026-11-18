@@ -467,6 +467,8 @@ export const btwStart = (
   invoke<BtwTask>("btw_start", { sessionId, mode, question, context, returnPolicy, authorized, provider, model });
 export const btwList = (sessionId: SessionId) => invoke<BtwTask[]>("btw_list", { sessionId });
 export const btwSession = (taskId: BtwTaskId) => invoke<ChatSession>("btw_session", { taskId });
+/** Lets a read-only BTW conversation edit files from now on; it picks its conversation up where it was. */
+export const btwAllowEdits = (taskId: BtwTaskId) => invoke<ChatSession>("btw_allow_edits", { taskId });
 export const sessionGet = (sessionId: SessionId) => invoke<ChatSession>("session_get", { sessionId });
 
 // flow

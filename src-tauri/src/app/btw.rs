@@ -423,6 +423,45 @@ impl Engine {
         self.db.list_btw_tasks(parent)
     }
 
+    /// Lets a read-only BTW conversation edit files from now on. It is the developer's explicit
+    /// act (a button), so it counts as the authorization a delegated change needs. The agent
+    /// restarts with write access and picks its conversation up where it was.
+    pub fn btw_allow_edits(&self, task_id: BtwTaskId) -> Result<ChatSession> {
+        let task = self
+            .db
+            .get_btw_task(task_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "BTW task not found"))?;
+        let session = self.session(task.session_id)?;
+        match session.kind {
+            SessionKind::Delegate => return Ok(session),
+            SessionKind::Btw => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "that is not a BTW conversation",
+                ));
+            }
+        }
+        if self.runtime.status(&session.id).is_ok_and(|status| {
+            matches!(
+                status,
+                crate::domain::SessionStatus::Working
+                    | crate::domain::SessionStatus::WaitingPermission
+            )
+        }) {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "wait for the answer to finish before allowing edits",
+            ));
+        }
+        self.db
+            .update_session_kind(session.id, SessionKind::Delegate, &self.now())?;
+        let updated = self.session(session.id)?;
+        self.runtime.stop_session(&updated.id);
+        self.runtime.start_session(&updated)?;
+        Ok(updated)
+    }
+
     pub fn btw_session(&self, task_id: BtwTaskId) -> Result<ChatSession> {
         let task = self
             .db

@@ -6,6 +6,43 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Tasks, a screen of your own list. Type a title and press Enter and the task exists; click its card to
+  add notes, mark it ready for development, tick it done or delete it. Every task has a number that is
+  never reused: say `#12` in a chat and the agent fetches task 12 from Ataraxia's API (`GET /v1/tasks/12`,
+  or `GET /v1/tasks?status=ready`), which every agent is told about and the guide explains.
+- Go to a branch from a link: `Ctrl/Cmd+Shift+B` takes a pasted Azure DevOps link (or a GitHub or GitLab
+  one), a branch name, a ref or a `git checkout` line, finds the branch here or on the remote, fetching
+  when it must, and switches to it, in the repository of the workspace the link names.
+- `Ctrl/Cmd+Enter` sends a message at once instead of queueing it: the agent stops and the message goes
+  first. A Send now button sits beside Queue while the agent works.
+- Dictation: a microphone button (and `Ctrl/Cmd+Shift+M`) records, turns what you said into text on this
+  computer with a Whisper engine (`whisper-cli`, `mlx_whisper` or `whisper`, always the turbo model, or a
+  command of your own in Settings > Voice) and writes it into the message field. Nothing is sent anywhere.
+- Files named in the chat are links: `src/app.ts`, `app.ts:12`, `app.ts:12-20`, `app.ts#L12`, an absolute
+  path inside a repository or a markdown link to one open in Code, in the right repository, with the
+  lines marked.
+- Notebooks: a `.ipynb` file opens as a notebook, with markdown rendered, code coloured and outputs
+  (text, errors, images) shown under each cell. A button switches to the JSON, which is what is saved.
+- BTW can edit files when you ask it to: the pencil in the bar, `Ctrl/Cmd+Enter`, or "Allow edits" in a
+  read-only conversation. What it changes is recorded as a checkpoint of the chat, so it reaches the
+  review queue.
+- Agents are told to write a TLDR last: two to four lines, right before the closing question, saying what
+  changed, why and what to check first.
+
+### Changed
+
+- Chats are listed by workspace, not by repository: the sessions list groups them under their workspace,
+  the one on screen first, and choosing one from another workspace moves there. Each chat names the
+  repository and branch it runs in.
+
+### Fixed
+
+- Streaming tokens no longer fight your scroll. Any move up, however slight, lets go of the stream at
+  once, and being back at the bottom takes hold again.
+- A BTW could never edit a file: it was always started read-only, with no way to say otherwise.
+
 ## [0.11.0] - 2026-11-17
 
 ### Added

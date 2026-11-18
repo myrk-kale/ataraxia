@@ -42,6 +42,7 @@ pub fn run() {
             tauri_api::workspace_select_worktree,
             tauri_api::workspace_list_branches,
             tauri_api::workspace_select_branch,
+            tauri_api::workspace_go_to_branch,
             tauri_api::workspace_fetch_branches,
             tauri_api::workspace_checkout_remote_branch,
             tauri_api::workspace_create_branch,
@@ -129,6 +130,7 @@ pub fn run() {
             tauri_api::btw_start,
             tauri_api::btw_list,
             tauri_api::btw_session,
+            tauri_api::btw_allow_edits,
             tauri_api::flow_presets,
             tauri_api::flow_save_preset,
             tauri_api::flow_delete_preset,
@@ -141,6 +143,13 @@ pub fn run() {
             tauri_api::autocomplete_set_settings,
             tauri_api::autocomplete_languages,
             tauri_api::autocomplete_forget,
+            tauri_api::speech_status,
+            tauri_api::speech_set,
+            tauri_api::speech_transcribe,
+            tauri_api::tasks_list,
+            tauri_api::task_create,
+            tauri_api::task_update,
+            tauri_api::task_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

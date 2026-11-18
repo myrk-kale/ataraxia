@@ -5,7 +5,9 @@ mod events;
 mod insights;
 mod lsp;
 mod resources;
+mod speech;
 mod state;
+mod tasks;
 
 use base64::Engine as _;
 
@@ -25,7 +27,9 @@ pub use autocomplete::*;
 pub use insights::*;
 pub use lsp::*;
 pub use resources::*;
+pub use speech::*;
 pub use state::{AppState, build_app_state, follow_git};
+pub use tasks::*;
 
 fn map_error(error: Error) -> String {
     error.to_string()
@@ -154,6 +158,20 @@ pub fn workspace_select_branch(
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| {
         workspace.select_branch(worktree_id, &name)
+    })
+}
+
+/// Goes to a branch by name: local, or on the remote (fetched for if need be). `repository` names
+/// the member of the workspace it is in, when the caller knows.
+#[tauri::command(async)]
+pub fn workspace_go_to_branch(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    name: String,
+    repository: Option<String>,
+) -> std::result::Result<WorkspaceSnapshot, String> {
+    with_workspace(&state, |workspace| {
+        workspace.go_to_branch(worktree_id, &name, repository.as_deref())
     })
 }
 
@@ -500,6 +518,10 @@ pub fn agent_message_subagent(
     text: String,
 ) -> std::result::Result<(), String> {
     autocomplete::learn(&state, session_id, &text);
+    // A change delegated through BTW is watched from the message that asks for it.
+    if let Ok(child) = subagent_id.parse::<uuid::Uuid>() {
+        state.engine.turn_started(SessionId(child));
+    }
     state
         .agent_runtime()
         .message_subagent(&session_id, &subagent_id, &text)

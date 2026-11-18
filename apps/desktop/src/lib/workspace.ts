@@ -73,6 +73,8 @@ export type WorkspaceSnapshot = {
   selected_worktree_id: WorktreeId | null;
   sessions: ChatSession[];
   selected_session_id: SessionId | null;
+  /** The chats of every other workspace, so the list shows them all grouped by workspace. */
+  other_sessions?: ChatSession[];
 };
 
 /** A local branch as the selector shows it. */
@@ -103,6 +105,7 @@ export function emptyWorkspace(): WorkspaceSnapshot {
     selected_worktree_id: null,
     sessions: [],
     selected_session_id: null,
+    other_sessions: [],
   };
 }
 
@@ -182,6 +185,14 @@ export function workspaceListBranches(worktreeId: WorktreeId) {
 /** Tries to move to a branch; when git refuses, the rejection says why and nothing changed. */
 export function workspaceSelectBranch(worktreeId: WorktreeId, name: string) {
   return invoke<WorkspaceSnapshot>("workspace_select_branch", { worktreeId, name });
+}
+
+/**
+ * Goes to a branch by name, wherever it is: local, on the remote, or new on the remote (fetched for).
+ * `repository` names the member of the workspace it belongs to, when a link said so.
+ */
+export function workspaceGoToBranch(worktreeId: WorktreeId, name: string, repository: string | null = null) {
+  return invoke<WorkspaceSnapshot>("workspace_go_to_branch", { worktreeId, name, repository });
 }
 
 /** Brings the remotes up to date and lists the branches again; a failure says what git said. */

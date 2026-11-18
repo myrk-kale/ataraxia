@@ -58,6 +58,8 @@ out. `{...}` in a path is an id taken from an earlier response.
 | `POST /v1/decisions/{decision_id}/messages` | yes | adds a message to a decision's thread |
 | `POST /v1/decisions/{decision_id}/commits` | yes | says a commit influences a decision |
 | `POST /v1/comments` | yes | comments on a component or a line |
+| `GET /v1/tasks` | no | the developer's own tasks, newest first; `?status=draft`, `ready` or `done` filters |
+| `GET /v1/tasks/{number}` | no | one task by its number: `GET /v1/tasks/12` for "#12" |
 | `GET /v1/schedules` | no | what this chat has scheduled to be sent to you later |
 | `POST /v1/schedules` | yes | be sent a message later: `prompt` (required), `in_minutes` or `at`, `every_minutes`; see `schedule.md` |
 | `DELETE /v1/schedules/{schedule_id}` | yes | cancels a schedule (the id or its first characters) |

@@ -20,6 +20,12 @@ const sessions = [
   { ...session, id: "s3", worktree_id: "w2", provider: "opencode", title: "Explain the worker lifecycle" },
 ];
 
+// The developer's tasks, kept in memory for the browser preview.
+const devTasks: { number: number; title: string; notes: string; status: string; created_at: string; updated_at: string }[] = [
+  { number: 2, title: "Retry failed uploads", notes: "The uploader gives up after one failure.", status: "ready", created_at: now, updated_at: now },
+  { number: 1, title: "Rename the dispatcher", notes: "", status: "draft", created_at: now, updated_at: now },
+];
+
 // `?state=empty|permission|question|working|fresh` previews other UI states in the browser.
 const mode = new URLSearchParams(window.location.search).get("state");
 
@@ -295,6 +301,22 @@ function emit(event: string, payload: unknown) {
 function handle(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "core_status": return "ready";
+    case "tasks_list": return devTasks.slice();
+    case "task_create": {
+      const made = { number: devTasks.reduce((top, item) => Math.max(top, item.number), 0) + 1, title: String(args?.title), notes: "", status: "draft", created_at: now, updated_at: now };
+      devTasks.unshift(made);
+      return made;
+    }
+    case "task_update": {
+      const found = devTasks.find((item) => item.number === args?.number);
+      if (found) Object.assign(found, args?.patch as object, { updated_at: now });
+      return found;
+    }
+    case "task_delete": {
+      const at = devTasks.findIndex((item) => item.number === args?.number);
+      if (at >= 0) devTasks.splice(at, 1);
+      return null;
+    }
     case "agent_list_providers": return providers;
     case "agent_usage": return Object.values(usageReports);
     // Launch profiles: what the settings keep, with the checks the app would make.

@@ -45,6 +45,17 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("k", { metaKey: true }), idle)).toEqual({ type: "btw" });
   });
 
+  it("goes to a branch with Ctrl/Cmd+Shift+B, even from a field, but not from the editor or an overlay", () => {
+    expect(resolveShortcut(press("B", { ctrlKey: true, shiftKey: true }), idle)).toEqual({ type: "branch" });
+    expect(resolveShortcut(press("b", { metaKey: true, shiftKey: true }, el("<textarea></textarea>")), idle)).toEqual({
+      type: "branch",
+    });
+    expect(resolveShortcut(press("b", { metaKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("B", { ctrlKey: true, shiftKey: true }), { ...idle, overlay: true })).toBeNull();
+    const editor = el("<div class='monaco-editor'><span tabindex='0'></span></div>");
+    expect(resolveShortcut(press("B", { ctrlKey: true, shiftKey: true }, editor.firstElementChild), idle)).toBeNull();
+  });
+
   it("never captures keys typed into fields, editors or the terminal", () => {
     for (const markup of [
       "<input />",

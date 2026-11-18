@@ -4,6 +4,7 @@ export type ShortcutAction =
   | { type: "space"; delta: -1 | 1 }
   | { type: "previous-workspace" }
   | { type: "btw" }
+  | { type: "branch" }
   | { type: "artifacts" }
   | { type: "terminal" }
   | { type: "version" }
@@ -90,6 +91,10 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (mod && !event.altKey && key === "k" && !inEditor) {
     return { type: "btw" };
   }
+  // Go to a branch from a link or a name, from anywhere (not inside the editor, where Monaco has its own).
+  if (mod && event.shiftKey && !event.altKey && key === "b" && !inEditor && !event.repeat) {
+    return { type: "branch" };
+  }
   if (event.altKey && !mod && !event.shiftKey && event.code === "KeyW" && !typing && !event.repeat) {
     return { type: "previous-workspace" };
   }
@@ -140,9 +145,13 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Alt", "W"], label: "Switch to the previous workspace", scope: "Everywhere" },
   { keys: ["Shift", "↑/↓"], label: "Previous / next space, even while typing or in the editor and terminal", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "Shift", "B"], label: "Go to a branch: paste an Azure DevOps link or type a name", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "`"], label: "Toggle the terminal", scope: "Everywhere" },
   { keys: ["Esc"], label: "Close the overlay or stop the running turn", scope: "Everywhere" },
+  { keys: ["Enter"], label: "Send the message, or add it to the queue while the agent works", scope: "Message field" },
+  { keys: ["Ctrl/⌘", "Shift", "M"], label: "Dictate: speak, and it is written into the message field on this computer", scope: "Chat" },
+  { keys: ["Ctrl/⌘", "Enter"], label: "Send it now: stop the agent and put the message first instead of queueing it", scope: "Message field" },
   { keys: ["Alt", "V"], label: "Switch between the current version (editable) and the previous one (read-only)", scope: "Code" },
   { keys: ["Alt", "Z"], label: "Wrap long lines or let them run on", scope: "Code" },
   { keys: ["Ctrl/⌘", "S"], label: "Save the open file (an * after its name means unsaved changes)", scope: "Code" },

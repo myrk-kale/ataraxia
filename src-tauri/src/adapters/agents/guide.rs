@@ -15,6 +15,7 @@ const FILES: &[(&str, &str)] = &[
     ("flow.md", include_str!("../../../guide/flow.md")),
     ("review.md", include_str!("../../../guide/review.md")),
     ("schedule.md", include_str!("../../../guide/schedule.md")),
+    ("tasks.md", include_str!("../../../guide/tasks.md")),
     ("queue.md", include_str!("../../../guide/queue.md")),
     ("api.md", include_str!("../../../guide/api.md")),
 ];
@@ -35,16 +36,19 @@ pub fn preamble(index: &Path) -> String {
         "[Context from Ataraxia] This chat runs inside Ataraxia, an app where the developer reviews the code you write: a review queue of changed components ranked by priority, Decisions (choices that deserve their verdict) and Flow diagrams.\n\
          - Never generate or record any of these on your own.\n\
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
+         - Write a TLDR last. After reviewing or changing code, the last thing in your reply, right before that question, is a TLDR of two to four short lines in the developer's language: what changed, why, and what to check first to validate it. Skip it after an exchange that neither reviewed nor changed code.\n\
          - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
          - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
          - For Mermaid flowcharts, use the animated renderer's compatible subset: `flowchart TD` or `flowchart LR`, simple node IDs and quoted plain-text labels, and `-->` links with optional `|label|`. Avoid HTML, backticks, escaped newlines, styling, subgraphs and special link syntax; keep labels short and diagrams under 60 nodes and 100 edges. Do not replace an explicitly requested non-flowchart diagram type. Rendering also depends on device support.\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
+         - The developer keeps numbered tasks in Ataraxia. When they name one (\"#12\", \"task 12\"), fetch it with `curl -sS \"$ATARAXIA_API_URL/v1/tasks/12\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\"` and work from its title and notes; {} has details. Do not guess a task from its number.\n\
          The developer's message follows.\n\n",
         index.display(),
         index.with_file_name("schedule.md").display(),
-        index.with_file_name("queue.md").display()
+        index.with_file_name("queue.md").display(),
+        index.with_file_name("tasks.md").display()
     )
 }
 
@@ -101,6 +105,9 @@ mod tests {
         assert!(prompt.contains("Do not pause when the work is done"));
         assert!(prompt.contains("Flow diagram") && prompt.contains("Mermaid diagram"));
         assert!(prompt.contains("Avoid HTML"));
+        // The TLDR comes last, ahead of the closing question, and tasks can be fetched by number.
+        assert!(prompt.contains("Write a TLDR last"));
+        assert!(prompt.contains("/v1/tasks/12"));
         assert!(prompt.contains("Do not replace an explicitly requested non-flowchart"));
         // The pages the index names all exist.
         let readme = std::fs::read_to_string(&index).expect("index");
@@ -144,7 +151,7 @@ mod tests {
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 430,
+            text.split_whitespace().count() < 520,
             "{} words",
             text.split_whitespace().count()
         );

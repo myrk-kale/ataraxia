@@ -1,18 +1,19 @@
-import { Check, Loader2, TextSelect } from "lucide-react";
+import { Check, Loader2, Pencil, TextSelect } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "../chat/ChatPanel";
 import { Markdown } from "../chat/Markdown";
 import {
   agentGetOptions,
   agentGetSnapshot,
+  agentPrompt,
   listenAgentEvents,
   type ModelChoice,
   type ProviderDescriptor,
 } from "../lib/agent";
-import { btwList, btwSession, btwStart, type BtwContextItem, type BtwTask } from "../lib/insights";
+import { btwAllowEdits, btwList, btwSession, btwStart, type BtwContextItem, type BtwTask } from "../lib/insights";
 import { errorText, useInsightEvents } from "../lib/useInsightEvents";
 import type { ChatSession } from "../lib/workspace";
-import { Dialog } from "../ui/Overlay";
+import { Dialog, Tip } from "../ui/Overlay";
 import { QuietSelect } from "../ui/QuietSelect";
 import { doneInAtaraxia, lastAnswer, withoutActions } from "./answer";
 import { contextChip } from "./contextChip";
@@ -72,6 +73,9 @@ export function BtwPalette({
   // Only a pick the user made is kept; until then the BTW follows the model the chat is on.
   const [picked, setPicked] = useState<string | null>(remembered);
   const [choice, setChoice] = useState("");
+  // Whether the question may edit files. Off, it only looks: turning it on is the authorization.
+  const [mayEdit, setMayEdit] = useState(false);
+  const [allowing, setAllowing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const sessionId = session?.id ?? null;
 
@@ -90,6 +94,7 @@ export function BtwPalette({
     setAnswer("");
     setTask(null);
     setExpanded(null);
+    setMayEdit(false);
     if (resume) {
       setTask(resume);
       void btwSession(resume.id)
@@ -192,7 +197,8 @@ export function BtwPalette({
     }
   }, [phase, refreshTask]);
 
-  async function submit() {
+  /** `edit` lets this question change files; without it BTW only reads and answers. */
+  async function submit(edit = mayEdit) {
     const text = question.trim();
     if (!sessionId || !text || phase === "running") {
       return;
@@ -202,13 +208,42 @@ export function BtwPalette({
     setTask(null);
     const pick = choice ? decodePick(choice) : null;
     try {
-      setTask(
-        await btwStart(sessionId, "ask", text, { space, item: asked.item, active: asked.others }, "on-completion", false, pick?.provider ?? null, pick?.model ?? null),
+      const started = await btwStart(
+        sessionId,
+        edit ? "change" : "ask",
+        text,
+        { space, item: asked.item, active: asked.others },
+        "on-completion",
+        edit,
+        pick?.provider ?? null,
+        pick?.model ?? null,
       );
+      setTask(started);
       setQuestion("");
+      if (edit) {
+        // A change asks for approvals and shows what it did, which the full conversation does.
+        setExpanded(await btwSession(started.id));
+      }
     } catch (err) {
       setPhase("ask");
       onError(errorText(err));
+    }
+  }
+
+  /** A read-only BTW the developer now wants to make a change: it restarts with write access and goes on. */
+  async function allowEdits() {
+    if (!task || !expanded || allowing) {
+      return;
+    }
+    setAllowing(true);
+    try {
+      const updated = await btwAllowEdits(task.id);
+      setExpanded(updated);
+      await agentPrompt(updated.id, "You may now edit files in this worktree. Go ahead and make the change we discussed, then finish with a short summary of what you changed.");
+    } catch (err) {
+      onError(errorText(err));
+    } finally {
+      setAllowing(false);
     }
   }
 
@@ -218,7 +253,19 @@ export function BtwPalette({
         <div className="flex h-[78vh] min-h-0 w-full flex-col">
           <div className="flex items-center gap-3 border-b border-cg-line px-5 py-3 text-small text-cg-muted-strong">
             <span className="min-w-0 flex-1 truncate font-medium text-cg-ink">{expanded.title}</span>
-            <span className="flex-none">{expanded.kind === "delegate" ? "Delegated change" : "Read-only"}</span>
+            {expanded.kind === "btw" && task ? (
+              <button
+                className="flex flex-none items-center gap-1.5 rounded-cg-md border border-cg-line-strong px-2.5 py-1 text-small text-cg-ink hover:bg-cg-tint disabled:opacity-50"
+                disabled={allowing}
+                title="Let this conversation edit files in the worktree and make the change"
+                type="button"
+                onClick={() => void allowEdits()}
+              >
+                <Pencil aria-hidden="true" size={12} />
+                {allowing ? "Allowing…" : "Allow edits"}
+              </button>
+            ) : null}
+            <span className="flex-none">{expanded.kind === "delegate" ? "Can edit files" : "Read-only"}</span>
             {task ? <MainChatNote task={task} /> : null}
           </div>
           <div className="min-h-0 flex-1">
@@ -266,7 +313,13 @@ export function BtwPalette({
             autoComplete="off"
             className="min-w-0 flex-1 border-0 bg-transparent py-3 pl-5 text-body text-cg-ink placeholder:text-cg-muted"
             disabled={!session}
-            placeholder={session ? "Ask about what you are looking at…" : "Open a chat first"}
+            placeholder={
+              session
+                ? mayEdit
+                  ? "Describe the change. BTW may edit files…"
+                  : "Ask about what you are looking at…"
+                : "Open a chat first"
+            }
             readOnly={phase === "running"}
             spellCheck={false}
             value={question}
@@ -279,10 +332,23 @@ export function BtwPalette({
               // off the browser's own Enter-to-submit, so Enter is handled here.
               event.preventDefault();
               if (!event.nativeEvent.isComposing) {
-                void submit();
+                // Ctrl or Cmd with Enter is the explicit "and edit files".
+                void submit(mayEdit || event.metaKey || event.ctrlKey);
               }
             }}
           />
+          <Tip label={mayEdit ? "BTW may edit files. Click to make it read-only" : "Let BTW edit files for this question. Ctrl/⌘ Enter asks and lets it edit"}>
+            <button
+              aria-label="Allow BTW to edit files"
+              aria-pressed={mayEdit}
+              className="mr-1 grid h-7 w-7 flex-none place-items-center rounded-cg-sm text-cg-muted-strong hover:bg-cg-tint hover:text-cg-ink disabled:opacity-40 aria-pressed:bg-cg-accent-bg aria-pressed:text-cg-accent"
+              disabled={!session || phase === "running"}
+              type="button"
+              onClick={() => setMayEdit((current) => !current)}
+            >
+              <Pencil aria-hidden="true" size={14} />
+            </button>
+          </Tip>
           <div className="flex-none">
             <QuietSelect
               aria-label="Model that runs it"

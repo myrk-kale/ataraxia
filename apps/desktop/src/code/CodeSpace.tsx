@@ -1,4 +1,4 @@
-import { Check, CircleAlert, GitCompareArrows, Lock, WrapText } from "lucide-react";
+import { BookOpen, Braces, Check, CircleAlert, GitCompareArrows, Lock, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -66,6 +66,7 @@ import { ShownRow } from "./ShownRow";
 import { createSyncScheduler } from "./sync";
 
 // Monaco is large and Code may never be opened: load it with the space, not with the app.
+const NotebookView = lazy(() => import("./NotebookView").then((module) => ({ default: module.NotebookView })));
 const MonacoEditor = lazy(() => import("./MonacoEditor").then((module) => ({ default: module.MonacoEditor })));
 
 type Mode = "components" | "changed" | "tree";
@@ -141,7 +142,7 @@ export function CodeSpace({
   onReviewChanged?: () => void;
   bridge: MutableRefObject<SpaceBridge>;
   /** Another space asked to show a file here (a decision's code, a diagram node). */
-  openRequest?: { path: string; line: number | null; n: number } | null;
+  openRequest?: { path: string; line: number | null; endLine?: number | null; n: number } | null;
   /** The branch or commit the header picked: when set, the current branch is shown against it. */
   reference: string | null;
   onBtw: () => void;
@@ -570,6 +571,10 @@ export function CodeSpace({
   // The file changed after the checkpoint was taken: "current" is no longer what it recorded.
   const editedSince = Boolean(doc && !doc.fixed && doc.head !== null && doc.disk && doc.disk.text !== doc.head);
   const hasPrevious = Boolean(doc && (doc.base !== null || !doc.disk));
+  // A notebook opens as a notebook; the same file can be read, and edited, as the JSON it is.
+  const [notebookAsJson, setNotebookAsJson] = useState<ReadonlySet<string>>(new Set());
+  const isNotebook = Boolean(doc && doc.path.toLowerCase().endsWith(".ipynb") && doc.disk && !doc.disk.binary && !doc.disk.tooLarge);
+  const showNotebook = isNotebook && doc !== null && !notebookAsJson.has(doc.path);
   const inCheckpoint = Boolean(doc && changeByPath.has(doc.path));
 
   const toggleVersion = useCallback(() => {
@@ -913,8 +918,8 @@ export function CodeSpace({
     }
     void openFile(openRequest.path).then(() => {
       if (openRequest.line) {
-        const line = openRequest.line;
-        setTimeout(() => editor.current?.reveal(Math.max(1, line - 3)), 120);
+        const { line, endLine } = openRequest;
+        setTimeout(() => editor.current?.showLines(line, endLine ?? null), 120);
       }
     });
     // Only a new request opens a file; later renders must not reopen it.
@@ -1068,6 +1073,31 @@ export function CodeSpace({
                 ) : null}
               </span>
               <div className="flex flex-none items-center gap-0.5">
+                {isNotebook ? (
+                  <Tip label={showNotebook ? "Show the notebook's JSON, which can be edited" : "Show it as a notebook"}>
+                    <Button
+                      aria-label={showNotebook ? "Show as JSON" : "Show as notebook"}
+                      aria-pressed={!showNotebook}
+                      variant="icon"
+                      onClick={() =>
+                        setNotebookAsJson((current) => {
+                          const next = new Set(current);
+                          if (!doc) {
+                            return current;
+                          }
+                          if (next.has(doc.path)) {
+                            next.delete(doc.path);
+                          } else {
+                            next.add(doc.path);
+                          }
+                          return next;
+                        })
+                      }
+                    >
+                      {showNotebook ? <Braces size={15} /> : <BookOpen size={15} />}
+                    </Button>
+                  </Tip>
+                ) : null}
                 <Tip label={wrap ? "Lines are wrapped: let them run on (Alt+Z)" : "Wrap long lines (Alt+Z)"}>
                   <Button aria-label="Wrap long lines" aria-pressed={wrap} variant="icon" onClick={toggleWrap}>
                     <WrapText size={15} />
@@ -1268,6 +1298,10 @@ export function CodeSpace({
                 <Empty text="This file is binary." />
               ) : doc.disk?.tooLarge ? (
                 <Empty text={`This file is too large to open (${Math.round(doc.disk.size / 1024)} KB).`} />
+              ) : showNotebook ? (
+                <Suspense fallback={<Empty text="Loading the notebook…" />}>
+                  <NotebookView text={version === "previous" ? shown : doc.buffer} />
+                </Suspense>
               ) : (
                 <Suspense fallback={<Empty text="Loading the editor…" />}>
                   <MonacoEditor

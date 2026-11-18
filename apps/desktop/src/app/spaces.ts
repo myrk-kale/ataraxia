@@ -1,6 +1,6 @@
-export type SpaceId = "chat" | "code" | "decisions" | "flow";
+export type SpaceId = "chat" | "code" | "tasks" | "decisions" | "flow";
 
-/** Chat and Code are workspaces; Decisions and Flow are artifacts of the chat session. */
+/** Chat, Code and Tasks are workspaces; Decisions and Flow are artifacts of the chat session. */
 export type SpaceGroup = "workspace" | "artifact";
 
 export const SPACES: readonly {
@@ -17,6 +17,11 @@ export const SPACES: readonly {
     id: "code",
     group: "workspace",
     label: "Code",
+  },
+  {
+    id: "tasks",
+    group: "workspace",
+    label: "Tasks",
   },
   {
     id: "decisions",

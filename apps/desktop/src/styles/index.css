@@ -379,6 +379,25 @@ select:focus-visible {
 .cg-unit-range {
   background: var(--cg-accent-bg);
 }
+/* The lines a link in the chat pointed at: they show for a moment and fade. */
+.cg-cited-lines {
+  background: var(--cg-accent-bg);
+  animation: cg-cited-fade 2.8s ease-out forwards;
+}
+@keyframes cg-cited-fade {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cg-cited-lines {
+    animation: none;
+  }
+}
 
 /*
  * The loader shown while the agent works: three dots that rise and settle one after another,

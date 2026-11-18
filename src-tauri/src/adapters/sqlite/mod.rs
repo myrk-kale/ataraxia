@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::domain::agent::ProviderKind;
 use crate::domain::ids::{RepositoryId, SessionId, WorkspaceId, WorktreeId};
 use crate::domain::{
-    ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus,
-    Workspace, Worktree,
+    ChatItem, ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus, Task,
+    TaskPatch, TaskStatus, Workspace, Worktree,
 };
 use crate::ports::{GramRow, Store};
 
@@ -554,6 +554,21 @@ impl Store for SqliteStore {
         })
     }
 
+    fn update_session_kind(&self, id: SessionId, kind: SessionKind, now: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE chat_sessions SET kind = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id.0.to_string(), kind.as_str(), now],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if changed == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
     fn update_session_status(
         &self,
         id: SessionId,
@@ -651,6 +666,95 @@ impl Store for SqliteStore {
         })
     }
 
+    fn tasks_list(&self) -> Result<Vec<Task>> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let mut statement = conn
+                .prepare(
+                    "SELECT number, title, notes, status, created_at, updated_at
+                     FROM tasks ORDER BY number DESC",
+                )
+                .map_err(io)?;
+            let rows = statement.query_map([], map_task).map_err(io)?;
+            collect_rows(rows)
+        })
+    }
+
+    fn task_get(&self, number: i64) -> Result<Option<Task>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT number, title, notes, status, created_at, updated_at
+                 FROM tasks WHERE number = ?1",
+                params![number],
+                map_task,
+            )
+            .optional()
+            .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+        })
+    }
+
+    fn task_create(&self, title: &str, now: &str) -> Result<Task> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            conn.execute(
+                "INSERT INTO tasks (title, notes, status, created_at, updated_at)
+                 VALUES (?1, '', 'draft', ?2, ?2)",
+                params![title, now],
+            )
+            .map_err(io)?;
+            Ok(Task {
+                number: conn.last_insert_rowid(),
+                title: title.to_string(),
+                notes: String::new(),
+                status: TaskStatus::Draft,
+                created_at: now.to_string(),
+                updated_at: now.to_string(),
+            })
+        })
+    }
+
+    fn task_update(&self, number: i64, patch: &TaskPatch, now: &str) -> Result<Option<Task>> {
+        self.with_conn(|conn| {
+            let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
+            let changed = conn
+                .execute(
+                    "UPDATE tasks SET
+                       title = COALESCE(?2, title),
+                       notes = COALESCE(?3, notes),
+                       status = COALESCE(?4, status),
+                       updated_at = ?5
+                     WHERE number = ?1",
+                    params![
+                        number,
+                        patch.title,
+                        patch.notes,
+                        patch.status.map(TaskStatus::as_str),
+                        now
+                    ],
+                )
+                .map_err(io)?;
+            if changed == 0 {
+                return Ok(None);
+            }
+            conn.query_row(
+                "SELECT number, title, notes, status, created_at, updated_at
+                 FROM tasks WHERE number = ?1",
+                params![number],
+                map_task,
+            )
+            .optional()
+            .map_err(io)
+        })
+    }
+
+    fn task_delete(&self, number: i64) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM tasks WHERE number = ?1", params![number])
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            Ok(())
+        })
+    }
+
     fn autocomplete_load(&self, scope: &str) -> Result<Vec<GramRow>> {
         self.with_conn(|conn| {
             let io = |error: rusqlite::Error| Error::new(ErrorCode::Io, error.to_string());
@@ -722,6 +826,18 @@ impl Store for SqliteStore {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn map_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    let status: String = row.get(3)?;
+    Ok(Task {
+        number: row.get(0)?,
+        title: row.get(1)?,
+        notes: row.get(2)?,
+        status: TaskStatus::parse(&status).unwrap_or_default(),
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
 }
 
 fn map_repository(row: &rusqlite::Row<'_>) -> rusqlite::Result<Repository> {
