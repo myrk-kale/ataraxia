@@ -6,6 +6,25 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- SVG in the chat: a fenced `svg` block in a reply is drawn as a picture, in the colours of the
+  current theme. The agent is taught to use it for concept maps, mind maps and sketches that explain
+  better than words. It is shown as an image, so nothing in it can run or load, and it has Expand,
+  Code and Copy buttons.
+- Dictation writes as you speak: each phrase lands in the field when you pause, what you are still
+  saying shows live, and the recording ends by itself after about 0.75 s of silence. A new recording
+  indicator shows the sound, the time and how close the pause is to ending it.
+
+### Changed
+
+- Dictation is several times faster on Apple silicon (the speech engine now uses the GPU) and
+  uses the small Whisper model (190 MB) by default. The large-v3-turbo model stays available in
+  Settings > Voice.
+- A diagram asked for with no kind is a Mermaid diagram; a Flow diagram only when you say Flow.
+- The search palette is redone: filter chips instead of select boxes, an icon per result type, the
+  searched words highlighted, and arrow keys that move a highlight while you keep typing.
+
 ## [0.13.0] - 2026-11-18
 
 ### Added
