@@ -132,6 +132,23 @@ describe("the / and @ pickers of the message field", () => {
     expect(onKey).toHaveBeenCalledTimes(1);
   });
 
+  it("inserts only the skill name and lets the user add instructions", async () => {
+    api.commands.mockResolvedValue([
+      { kind: "skill", name: "release", description: "Prepare a release", hint: null, source: null },
+    ]);
+    const onKey = vi.fn();
+    act(() => root.render(<Harness onKey={onKey} />));
+    await type("/rel");
+    press("Enter");
+    expect(field().value).toBe("/release ");
+    expect(host.querySelector('[role="listbox"]')).toBeNull();
+    expect(onKey).not.toHaveBeenCalled();
+
+    await type("/release prepare the minor release");
+    press("Enter");
+    expect(onKey).toHaveBeenCalledTimes(1);
+  });
+
   it("moves with the arrows, wrapping around, and chooses with Tab", async () => {
     act(() => root.render(<Harness />));
     await type("/");

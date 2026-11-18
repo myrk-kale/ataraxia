@@ -195,7 +195,7 @@ pub const ROUTES: &[Route] = &[
         method: "POST",
         path: "/v1/decisions",
         status: 201,
-        description: "Open an engineering decision as a thread in the Decisions tab. Body: title, summary, type?, context?, rationale?, files? [{path, start_line?, end_line?}], checkpoint_id?. A decision is a choice the reviewer should consciously accept or reject; call it once per decision.",
+        description: "Record an engineering decision; the developer approves or rejects it from the chat's Decisions card, and you get one message with the verdicts once all are reviewed. Body: title, summary, type?, context?, rationale?, files? [{path, start_line?, end_line?}], checkpoint_id?. A decision is a choice the reviewer should consciously accept or reject; call it once per decision.",
         write: true,
     },
     Route {

@@ -3,7 +3,7 @@
 
 Frames follow Claude Code's real stream-json output (partial `stream_event`s followed by the
 full `assistant` frame, `control_request`/`control_response` for tool permissions). The first
-word of the user prompt selects the scenario: tool | subagent | background | wakeup | hang | crash | anything else.
+word of the user prompt selects the scenario: tool | subagent | background | wakeup | monitor | hang | crash | anything else.
 """
 import json
 import os
@@ -200,6 +200,25 @@ def run_wakeup():
     result(text="The release is ready.")
 
 
+def run_monitor():
+    """A Monitor left running: the turn ends, the watch ends, and the CLI comes back on its own."""
+    send({"type": "system", "subtype": "task_started", "task_id": "bmon1", "tool_use_id": "toolu_mon",
+          "description": "Wait for the test suite", "is_backgrounded": True, "task_type": "local_bash"})
+    stream_text(["Waiting for the tests."], "msg_mon_1")
+    send({"type": "assistant", "parent_tool_use_id": None,
+          "message": {"id": "msg_mon_1", "role": "assistant",
+                      "content": [{"type": "text", "text": "Waiting for the tests."}]}})
+    result(text="Waiting for the tests.")
+    time.sleep(0.2)
+    send({"type": "system", "subtype": "task_notification", "task_id": "bmon1", "tool_use_id": "toolu_mon",
+          "status": "completed", "summary": "Monitor \"Wait for the test suite\" stream ended"})
+    stream_text(["The tests passed."], "msg_mon_2")
+    send({"type": "assistant", "parent_tool_use_id": None,
+          "message": {"id": "msg_mon_2", "role": "assistant",
+                      "content": [{"type": "text", "text": "The tests passed."}]}})
+    result(text="The tests passed.")
+
+
 def run_relay(text):
     """The main agent passes a message on to the subagent (SendMessage) and reports back."""
     agent_id = "toolu_agent"
@@ -254,6 +273,8 @@ def main():
                 run_background()
             elif text.startswith("wakeup"):
                 run_wakeup()
+            elif text.startswith("monitor"):
+                run_monitor()
             elif text.startswith("Use the SendMessage tool"):
                 run_relay(text)
             elif text.startswith("reload"):

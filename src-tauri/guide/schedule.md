@@ -12,6 +12,14 @@ developer sees what is scheduled in the chat, under the message box, and can can
 
 Read `api.md` first for the environment variables and how to call the API.
 
+## Waiting on a command you started
+
+To wait for something you started yourself in this session (a test run, a build), a watch or a
+background command of your harness is fine: you get a new turn when it ends, and the developer sees
+it as "Waiting on: ..." until then. Make sure its condition can end. `pgrep -f "pytest -q"` inside
+the watch matches the watch's own command line and never ends; wait on the process id, or on a line
+in the output file, instead.
+
 ## Create one
 
 ```bash

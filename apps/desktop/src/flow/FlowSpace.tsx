@@ -91,11 +91,13 @@ export function FlowSpace({
   bridge,
   onOpenFile,
   onError,
+  searchTarget,
 }: {
   session: ChatSession | null;
   bridge: MutableRefObject<SpaceBridge>;
   onOpenFile: (path: string, line: number | null) => void;
   onError: (message: string) => void;
+  searchTarget?: { itemId: string } | null;
 }) {
   const { kind } = useAppearance();
   const [presets, setPresets] = useState<FlowPreset[]>([]);
@@ -171,11 +173,16 @@ export function FlowSpace({
     }
   });
 
+  const appliedSearch = useRef<typeof searchTarget>(null);
   useEffect(() => {
-    if (!flowId || !flows.some((item) => item.id === flowId)) {
+    if (searchTarget && appliedSearch.current !== searchTarget && flows.some((item) => item.id === searchTarget.itemId)) {
+      appliedSearch.current = searchTarget;
+      setFlowId(searchTarget.itemId);
+      setSelectedNode(null);
+    } else if (!flowId || !flows.some((item) => item.id === flowId)) {
       setFlowId(flows[0]?.id ?? null);
     }
-  }, [flows, flowId]);
+  }, [flows, flowId, searchTarget]);
 
   const flow = flows.find((item) => item.id === flowId) ?? null;
   const content = (flow?.content ?? {}) as FlowContent;

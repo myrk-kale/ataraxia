@@ -6,6 +6,50 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-18
+
+### Added
+
+- Global search opens with `Ctrl/Cmd+B` or the search button. Search conversations, artifacts,
+  review comments and tasks, with filters for type, workspace and repository. The local SQLite
+  full-text index covers existing history and stays current as items change.
+- Private BTW: `Ctrl/Cmd+Shift+K` opens a BTW whose replies never reach the main chat. Its accent border
+  and a "Private" note tell it apart.
+- Review triage: in Code, Components, "Triage with a subagent" reorders the queue and leaves out what needs
+  no review (formatting, renames, generated code). What it left out can be shown, and the triage undone.
+  Your own priorities are never overwritten.
+- Tasks open as a side panel, from a new icon in the header or `Ctrl/Cmd+T`.
+
+### Changed
+
+- Compare with now lives in Code, above the review list. Its default is "last commit" (what is pending in
+  the working tree), the commits of the current branch are listed with their message, and there is no
+  empty choice any more.
+- Decisions are an artifact of the chat instead of a tab: a card above the message field opens a
+  full-screen review with Approve and Reject (a rejection needs a comment). When all are reviewed, the
+  main agent is told that everything was approved, or what was rejected and why. Decision threads are gone.
+- BTW may edit files and run commands by default, and always runs on the worktree and branch on screen.
+- The + button makes a chat that only stays once its first message is sent, and a new chat keeps the
+  model and effort of the chat you were in.
+- The terminal toggles with Control+backtick on every platform, the Mac included.
+- Go to branch accepts branch links from Azure DevOps, GitHub, GitLab and Bitbucket, and HTTP(S) or
+  SSH clone URLs with `#branch` appended.
+- Picking a slash skill inserts its name in the message field. Send it as-is or add instructions.
+
+### Fixed
+
+- Codex can call Ataraxia's local API: its `workspace-write` sandbox cut every connection, localhost
+  included, so pausing the queue, scheduling or recording decisions failed. Writing chats now run with
+  network access; read-only helpers stay closed.
+- A watch or background command Claude left running (`Monitor`, a background `Bash`) shows next to the
+  subagents as "Waiting on: ..." until it ends, and the agent's own turn after it is shown as before.
+- Subagents closed in a chat stay closed after visiting another space or chat.
+- Claude Code no longer offers its own wakeup and cron tools, which never fired inside Ataraxia: the agent
+  promised to come back and never did. Ataraxia's schedule is the way to come back later.
+- Remote MCP servers registered in Settings (a `url` with no `type`, such as Notion) reach Claude Code: it
+  silently dropped them before. OpenCode now gets them through its own config, where it can sign in to
+  them, and Codex keeps MCP sign-ins it stores in a file.
+
 ## [0.12.1] - 2026-11-18
 
 ### Changed

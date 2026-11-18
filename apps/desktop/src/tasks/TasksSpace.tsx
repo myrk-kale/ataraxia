@@ -23,13 +23,26 @@ async function copy(text: string) {
  * is one click away on its card: whether it is ready for development, notes, deleting. Each task
  * has a number, `#12`, to name in a chat; the agent reads it through Ataraxia's API.
  */
-export function TasksSpace({ active, onError }: { active: boolean; onError: (message: string) => void }) {
+export function TasksSpace({
+  active,
+  layout = "page",
+  onError,
+  searchNumber,
+}: {
+  active: boolean;
+  /** `drawer`: inside the side panel, narrower and with no page margins. */
+  layout?: "page" | "drawer";
+  onError: (message: string) => void;
+  searchNumber?: number | null;
+}) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [state, setState] = useState<LoadState>(LOADING);
   const [filter, setFilter] = useState<TaskFilter>("open");
   const [typed, setTyped] = useState("");
   const [openNumber, setOpenNumber] = useState<number | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const searchCard = useRef<HTMLLIElement>(null);
+  const appliedSearch = useRef<number | null>(null);
 
   const load = useCallback(() => {
     setState(LOADING);
@@ -42,12 +55,35 @@ export function TasksSpace({ active, onError }: { active: boolean; onError: (mes
   }, []);
   useEffect(load, [load]);
 
-  // Arriving here puts the cursor in the field: adding a task is the first thing to do.
+  // Arriving here reads the list again (the agent may have changed it) and puts the cursor in the
+  // field: adding a task is the first thing to do.
+  const shownBefore = useRef(active);
   useEffect(() => {
-    if (active) {
-      input.current?.focus();
+    if (active && !shownBefore.current) {
+      load();
     }
-  }, [active]);
+    shownBefore.current = active;
+    if (active && searchNumber == null) {
+      requestAnimationFrame(() => input.current?.focus());
+    }
+  }, [active, load, searchNumber]);
+
+  const foundTask = tasks.find((task) => task.number === searchNumber);
+  useEffect(() => {
+    if (!active || searchNumber == null) {
+      appliedSearch.current = null;
+    } else if (foundTask && appliedSearch.current !== foundTask.number) {
+      appliedSearch.current = foundTask.number;
+      setFilter(foundTask.status === "done" ? "done" : "open");
+      setOpenNumber(foundTask.number);
+    }
+  }, [active, foundTask, searchNumber]);
+
+  useEffect(() => {
+    if (active && searchNumber != null && openNumber === searchNumber) {
+      searchCard.current?.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [active, searchNumber, openNumber, filter]);
 
   async function add() {
     const title = titleToAdd(typed);
@@ -88,9 +124,21 @@ export function TasksSpace({ active, onError }: { active: boolean; onError: (mes
   const shown = visibleTasks(tasks, filter);
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-[760px] flex-col gap-4 overflow-y-auto px-8 pt-9 pb-8">
+    <div
+      className={
+        layout === "drawer"
+          ? "flex h-full min-h-0 w-full flex-col gap-4 overflow-y-auto px-5 pt-5 pb-6"
+          : "mx-auto flex h-full min-h-0 w-full max-w-[760px] flex-col gap-4 overflow-y-auto px-8 pt-9 pb-8"
+      }
+    >
       <header className="flex flex-wrap items-baseline gap-3">
-        <h1 className="mr-auto text-title leading-snug font-semibold tracking-[-0.3px] text-cg-ink">Tasks</h1>
+        <h1
+          className={`mr-auto leading-snug font-semibold text-cg-ink ${
+            layout === "drawer" ? "text-body" : "text-title tracking-[-0.3px]"
+          }`}
+        >
+          Tasks
+        </h1>
         <p className="text-small text-cg-muted">Say “#12” in a chat and the agent reads task 12.</p>
       </header>
 
@@ -153,6 +201,7 @@ export function TasksSpace({ active, onError }: { active: boolean; onError: (mes
         {shown.map((task) => (
           <TaskCard
             key={task.number}
+            cardRef={searchNumber === task.number ? searchCard : undefined}
             open={openNumber === task.number}
             task={task}
             onChange={(patch) => void change(task.number, patch)}
@@ -166,12 +215,14 @@ export function TasksSpace({ active, onError }: { active: boolean; onError: (mes
 }
 
 function TaskCard({
+  cardRef,
   task,
   open,
   onToggle,
   onChange,
   onDelete,
 }: {
+  cardRef?: React.Ref<HTMLLIElement>;
   task: Task;
   open: boolean;
   onToggle: () => void;
@@ -213,7 +264,7 @@ function TaskCard({
   }
 
   return (
-    <li className={`rounded-cg-md border ${open ? "border-cg-line-strong bg-cg-panel" : "border-cg-line"} transition-colors`}>
+    <li ref={cardRef} className={`rounded-cg-md border ${open ? "border-cg-line-strong bg-cg-panel" : "border-cg-line"} transition-colors`}>
       <div className="flex items-center gap-2.5 px-3 py-2.5">
         <button
           aria-checked={done}

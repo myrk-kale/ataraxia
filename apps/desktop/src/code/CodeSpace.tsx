@@ -1,4 +1,4 @@
-import { BookOpen, Braces, Check, CircleAlert, GitCompareArrows, Lock, WrapText } from "lucide-react";
+import { BookOpen, Braces, Check, CircleAlert, GitCompareArrows, ListFilter, Loader2, Lock, Undo2, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -9,6 +9,7 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
+import { ReferenceSelect } from "../app/ReferenceSelect";
 import { RepositorySelect } from "../app/RepositorySelect";
 import type { SpaceBridge } from "../app/spaceCommands";
 import {
@@ -30,6 +31,8 @@ import {
   type LintStatus,
   codeReview,
   reviewResetPriority,
+  reviewTriage,
+  reviewUntriage,
   codeSetReviewMark,
   codeTree,
   codeWrite,
@@ -123,7 +126,10 @@ export function CodeSpace({
   worktree,
   bridge,
   openRequest,
+  searchCheckpointId,
+  onCloseSearchCheckpoint,
   reference,
+  onReferenceChange,
   repositories = [],
   changes = [],
   onSelectRepository,
@@ -142,9 +148,13 @@ export function CodeSpace({
   onReviewChanged?: () => void;
   bridge: MutableRefObject<SpaceBridge>;
   /** Another space asked to show a file here (a decision's code, a diagram node). */
-  openRequest?: { path: string; line: number | null; endLine?: number | null; n: number } | null;
-  /** The branch or commit the header picked: when set, the current branch is shown against it. */
+  openRequest?: { path: string; line: number | null; endLine?: number | null; n: number; checkpointId?: string } | null;
+  searchCheckpointId?: string | null;
+  onCloseSearchCheckpoint?: () => void;
+  /** The branch or commit picked in Compare with: when set, the current branch is shown against it. */
   reference: string | null;
+  /** Picks what the review compares against; `""` is the last commit. */
+  onReferenceChange?: (value: string) => void;
   onBtw: () => void;
   onError: (message: string) => void;
 }) {
@@ -182,6 +192,10 @@ export function CodeSpace({
   const [lspFound, setLspFound] = useState<Record<string, Diagnostic[]>>({});
   const [compareProblem, setCompareProblem] = useState<string | null>(null);
   const [activeUnit, setActiveUnit] = useState<string | null>(null);
+  // The review triage: a subagent orders the queue and leaves out what needs no person's eyes.
+  const [triaging, setTriaging] = useState(false);
+  const [showSkipped, setShowSkipped] = useState(false);
+  const [triageNote, setTriageNote] = useState<string | null>(null);
   const editor = useRef<EditorHandle>(null);
   const fileSection = useRef<HTMLElement>(null);
   const selection = useRef<EditorSelection | null>(null);
@@ -193,6 +207,9 @@ export function CodeSpace({
   // The repository shown: the review, the comparison and the checkpoints are all of this one.
   const repositoryId = worktree?.repository_id ?? null;
   const checkpoint = review?.checkpoint ?? null;
+  const reviewContext = `${sessionId}:${repositoryId}:${reference}:${searchCheckpointId ?? ""}`;
+  const latestReviewContext = useRef(reviewContext);
+  latestReviewContext.current = reviewContext;
 
   function setMode(next: Mode) {
     setModeState(next);
@@ -207,6 +224,9 @@ export function CodeSpace({
   // notice for a hiccup and leaves the screen alone when it found nothing new.
   const loadReview = useCallback(
     async (checkpointId: string | null, quiet = false) => {
+      if (latestReviewContext.current !== reviewContext) {
+        return;
+      }
       if (!sessionId) {
         setReview(null);
         setReviewState(READY);
@@ -214,11 +234,14 @@ export function CodeSpace({
       }
       try {
         const next = await codeReview(sessionId, checkpointId, repositoryId);
+        if (latestReviewContext.current !== reviewContext) {
+          return;
+        }
         setReview((current) => (unchanged(current, next) ? current : next));
         reviewShown.current = true;
         setReviewState(READY);
       } catch (err) {
-        if (quiet) {
+        if (quiet || latestReviewContext.current !== reviewContext) {
           return;
         }
         // Once a review is on screen a failed refresh is a notice; before that it is the screen.
@@ -229,7 +252,7 @@ export function CodeSpace({
         }
       }
     },
-    [sessionId, repositoryId, onError],
+    [sessionId, repositoryId, onError, reviewContext],
   );
 
   /**
@@ -240,6 +263,11 @@ export function CodeSpace({
    */
   const openTarget = useCallback(
     async (quiet = false) => {
+      if (searchCheckpointId) {
+        setCompareProblem(null);
+        await loadReview(searchCheckpointId, quiet);
+        return;
+      }
       if (!reference && sessionId) {
         try {
           const pending = await codeCompare(sessionId, "HEAD", null, false, repositoryId);
@@ -257,6 +285,9 @@ export function CodeSpace({
           await loadReview(compared.id, quiet);
           return;
         } catch (err) {
+          if (latestReviewContext.current !== reviewContext) {
+            return;
+          }
           // A hiccup while the files are changing (git busy) is not an answer: keep what is shown.
           if (quiet && errorCode(err) !== "invalid" && errorCode(err) !== "not-found") {
             return;
@@ -271,7 +302,7 @@ export function CodeSpace({
       setCompareProblem(null);
       await loadReview(null, quiet);
     },
-    [reference, sessionId, repositoryId, loadReview],
+    [searchCheckpointId, reference, sessionId, repositoryId, loadReview, reviewContext],
   );
 
   useEffect(() => {
@@ -282,6 +313,12 @@ export function CodeSpace({
     setReviewState(LOADING);
     void openTarget();
   }, [openTarget]);
+
+  useEffect(() => {
+    if (searchCheckpointId) {
+      setModeState((current) => current === "tree" ? "components" : current);
+    }
+  }, [searchCheckpointId]);
 
   // `quiet`: the files changed under the app, so the list is read again without a spinner and the
   // screen is left alone when it came back the same.
@@ -352,7 +389,42 @@ export function CodeSpace({
     }
     return [...files.map((file) => file.path)].sort();
   }, [mode, tree, files]);
-  const units = useMemo(() => unitQueue(priority), [priority]);
+  const units = useMemo(() => unitQueue(priority, showSkipped), [priority, showSkipped]);
+  const skippedCount = useMemo(() => (priority?.units ?? []).filter((unit) => unit.skipped).length, [priority]);
+
+  async function triage() {
+    if (!sessionId || !checkpoint || triaging) {
+      return;
+    }
+    setTriaging(true);
+    setTriageNote(null);
+    try {
+      const outcome = await reviewTriage(sessionId, checkpoint.id);
+      setTriageNote(
+        outcome.skipped > 0
+          ? `Reordered ${outcome.reordered}, left out ${outcome.skipped} that need no review.`
+          : `Reordered ${outcome.reordered}. Everything still needs a look.`,
+      );
+      await openTarget(true);
+    } catch (err) {
+      onError(errorText(err));
+    } finally {
+      setTriaging(false);
+    }
+  }
+
+  async function untriage() {
+    if (!checkpoint) {
+      return;
+    }
+    try {
+      await reviewUntriage(checkpoint.id);
+      setTriageNote(null);
+      await openTarget(true);
+    } catch (err) {
+      onError(errorText(err));
+    }
+  }
   const headLive = checkpoint?.head_live !== false;
 
   const openFile = useCallback(
@@ -912,10 +984,13 @@ export function CodeSpace({
   }, [bridge, contextOf]);
 
   const requestN = openRequest?.n;
+  const requestReady = !openRequest?.checkpointId || checkpoint?.id === openRequest.checkpointId;
+  const openedRequest = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!openRequest) {
+    if (!openRequest || !requestReady || openedRequest.current === requestN) {
       return;
     }
+    openedRequest.current = requestN;
     void openFile(openRequest.path).then(() => {
       if (openRequest.line) {
         const { line, endLine } = openRequest;
@@ -924,7 +999,7 @@ export function CodeSpace({
     });
     // Only a new request opens a file; later renders must not reopen it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestN]);
+  }, [requestN, requestReady]);
 
   const shown = version === "previous" ? (doc?.base ?? "") : (doc?.buffer ?? "");
   const lineMarks: LineMarks = useMemo(() => {
@@ -1015,6 +1090,7 @@ export function CodeSpace({
         openPath={doc?.path ?? null}
         marks={marks}
         priority={priority}
+        showSkipped={showSkipped}
         onOpenFile={(path) => void openFile(path)}
         onOpenUnit={(unit) => void openUnit(unit)}
       />
@@ -1039,12 +1115,27 @@ export function CodeSpace({
             />
           ) : null}
           <Segmented<Mode> label="Navigator" options={MODES} value={mode} onChange={setMode} />
-          {mode !== "tree" && session ? (
+          {searchCheckpointId ? (
+            <div className="flex items-center justify-between gap-2 px-1.5 text-small text-cg-muted-strong">
+              <span>{checkpoint ? `Checkpoint #${checkpoint.seq}` : "Checkpoint from search"}</span>
+              <Button variant="quiet" onClick={onCloseSearchCheckpoint}>Back to comparison</Button>
+            </div>
+          ) : mode !== "tree" && session && onReferenceChange ? (
+            <ReferenceSelect
+              className="max-w-full rounded-cg-md px-1.5 py-1 text-small font-medium text-cg-muted-strong"
+              currentBranch={worktree?.branch ?? ""}
+              repositoryId={repositoryId}
+              sessionId={session.id}
+              value={reference ?? ""}
+              onChange={onReferenceChange}
+            />
+          ) : null}
+          {!searchCheckpointId && mode !== "tree" && session ? (
             <ShownRow
               hint={
                 reference
-                  ? "The current branch against the reference picked in the header, from where they split"
-                  : "Nothing is compared until a branch or a commit is picked in the header. Until then, what the agent changed last."
+                  ? "The current branch against the reference picked in Compare with, from where they split"
+                  : "What is pending since the last commit. With nothing pending, what the agent changed last."
               }
               refreshHint={reference ? "Compare again with the working tree as it is now" : "Record the working tree as a new checkpoint"}
               text={shownLabel(checkpoint, reference, worktree?.branch ?? null)}
@@ -1052,6 +1143,17 @@ export function CodeSpace({
             />
           ) : null}
         </div>
+        {mode === "components" && session && checkpoint && priority && files.length > 0 ? (
+          <TriageRow
+            note={triageNote}
+            showSkipped={showSkipped}
+            skipped={skippedCount}
+            triaging={triaging}
+            onShowSkipped={setShowSkipped}
+            onTriage={() => void triage()}
+            onUndo={() => void untriage()}
+          />
+        ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody()}</div>
       </aside>
 
@@ -1368,6 +1470,63 @@ export function CodeSpace({
         onClose={() => setCommenting(false)}
         onSubmit={addComment}
       />
+    </div>
+  );
+}
+
+/**
+ * The button that hands the queue to a subagent to order and to trim, and what it did: how many
+ * it left out, a way to see them, and a way to take it all back.
+ */
+function TriageRow({
+  triaging,
+  skipped,
+  showSkipped,
+  note,
+  onTriage,
+  onUndo,
+  onShowSkipped,
+}: {
+  triaging: boolean;
+  skipped: number;
+  showSkipped: boolean;
+  note: string | null;
+  onTriage: () => void;
+  onUndo: () => void;
+  onShowSkipped: (show: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 px-3 pb-2">
+      <div className="flex items-center gap-1.5">
+        <Tip label="A subagent reads the changes, orders the queue and leaves out what needs no review (formatting, renames, generated code). Your own priorities stay.">
+          <Button disabled={triaging} variant="quiet" onClick={onTriage}>
+            {triaging ? <Loader2 aria-hidden="true" className="animate-spin" size={13} /> : <ListFilter aria-hidden="true" size={13} />}
+            {triaging ? "Triaging…" : "Triage with a subagent"}
+          </Button>
+        </Tip>
+        {skipped > 0 && !triaging ? (
+          <Tip label="Put back the order the code gives, with nothing left out">
+            <Button aria-label="Undo the triage" variant="icon" onClick={onUndo}>
+              <Undo2 aria-hidden="true" size={14} />
+            </Button>
+          </Tip>
+        ) : null}
+      </div>
+      {note ? (
+        <p aria-live="polite" className="px-1 text-small text-cg-muted-strong">
+          {note}
+        </p>
+      ) : null}
+      {skipped > 0 ? (
+        <button
+          aria-pressed={showSkipped}
+          className="self-start rounded-cg-sm px-1 text-small text-cg-muted-strong underline-offset-2 hover:text-cg-ink hover:underline"
+          type="button"
+          onClick={() => onShowSkipped(!showSkipped)}
+        >
+          {showSkipped ? `Hide the ${skipped} left out` : `${skipped} left out by the triage · show`}
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -24,7 +24,8 @@ const KIND_LABEL = {
   flow: "Flow diagram",
 } as const;
 
-const KIND_SPACE: Record<Artifact["kind"], SpaceId> = {
+/** Where each artifact opens: a space, or the decisions review over the chat. */
+const KIND_TARGET: Record<Artifact["kind"], SpaceId | "decisions"> = {
   decision: "decisions",
   review_priority: "code",
   flow: "flow",
@@ -49,6 +50,7 @@ export function ArtifactsDrawer({
   session,
   onClose,
   onNavigate,
+  onOpenDecisions,
   onOpenBtw,
   onError,
 }: {
@@ -56,6 +58,7 @@ export function ArtifactsDrawer({
   session: ChatSession | null;
   onClose: () => void;
   onNavigate: (space: SpaceId) => void;
+  onOpenDecisions: () => void;
   onOpenBtw: (task: BtwTask) => void;
   onError: (message: string) => void;
 }) {
@@ -150,8 +153,13 @@ export function ArtifactsDrawer({
                           className="min-w-0 flex-1 truncate text-left text-small text-cg-ink hover:underline"
                           type="button"
                           onClick={() => {
-                            onNavigate(KIND_SPACE[artifact.kind]);
+                            const target = KIND_TARGET[artifact.kind];
                             onClose();
+                            if (target === "decisions") {
+                              onOpenDecisions();
+                            } else {
+                              onNavigate(target);
+                            }
                           }}
                         >
                           {KIND_LABEL[artifact.kind]}

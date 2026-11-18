@@ -1,10 +1,12 @@
 import {
   Keyboard,
   Layers,
+  ListTodo,
   Loader2,
   MessageCircle,
   Moon,
   Plus,
+  Search,
   Server,
   Settings,
   ShieldAlert,
@@ -24,10 +26,11 @@ import {
 import { BtwPalette } from "../btw/BtwPalette";
 import { ChatPanel } from "../chat/ChatPanel";
 import { CodeSpace } from "../code/CodeSpace";
-import { DecisionsSpace } from "../decisions/DecisionsSpace";
+import { DecisionsReview } from "../decisions/DecisionsReview";
 import { FlowSpace } from "../flow/FlowSpace";
-import { TasksSpace } from "../tasks/TasksSpace";
-import { codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
+import { TasksDrawer } from "../tasks/TasksDrawer";
+import { btwList, codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
+import { isSearchReview, type ConversationJump, type SearchResult } from "../lib/search";
 import { useInsightEvents } from "../lib/useInsightEvents";
 import { NewContext } from "../chat/NewContext";
 import { TerminalPanel } from "../terminal/TerminalPanel";
@@ -35,10 +38,10 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { QuietSelect } from "../ui/QuietSelect";
-import { ReferenceSelect } from "./ReferenceSelect";
 import { RepositorySelect } from "./RepositorySelect";
 import { NewBranchDialog } from "./NewBranchDialog";
 import { GoToBranchDialog } from "./GoToBranchDialog";
+import { GlobalSearch } from "./GlobalSearch";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { McpServersDialog } from "./McpServersDialog";
 import { Tip } from "../ui/Overlay";
@@ -52,6 +55,7 @@ import {
   workspaceOpenSession,
   workspaceSelectRepository,
   workspaceSelectWorkspace,
+  workspaceSelectWorktree,
   workspacePreviousWorkspace,
   workspaceListBranches,
   workspaceSelectBranch,
@@ -72,7 +76,7 @@ import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
 import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
-import { isSpaceKey, resolveShortcut } from "./shortcuts";
+import { isSearchKey, isSpaceKey, resolveShortcut } from "./shortcuts";
 import { TRAFFIC_LIGHTS_INSET, useTitlebarInset } from "./titlebar";
 import { referenceKey, resolveFileRef, selectedWorkspace } from "./workspaceView";
 import type { BranchTarget } from "./branchLink";
@@ -81,6 +85,8 @@ import { pickProvider, visibleProviders } from "./providers";
 import { useAppearance } from "./appearance/store";
 import { useFailedArtifacts, useSessionActivity } from "./useSessionActivity";
 import { forgetDraft } from "../chat/draftStore";
+import { forgetClosedSubagents } from "../chat/closedSubagents";
+import { DRAFT_SETTLED_EVENT, draftChats, markDraftChat, settleDraftChat } from "../chat/draftChats";
 
 const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
 
@@ -169,24 +175,29 @@ export function AppShell() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [goToBranchOpen, setGoToBranchOpen] = useState(false);
   const [btwOpen, setBtwOpen] = useState(false);
+  const [btwPrivate, setBtwPrivate] = useState(false);
   const [btwResume, setBtwResume] = useState<BtwTask | null>(null);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTarget, setSearchTarget] = useState<SearchResult | null>(null);
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
+  // Chats made with + that have had no message yet: kept out of the chat list.
+  const [drafts, setDrafts] = useState<ReadonlySet<string>>(draftChats);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The workspace dialog: a new workspace, or the one on screen.
   const [workspaceDialog, setWorkspaceDialog] = useState<"new" | "edit" | null>(null);
-  const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; endLine: number | null; n: number } | null>(null);
+  const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; endLine: number | null; n: number; checkpointId?: string } | null>(null);
   // Spaces stay mounted once visited, so the open file, the selected decision and the diagram
   // are still there when you come back.
   const [visited, setVisited] = useState<ReadonlySet<SpaceId>>(new Set<SpaceId>(["chat"]));
   // Each space writes into its own bridge: the visible one answers the shortcuts, and BTW reads what
   // every space has open, whichever one it was summoned from.
   const codeBridge = useRef(newBridge());
-  const decisionsBridge = useRef(newBridge());
   const flowBridge = useRef(newBridge());
   const bridges: SpaceBridges = {
     code: codeBridge.current,
-    decisions: decisionsBridge.current,
     flow: flowBridge.current,
   };
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
@@ -239,9 +250,18 @@ export function AppShell() {
   }, [space]);
 
   const overlayOpen =
-    sessionsOpen || btwOpen || artifactsOpen || legendOpen || settingsOpen || mcpOpen || goToBranchOpen;
+    sessionsOpen ||
+    btwOpen ||
+    artifactsOpen ||
+    tasksOpen ||
+    searchOpen ||
+    decisionsOpen ||
+    legendOpen ||
+    settingsOpen ||
+    mcpOpen ||
+    goToBranchOpen;
   // A dialog a view opens by itself (a diagram full screen) owns the keyboard as well.
-  const anOverlay = () => overlayOpen || document.querySelector("dialog[open]") !== null;
+  const anOverlay = () => overlayOpen || document.querySelector("dialog[open], [role='dialog'][aria-modal='true']") !== null;
   const hasChat = workspace.sessions.some((item) => item.id === workspace.selected_session_id);
 
   useEffect(() => {
@@ -251,7 +271,7 @@ export function AppShell() {
         return;
       }
       event.preventDefault();
-      const current = space === "code" ? codeBridge.current : space === "decisions" ? decisionsBridge.current : space === "flow" ? flowBridge.current : null;
+      const current = space === "code" ? codeBridge.current : space === "flow" ? flowBridge.current : null;
       switch (action.type) {
         case "space":
           setSpace((current) => nextSpace(current, action.delta));
@@ -263,7 +283,13 @@ export function AppShell() {
           void runWorkspace(workspacePreviousWorkspace);
           break;
         case "btw":
-          openBtw(null);
+          openBtw(null, action.private);
+          break;
+        case "tasks":
+          setTasksOpen((open) => !open);
+          break;
+        case "search":
+          setSearchOpen(true);
           break;
         case "branch":
           if (selectedWorktree) {
@@ -297,31 +323,35 @@ export function AppShell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, overlayOpen, hasChat]);
 
-  // Shift+Up/Down changes space whatever has focus. The editor and the terminal handle their keys
-  // before the page sees them, so this one listens first and keeps the key from reaching them.
+  // The editor and terminal handle their keys before the page sees them.
   useEffect(() => {
-    function onSpaceKey(event: KeyboardEvent) {
-      if (!isSpaceKey(event)) {
+    function onGlobalKey(event: KeyboardEvent) {
+      if (!isSpaceKey(event) && !isSearchKey(event)) {
         return;
       }
       const action = resolveShortcut(event, { space, overlay: anOverlay() });
-      if (action?.type !== "space") {
+      if (action?.type !== "space" && action?.type !== "search") {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      setSpace((current) => nextSpace(current, action.delta));
+      if (action.type === "search") {
+        setSearchOpen(true);
+      } else {
+        setSpace((current) => nextSpace(current, action.delta));
+      }
     }
-    window.addEventListener("keydown", onSpaceKey, true);
-    return () => window.removeEventListener("keydown", onSpaceKey, true);
+    window.addEventListener("keydown", onGlobalKey, true);
+    return () => window.removeEventListener("keydown", onGlobalKey, true);
   }, [space, overlayOpen]);
 
-  function openBtw(resume: BtwTask | null) {
+  function openBtw(resume: BtwTask | null, privately = false) {
     if (!hasChat && !resume) {
       setError("Open or start a chat first: a BTW question attaches to a chat.");
       return;
     }
     setBtwResume(resume);
+    setBtwPrivate(privately);
     setBtwOpen(true);
   }
 
@@ -361,6 +391,62 @@ export function AppShell() {
       ) ?? null,
     [workspace],
   );
+
+  const conversationJump = useMemo<ConversationJump | undefined>(() => {
+    if (!searchTarget || searchTarget.sessionId !== selectedSession?.id) {
+      return undefined;
+    }
+    if (searchTarget.kind === "message") {
+      return { messageId: searchTarget.itemId };
+    }
+    if (searchTarget.kind === "subagent") {
+      return { subagentId: searchTarget.itemId };
+    }
+    return undefined;
+  }, [searchTarget, selectedSession?.id]);
+
+  async function openSearchResult(result: SearchResult) {
+    if (result.kind === "task") {
+      setSearchTarget(result);
+      setTasksOpen(true);
+      return;
+    }
+    if (!result.sessionId) {
+      throw new Error("This result has no conversation to open.");
+    }
+    const task = result.btwId
+      ? (await btwList(result.sessionId)).find((item) => item.id === result.btwId)
+      : null;
+    if (result.btwId && !task) {
+      throw new Error("This BTW is no longer available.");
+    }
+    let snapshot = await workspaceOpenSession(result.sessionId);
+    const review = isSearchReview(result);
+    if (review && result.worktreeId && result.worktreeId !== snapshot.selected_worktree_id) {
+      snapshot = await workspaceSelectWorktree(result.worktreeId);
+    }
+    setWorkspace(snapshot);
+    setSearchTarget(result);
+    if (review) {
+      if (result.path) {
+        const path = result.path;
+        setCodeRequest((current) => ({
+          path, line: result.line, endLine: null, n: (current?.n ?? 0) + 1,
+          checkpointId: result.checkpointId ?? undefined,
+        }));
+      }
+      setSpace("code");
+    } else if (result.kind === "flow") {
+      setSpace("flow");
+    } else {
+      setSpace("chat");
+      if (task) {
+        openBtw(task);
+      } else if (result.kind === "decision" || result.kind === "decision_item") {
+        setDecisionsOpen(true);
+      }
+    }
+  }
 
   async function openMcpSession(sessionId: string) {
     setWorkspace(await workspaceOpenSession(sessionId));
@@ -481,6 +567,9 @@ export function AppShell() {
     setStoredReference(readReference(chatId, focusRepositoryId, ownRepositoryId));
   }, [chatId, focusRepositoryId, ownRepositoryId]);
   function setReference(next: string) {
+    if (searchTarget && isSearchReview(searchTarget)) {
+      setSearchTarget(null);
+    }
     setStoredReference(next);
     if (chatId && focusRepositoryId) {
       try {
@@ -612,14 +701,32 @@ export function AppShell() {
       return;
     }
     setSessionsOpen(false);
-    await runWorkspace(() =>
-      workspaceCreateSession(
+    // A chat made with + that is still empty is the new chat already: it is not made twice.
+    const current = selectedSession;
+    if (
+      current &&
+      drafts.has(current.id) &&
+      current.provider === provider &&
+      current.worktree_id === selectedWorktree.id
+    ) {
+      setSpace("chat");
+      return;
+    }
+    await runWorkspace(async () => {
+      const snapshot = await workspaceCreateSession(
         selectedRepository.id,
         selectedWorktree.id,
         undefined,
         provider,
-      ),
-    );
+        current?.id ?? null,
+      );
+      // It only becomes a chat with its first message; until then the list leaves it out.
+      if (snapshot.selected_session_id) {
+        markDraftChat(snapshot.selected_session_id);
+        setDrafts(draftChats());
+      }
+      return snapshot;
+    });
     setSpace("chat");
   }
 
@@ -633,6 +740,54 @@ export function AppShell() {
   const canCreate = Boolean(selectedRepository && selectedWorktree && provider) && !busy;
 
   const sessionId = selectedSession?.id ?? null;
+
+  // A chat the first message settled (here or in a /new) is listed from then on.
+  useEffect(() => {
+    const refresh = () => setDrafts(draftChats());
+    window.addEventListener(DRAFT_SETTLED_EVENT, refresh);
+    return () => window.removeEventListener(DRAFT_SETTLED_EVENT, refresh);
+  }, []);
+  // A chat made with + and left without a message is not kept: once another chat is on screen
+  // (or, after a restart, any that is not on screen), it is deleted.
+  useEffect(() => {
+    if (boot.kind !== "ready") {
+      return;
+    }
+    const known = new Set([...workspace.sessions, ...(workspace.other_sessions ?? [])].map((item) => item.id));
+    const stale = [...draftChats()].filter((id) => id !== sessionId);
+    if (stale.length === 0) {
+      setDrafts(draftChats());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      for (const id of stale) {
+        settleDraftChat(id);
+        if (!known.has(id)) {
+          continue;
+        }
+        try {
+          const snapshot = await workspaceDeleteSession(id);
+          forgetDraft(id);
+          forgetClosedSubagents(id);
+          if (!cancelled) {
+            setWorkspace(snapshot);
+          }
+        } catch {
+          // It stays, as a chat with no messages; nothing is lost.
+        }
+      }
+      if (!cancelled) {
+        setDrafts(draftChats());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Runs when the chat on screen changes, not on every snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, boot.kind]);
+
   const activity = useSessionActivity(sessionId);
   const failedArtifacts = useFailedArtifacts(sessionId);
 
@@ -652,12 +807,20 @@ export function AppShell() {
     if (selectedSession) {
       return (
         <ChatPanel
+          jumpTo={searchTarget?.btwId ? undefined : conversationJump}
           key={selectedSession.id}
           contextLabel={contextLabel}
           provider={providers?.find((item) => item.kind === selectedSession.provider) ?? null}
           session={selectedSession}
           ownRoot={workspace.worktrees.find((item) => item.id === selectedSession.worktree_id)?.path ?? null}
-          onNewSession={setWorkspace}
+          onNewSession={(snapshot) => {
+            setDrafts(draftChats());
+            setWorkspace(snapshot);
+          }}
+          onOpenDecisions={() => {
+            setSearchTarget((target) => target?.kind === "decision_item" ? null : target);
+            setDecisionsOpen(true);
+          }}
           onOpenFile={openCite}
           onPreviousWorkspace={workspacePreviousWorkspace}
           onSessionChange={(updated) =>
@@ -781,14 +944,6 @@ export function AppShell() {
             onOpen={() => void refreshBranches()}
           />
 
-          <ReferenceSelect
-            currentBranch={currentBranch}
-            repositoryId={focusRepositoryId}
-            sessionId={selectedSession?.id ?? null}
-            value={reference}
-            onChange={setReference}
-          />
-
           <span aria-hidden="true" className="text-cg-control">
             /
           </span>
@@ -847,6 +1002,11 @@ export function AppShell() {
               <Plus size={16} />
             </Button>
           </Tip>
+          <Tip label="Global search (Ctrl/⌘ B)">
+            <Button aria-label="Global search" variant="icon" onClick={() => setSearchOpen(true)}>
+              <Search aria-hidden="true" size={16} />
+            </Button>
+          </Tip>
           <Tip label="Chats, by workspace">
             <Button
               aria-label="Chats, by workspace"
@@ -878,7 +1038,17 @@ export function AppShell() {
               ) : null}
             </Button>
           </Tip>
-          <Tip label="Terminal (Ctrl/⌘ `)">
+          <Tip label="Tasks (Ctrl/⌘ T)">
+            <Button
+              aria-label="Tasks"
+              aria-pressed={tasksOpen}
+              variant="icon"
+              onClick={() => setTasksOpen((open) => !open)}
+            >
+              <ListTodo aria-hidden="true" size={16} />
+            </Button>
+          </Tip>
+          <Tip label="Terminal (Ctrl `)">
             <Button
               aria-label="Toggle terminal"
               aria-pressed={terminalOpen}
@@ -916,8 +1086,12 @@ export function AppShell() {
             <ErrorBoundary label="Code">
               <CodeSpace
                 bridge={codeBridge}
+                searchCheckpointId={searchTarget && searchTarget.sessionId === chatId &&
+                  searchTarget.worktreeId === workspace.selected_worktree_id && isSearchReview(searchTarget) ? searchTarget.checkpointId : null}
+                onCloseSearchCheckpoint={() => setSearchTarget(null)}
                 openRequest={codeRequest}
                 reference={reference || null}
+                onReferenceChange={setReference}
                 changes={changes}
                 repositories={members}
                 session={selectedSession}
@@ -930,30 +1104,12 @@ export function AppShell() {
             </ErrorBoundary>
           </div>
         ) : null}
-        {visited.has("tasks") ? (
-          <div className={space === "tasks" ? "h-full" : "hidden"}>
-            <ErrorBoundary label="Tasks">
-              <TasksSpace active={space === "tasks"} onError={setError} />
-            </ErrorBoundary>
-          </div>
-        ) : null}
-        {visited.has("decisions") ? (
-          <div className={space === "decisions" ? "h-full" : "hidden"}>
-            <ErrorBoundary label="Decisions">
-              <DecisionsSpace
-                bridge={decisionsBridge}
-                session={selectedSession}
-                onError={setError}
-                onOpenFile={openInCode}
-              />
-            </ErrorBoundary>
-          </div>
-        ) : null}
         {visited.has("flow") ? (
           <div className={space === "flow" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Flow">
               <FlowSpace
                 bridge={flowBridge}
+                searchTarget={searchTarget?.kind === "flow" && searchTarget.sessionId === chatId ? searchTarget : null}
                 session={selectedSession}
                 onError={setError}
                 onOpenFile={openInCode}
@@ -968,13 +1124,15 @@ export function AppShell() {
             currentWorkspaceId={workspace.selected_workspace_id}
             otherSessions={workspace.other_sessions ?? []}
             repositoryNames={repositoryNames}
-            sessions={workspace.sessions}
+            sessions={workspace.sessions.filter((item) => !drafts.has(item.id))}
             workspaces={workspace.workspaces}
             worktrees={workspace.worktrees}
             onClose={closeSessions}
             onDelete={(id) => {
               forgetComparisons(id);
               forgetDraft(id);
+              forgetClosedSubagents(id);
+              settleDraftChat(id);
               void runWorkspace(() => workspaceDeleteSession(id));
             }}
             onSelect={(id) => {
@@ -1004,13 +1162,17 @@ export function AppShell() {
         isOpen={btwOpen}
         item={activeItem(bridges, space)}
         others={otherItems(bridges, space)}
+        private={btwPrivate}
         providers={providers ?? []}
         resume={btwResume}
+        jumpTo={searchTarget?.btwId === btwResume?.id ? conversationJump : undefined}
         session={selectedSession}
         space={space}
+        worktreeId={selectedWorktree?.id ?? null}
         onClose={() => {
           setBtwOpen(false);
           setBtwResume(null);
+          setBtwPrivate(false);
         }}
         onError={setError}
       />
@@ -1021,7 +1183,36 @@ export function AppShell() {
         onError={setError}
         onNavigate={setSpace}
         onOpenBtw={(task) => openBtw(task)}
+        onOpenDecisions={() => setDecisionsOpen(true)}
       />
+      <TasksDrawer
+        isOpen={tasksOpen}
+        searchNumber={searchTarget?.kind === "task" ? Number(searchTarget.itemId) : null}
+        onClose={() => {
+          setTasksOpen(false);
+          setSearchTarget((target) => target?.kind === "task" ? null : target);
+        }}
+        onError={setError}
+      />
+      <DecisionsReview
+        isOpen={decisionsOpen}
+        searchId={searchTarget?.kind === "decision_item" ? searchTarget.itemId : null}
+        sessionId={selectedSession?.id ?? null}
+        onClose={() => {
+          setDecisionsOpen(false);
+          setSearchTarget((target) => target?.kind === "decision_item" ? null : target);
+        }}
+        onError={setError}
+        onOpenFile={(path, line) => void openInCode(path, line)}
+      />
+      {searchOpen ? (
+        <GlobalSearch
+          repositories={workspace.repositories}
+          workspaces={workspace.workspaces}
+          onClose={() => setSearchOpen(false)}
+          onOpen={openSearchResult}
+        />
+      ) : null}
       <ShortcutLegend isOpen={legendOpen} onClose={() => setLegendOpen(false)} />
       <SettingsDialog
         isOpen={settingsOpen}

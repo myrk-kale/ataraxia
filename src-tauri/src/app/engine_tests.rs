@@ -402,6 +402,77 @@ fn a_verdict_can_carry_a_comment_and_a_comment_can_stand_alone_without_an_agent_
 }
 
 #[test]
+fn a_finished_decision_review_is_sent_to_the_main_agent_once() {
+    let w = world();
+    agent_turn_editing(&w, "README.md", "# changed\nmore\n");
+    wait_for("checkpoint", || {
+        w.db.latest_checkpoint(w.session.id).unwrap()
+    });
+    w.engine
+        .generate_decisions(w.session.id, None, None, None)
+        .unwrap();
+    wait_for("the generation to finish", || {
+        w.db.list_artifacts(w.session.id, Some(ArtifactKind::Decision))
+            .unwrap()
+            .iter()
+            .all(|a| a.status == ArtifactStatus::Ready)
+            .then_some(())
+    });
+    let decisions = w.engine.decisions(w.session.id).unwrap();
+    assert!(decisions.len() >= 2);
+    let heard = |w: &World| {
+        format!(
+            "{:?} {:?}",
+            w.host
+                .snapshot(&w.session.id)
+                .map(|s| s.items)
+                .unwrap_or_default(),
+            w.engine.queue(w.session.id).items
+        )
+    };
+
+    // A rejection always says why.
+    assert!(
+        w.engine
+            .set_decision_state_with_comment(decisions[0].id, DecisionState::Rejected, Some("  "))
+            .is_err()
+    );
+    // Nothing is sent while one is still open.
+    for decision in &decisions[..decisions.len() - 1] {
+        w.engine
+            .set_decision_state(decision.id, DecisionState::Approved)
+            .unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!heard(&w).contains("[Decision review"));
+    // The last verdict sends one message: all approved.
+    w.engine
+        .set_decision_state(decisions[decisions.len() - 1].id, DecisionState::Approved)
+        .unwrap();
+    let text = wait_for("the review reaches the agent", || {
+        let text = heard(&w);
+        text.contains("[Decision review").then_some(text)
+    });
+    assert!(text.contains("approved all"), "{text}");
+
+    // Reopened and rejected: only that one is the next round, with the developer's reason.
+    let id = decisions[0].id;
+    w.engine
+        .set_decision_state(id, DecisionState::Pending)
+        .unwrap();
+    w.engine
+        .set_decision_state_with_comment(id, DecisionState::Rejected, Some("Keep the old endpoint"))
+        .unwrap();
+    let text = wait_for("the rejection reaches the agent", || {
+        let text = heard(&w);
+        (text.matches("[Decision review").count() >= 2).then_some(text)
+    });
+    assert!(text.contains("rejected 1 of 1"), "{text}");
+    assert!(text.contains("Keep the old endpoint"), "{text}");
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn deleting_all_artifacts_needs_the_chat_title_waits_for_running_work_and_leaves_the_chat_alone() {
     let w = world();
     agent_turn_editing(&w, "README.md", "# changed\nmore\n");
@@ -635,6 +706,52 @@ fn btw_is_read_only_by_default_and_queues_each_reply_for_the_main_chat() {
 }
 
 #[test]
+fn a_private_btw_never_reaches_the_main_chat() {
+    let w = world();
+    let context = BtwContext {
+        space: "code".into(),
+        item: None,
+        active: Vec::new(),
+    };
+    let task = w
+        .engine
+        .btw_start(
+            w.session.id,
+            BtwMode::Ask,
+            "Just between us: what is this?",
+            &context,
+            ReturnPolicy::Manual,
+            false,
+        )
+        .unwrap();
+    assert_eq!(task.return_policy, ReturnPolicy::Manual);
+    let done = wait_for("btw answer", || {
+        let task = w.db.get_btw_task(task.id).unwrap().unwrap();
+        (task.status == ArtifactStatus::Ready).then_some(task)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        w.db.get_btw_task(done.id)
+            .unwrap()
+            .unwrap()
+            .returned_at
+            .is_none()
+    );
+    assert!(
+        !w.engine
+            .queue(w.session.id)
+            .items
+            .iter()
+            .any(|item| item.text.contains("[BTW subagent update"))
+    );
+    assert!(
+        !format!("{:?}", w.host.snapshot(&w.session.id).unwrap().items)
+            .contains("[BTW subagent update")
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
 fn a_read_only_btw_can_be_allowed_to_edit_and_keeps_its_conversation() {
     let w = world();
     let context = BtwContext {
@@ -721,7 +838,7 @@ fn btw_does_what_it_was_asked_in_ataraxia_and_the_main_agent_hears_what_was_done
             BtwMode::Ask,
             "comment on the first component, raise it, and generate decisions and a diagram [fake:actions]",
             &context,
-            ReturnPolicy::Manual,
+            ReturnPolicy::OnCompletion,
             false,
         )
         .unwrap();
@@ -835,6 +952,7 @@ fn a_btw_runs_on_the_provider_and_model_that_were_chosen_for_it() {
             false,
             Some(ProviderKind::Fake),
             Some("quick-model".into()),
+            None,
         )
         .unwrap();
     let hidden = w.db.get_session(task.session_id).unwrap().unwrap();
@@ -998,7 +1116,7 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_queued_without_waiting() 
             BtwMode::Ask,
             "what is a token?",
             &context,
-            ReturnPolicy::Manual,
+            ReturnPolicy::OnCompletion,
             false,
         )
         .unwrap();

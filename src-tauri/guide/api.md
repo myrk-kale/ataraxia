@@ -55,7 +55,7 @@ out. `{...}` in a path is an id taken from an earlier response.
 | `GET /v1/decisions` | no | the decisions of this chat |
 | `GET /v1/decisions/{decision_id}` | no | a decision with its discussion |
 | `POST /v1/decisions` | yes | opens a decision |
-| `POST /v1/decisions/{decision_id}/messages` | yes | adds a message to a decision's thread |
+| `POST /v1/decisions/{decision_id}/messages` | yes | adds a note to a decision |
 | `POST /v1/decisions/{decision_id}/commits` | yes | says a commit influences a decision |
 | `POST /v1/comments` | yes | comments on a component or a line |
 | `GET /v1/tasks` | no | the developer's own tasks, newest first; `?status=draft`, `ready` or `done` filters |
@@ -75,7 +75,7 @@ more fields than shown.
 
 ### POST /v1/decisions
 
-Opens a decision as a thread in the Decisions tab. See `decisions.md` for what to record.
+Records a decision; the developer reviews it from the chat's Decisions card. See `decisions.md` for what to record.
 
 | Field | Type | |
 | --- | --- | --- |

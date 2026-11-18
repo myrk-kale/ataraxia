@@ -1,0 +1,52 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { RepositoryId, SessionId, WorkspaceId, WorktreeId } from "./workspace";
+
+export const SEARCH_KINDS = {
+  chat: "Conversation",
+  message: "Message",
+  subagent: "Subagent",
+  checkpoint: "Checkpoint",
+  flow: "Flow diagram",
+  decision: "Decision artifact",
+  decision_item: "Decision",
+  review_priority: "Review priority",
+  review_comment: "Review comment",
+  btw: "BTW",
+  task: "Task",
+} as const;
+
+export type SearchKind = keyof typeof SEARCH_KINDS;
+
+export type SearchRequest = {
+  query: string;
+  kind: SearchKind | null;
+  workspaceId: WorkspaceId | null;
+  repositoryId: RepositoryId | null;
+};
+
+export type SearchResult = {
+  documentId: number;
+  kind: SearchKind;
+  itemId: string;
+  sessionId: SessionId | null;
+  btwId: string | null;
+  title: string;
+  excerpt: string;
+  workspace: string | null;
+  repository: string | null;
+  repositoryId: RepositoryId | null;
+  path: string | null;
+  line: number | null;
+  checkpointId: string | null;
+  worktreeId: WorktreeId | null;
+};
+
+export function isSearchReview(result: SearchResult): boolean {
+  return result.kind === "checkpoint" || result.kind === "review_priority" || result.kind === "review_comment";
+}
+
+export type ConversationJump = { messageId?: string; subagentId?: string };
+
+export function globalSearch(request: SearchRequest): Promise<SearchResult[]> {
+  return invoke("global_search", { request });
+}

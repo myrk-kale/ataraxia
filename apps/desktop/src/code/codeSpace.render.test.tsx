@@ -137,9 +137,9 @@ describe("what the Code space compares", () => {
     await space({ reference: null, branch: "feature/x" });
     const text = host.textContent ?? "";
     expect(text).toContain("No pending changes");
-    expect(text).toContain("Pick a branch or a commit in Compare with…");
+    expect(text).toContain("Pick an earlier commit or another branch in Compare with");
     expect(count("code_compare")).toBeGreaterThan(0);
-    expect(host.querySelectorAll("[data-testid=shown-label]")[0]?.textContent).toContain("No comparison chosen");
+    expect(host.querySelectorAll("[data-testid=shown-label]")[0]?.textContent).toContain("Pending since the last commit");
   });
 
   it("says the worktree is not on a branch when there is none", async () => {

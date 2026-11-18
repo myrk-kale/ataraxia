@@ -1,6 +1,7 @@
 // Browser-only stand-in for the Tauri IPC so the UI can be reviewed with `pnpm dev`.
 // Never loaded inside the real app (main.tsx checks for __TAURI_INTERNALS__).
-import { handleInsights, removeFile } from "./insightsMock";
+import { handleInsights, removeFile, searchableInsights } from "./insightsMock";
+import type { SearchRequest, SearchResult } from "../lib/search";
 
 export {};
 
@@ -524,10 +525,64 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       { repositoryId: "r1", files: 2, unreviewed: 2 },
       { repositoryId: "r2", files: 3, unreviewed: 3 },
     ];
+    case "global_search": {
+      const request = args?.request as SearchRequest;
+      const hits: SearchResult[] = [];
+      const normalize = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+      const terms = normalize(request.query).match(/[\p{L}\p{N}]+/gu) ?? [];
+      if (terms.length === 0) {
+        return hits;
+      }
+      function add(candidate: Pick<SearchResult, "kind" | "itemId" | "title" | "excerpt" | "sessionId"> &
+        Partial<Pick<SearchResult, "checkpointId">>) {
+        const owner = snapshot.sessions.find((item) => item.id === candidate.sessionId);
+        const scope = owner && workspaces.find((item) => item.id === "ws1");
+        const repository = owner && snapshot.repositories.find((item) => item.id === owner.repository_id);
+        if ((request.kind && request.kind !== candidate.kind) ||
+            (request.workspaceId && request.workspaceId !== scope?.id) ||
+            (request.repositoryId && request.repositoryId !== repository?.id)) {
+          return;
+        }
+        const text = normalize(candidate.title + " " + candidate.excerpt);
+        if (terms.every((term) => text.includes(term))) {
+          hits.push({
+            ...candidate, documentId: hits.length + 1, workspace: scope?.name ?? null,
+            repository: repository?.name ?? null, repositoryId: repository?.id ?? null,
+            path: null, line: null, btwId: null, checkpointId: candidate.checkpointId ?? null,
+            worktreeId: candidate.checkpointId ? owner?.worktree_id ?? null : null,
+          });
+        }
+      }
+      for (const item of snapshot.sessions) {
+        add({ kind: "chat", itemId: item.id, sessionId: item.id, title: item.title, excerpt: "" });
+      }
+      for (const item of chat.items) {
+        const entry = item as { kind: string; id: string; text: string };
+        if (entry.kind === "message" && snapshot.sessions.some((item) => item.id === session.id)) {
+          add({ kind: "message", itemId: entry.id, sessionId: session.id, title: session.title, excerpt: entry.text });
+        }
+      }
+      for (const task of devTasks) {
+        add({ kind: "task", itemId: String(task.number), sessionId: null, title: `#${task.number} ${task.title}`, excerpt: task.notes });
+      }
+      for (const artifact of searchableInsights()) {
+        add(artifact);
+      }
+      return hits.slice(0, 60);
+    }
+    case "workspace_open_session": {
+      const selected = snapshot.sessions.find((item) => item.id === args?.sessionId);
+      if (selected) {
+        snapshot.selected_workspace_id = "ws1";
+        snapshot.selected_session_id = selected.id;
+        snapshot.selected_repository_id = selected.repository_id;
+        snapshot.selected_worktree_id = selected.worktree_id;
+      }
+      return view();
+    }
     case "workspace_bootstrap":
     case "workspace_select_worktree":
     case "workspace_create_session":
-    case "workspace_open_session":
     case "workspace_open_repository": return view();
     case "workspace_delete_session": {
       const index = snapshot.sessions.findIndex((item) => item.id === args?.sessionId);

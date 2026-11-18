@@ -20,20 +20,20 @@ export function newBridge(): SpaceBridge {
 }
 
 /** One bridge per space that has something to look at, so BTW knows what each one has open. */
-export type SpaceBridges = Record<"code" | "decisions" | "flow", SpaceBridge>;
+export type SpaceBridges = Record<"code" | "flow", SpaceBridge>;
 
 export function newBridges(): SpaceBridges {
-  return { code: newBridge(), decisions: newBridge(), flow: newBridge() };
+  return { code: newBridge(), flow: newBridge() };
 }
 
 /** What is open in the space the person is in, if it is one that has something to look at. */
 export function activeItem(bridges: SpaceBridges, space: string): BtwContextItem | null {
-  return space === "code" || space === "decisions" || space === "flow" ? bridges[space].context : null;
+  return space === "code" || space === "flow" ? bridges[space].context : null;
 }
 
-/** What the other spaces have open (the file, the decision, the diagram), for BTW from anywhere. */
+/** What the other spaces have open (the file, the diagram), for BTW from anywhere. */
 export function otherItems(bridges: SpaceBridges, space: string): BtwContextItem[] {
-  return (["code", "decisions", "flow"] as const)
+  return (["code", "flow"] as const)
     .filter((id) => id !== space)
     .map((id) => bridges[id].context)
     .filter((item): item is BtwContextItem => item !== null);

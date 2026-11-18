@@ -484,6 +484,7 @@ mod tests {
             tested: None,
             dirs: 0,
             generated: false,
+            skipped: false,
         }
     }
 

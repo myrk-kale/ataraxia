@@ -225,8 +225,8 @@ export function describeTarget(checkpoint: Checkpoint): string {
 }
 
 /**
- * What the Code space is showing, in plain words: the current branch against the reference the
- * header picked, or, with none, what changed last.
+ * What the Code space is showing, in plain words: the current branch against the reference picked
+ * in Compare with, or, with the default (the last commit), what is pending since it.
  */
 export function shownLabel(
   checkpoint: Pick<Checkpoint, "source"> | null,
@@ -236,18 +236,15 @@ export function shownLabel(
   if (reference) {
     return `${branch ?? "Working tree"} against ${reference}`;
   }
-  if (!checkpoint) {
-    return "No comparison chosen";
-  }
-  if (checkpoint.source === "compare") {
-    return "Pending changes";
+  if (!checkpoint || checkpoint.source === "compare") {
+    return "Pending since the last commit";
   }
   return checkpoint.source === "turn" ? "Last agent turn" : "Edits since the last check";
 }
 
 /**
- * Why the Changed and Components lists are empty, and what to do about it. Nothing is compared
- * unless a reference was picked: without one, only what the agent changed in a turn can show.
+ * Why the Changed and Components lists are empty, and what to do about it. The default reference
+ * is the last commit: with nothing pending, only what the agent changed in a turn can show.
  */
 export function noDiffMessage(reference: string | null, problem: string | null, branch: string | null): string {
   if (reference) {
@@ -258,7 +255,7 @@ export function noDiffMessage(reference: string | null, problem: string | null, 
   }
   const after = "Pending changes and what the agent changes show here.";
   return branch
-    ? `No pending changes. Pick a branch or a commit in Compare with… (in the header) to see what ${branch} changes against it. ${after}`
+    ? `No pending changes since the last commit. Pick an earlier commit or another branch in Compare with to see what ${branch} changes against it. ${after}`
     : `No pending changes, and this worktree is not on a branch. Switch to a branch in the header to compare it with another. ${after}`;
 }
 
@@ -276,9 +273,10 @@ export function unchanged<T>(before: T, after: T): boolean {
   }
 }
 
-/** Units in the order to review them: most critical first, then by position. */
-export function unitQueue(priority: ReviewPriority | null): Unit[] {
-  return [...(priority?.units ?? [])].sort(
+/** Units in the order to review them: most critical first, then by position. What the review
+ * triage left out is not in it unless `withSkipped`. */
+export function unitQueue(priority: ReviewPriority | null, withSkipped = false): Unit[] {
+  return [...(priority?.units ?? [])].filter((unit) => withSkipped || !unit.skipped).sort(
     (a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.start_line - b.start_line,
   );
 }
