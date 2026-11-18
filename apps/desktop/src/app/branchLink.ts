@@ -10,7 +10,7 @@ export type BranchParse = { ok: true; target: BranchTarget } | { ok: false; prob
 
 function decode(text: string): string {
   try {
-    return decodeURIComponent(text.replace(/\+/g, "%20"));
+    return decodeURIComponent(text);
   } catch {
     return text;
   }
@@ -40,10 +40,9 @@ function fromAzure(url: URL): BranchParse | null {
   const parts = url.pathname.split("/").filter(Boolean);
   const git = parts.indexOf("_git");
   const repository = git >= 0 ? (parts[git + 1] ?? null) : null;
-  const pull = parts.indexOf("pullrequest");
-  if (pull >= 0) {
+  if (git >= 0 && parts[git + 2] === "pullrequest") {
     return fail(
-      `That is a pull request link (#${parts[pull + 1] ?? "?"}). Paste the link of its source branch, or the branch name.`,
+      `That is a pull request link (#${parts[git + 3] ?? "?"}). Paste the link of its source branch, or the branch name.`,
     );
   }
   const version = url.searchParams.get("version");
@@ -53,42 +52,76 @@ function fromAzure(url: URL): BranchParse | null {
     }
     return fail("That link points at a commit or a tag, not a branch.");
   }
-  // A branch picked in the branches page can also sit in the path: `_git/repo/branches?...&version=`.
-  return fail("That link does not say which branch. Open the branch in Azure DevOps and copy its link.");
+  if (repository && parts.length === git + 2 && url.hash) {
+    return fromClone(url);
+  }
+  return fail("That link does not say which branch. Copy a branch link or append #branch to the repository URL.");
 }
 
-/** GitHub and GitLab: `…/tree/feature/x`, `…/-/tree/feature/x`. */
-function fromForge(url: URL): BranchParse | null {
+function fromClone(url: URL): BranchParse {
+  const repository = url.pathname.split("/").filter(Boolean).at(-1)?.replace(/\.git$/, "");
+  if (!repository) {
+    return fail("That link does not name a repository.");
+  }
+  if (!url.hash) {
+    return fail("That link does not name a branch. Append #branch to the repository URL.");
+  }
+  return found(decode(url.hash.slice(1)), repository);
+}
+
+/** GitHub and GitLab tree links and Bitbucket Cloud source links. */
+function fromWeb(url: URL): BranchParse {
+  const azure = fromAzure(url);
+  if (azure) {
+    return azure;
+  }
   const parts = url.pathname.split("/").filter(Boolean);
-  if (parts.includes("pull") || parts.includes("pulls") || parts.includes("merge_requests")) {
+  const separator = url.hostname === "github.com" || url.hostname === "bitbucket.org" ? -1 : parts.indexOf("-", 2);
+  const actionIndex = separator === -1 ? 2 : separator + 1;
+  const action = parts[actionIndex];
+  const repository = parts[separator === -1 ? 1 : separator - 1] ?? null;
+  if (action === "pull" || action === "pulls" || action === "merge_requests" || action === "pull-requests") {
     return fail("That is a pull request link. Paste the link of its source branch, or the branch name.");
   }
-  const tree = parts.indexOf("tree");
-  if (tree >= 0 && parts.length > tree + 1) {
-    const repository = parts[tree - 1] === "-" ? parts[tree - 2] : parts[tree - 1];
-    return found(decode(parts.slice(tree + 1).join("/")), repository ?? null);
+  if (action === "tree" && parts.length > actionIndex + 1) {
+    return found(decode(parts.slice(actionIndex + 1).join("/")), repository);
   }
-  return null;
+  if (url.hostname === "bitbucket.org" && parts[2] === "src" && parts[3]) {
+    return found(decode(parts[3]), parts[1] ?? null);
+  }
+  if (parts.length === 2 || parts.at(-1)?.endsWith(".git") || (parts.length === 1 && url.hash)) {
+    return fromClone(url);
+  }
+  return fail("That link does not name a branch.");
 }
 
-/**
- * Reads what a person pasted to switch branch: an Azure DevOps link (or a GitHub or GitLab one), a
- * branch name, a ref (`refs/heads/x`, `origin/x`), or the git command that does it
- * (`git checkout x`, `git switch x`).
- */
+/** Read a web branch link, a repository URL with #branch, or a Git branch expression. */
 export function parseBranchInput(input: string): BranchParse {
   const text = input.trim().replace(/^["'`]+|["'`]+$/g, "");
   if (!text) {
     return fail("Paste a branch link or type a branch name.");
   }
-  if (/^https?:\/\//i.test(text)) {
+  // Git also accepts the SCP-style SSH address git@host:owner/repo.git.
+  const scp = /^((?:[^@\s/:]+@)?[^@\s/:]+):((?!\/\/)\S+)$/.exec(text);
+  const address = /^(?:https?|ssh):\/\//i.test(text)
+    ? text
+    : scp && !/^(?:https?|ssh):/i.test(text)
+      ? `ssh://${scp[1]}/${scp[2]}`
+      : null;
+  if (address) {
     let url: URL;
     try {
-      url = new URL(text);
+      url = new URL(address);
     } catch {
       return fail("That link could not be read.");
     }
-    return fromAzure(url) ?? fromForge(url) ?? fail("That link does not name a branch.");
+    if (!url.hostname) {
+      return fail("That link could not be read.");
+    }
+    return url.protocol === "ssh:" ? fromClone(url) : fromWeb(url);
+  }
+  if (/^(?:https?|ssh):/i.test(text) || text.includes("://") || /^[^\s/]+@[^/\s]+:/.test(text)) {
+    return fail("That link could not be read.");
   }
   const command = /^git\s+(?:checkout|switch)\s+(?:-[a-zA-Z]+\s+)*(\S+)$/.exec(text);
   const name = command ? command[1] : text;

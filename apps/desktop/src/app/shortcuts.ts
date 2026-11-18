@@ -3,7 +3,9 @@ import type { SpaceId } from "./spaces";
 export type ShortcutAction =
   | { type: "space"; delta: -1 | 1 }
   | { type: "previous-workspace" }
-  | { type: "btw" }
+  | { type: "btw"; private: boolean }
+  | { type: "tasks" }
+  | { type: "search" }
   | { type: "branch" }
   | { type: "artifacts" }
   | { type: "terminal" }
@@ -53,9 +55,17 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return matches(target, TEXT_SELECTOR);
 }
 
-/** Ctrl or Cmd with a backtick, no Alt or Shift: the terminal toggle. */
+/**
+ * Control with a backtick, no Alt, Shift or Cmd: the terminal toggle. Control on every platform,
+ * the Mac included, as in the editors people know it from.
+ */
 export function isTerminalToggle(event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): boolean {
-  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "`";
+  return event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "`";
+}
+
+export function isSearchKey(event: KeyLike): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !event.repeat &&
+    !event.isComposing && event.key.toLowerCase() === "b";
 }
 
 /** Shift with an up or down arrow, and nothing else held: the move between spaces. */
@@ -87,9 +97,18 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (context.overlay) {
     return null;
   }
-  // Monaco owns Cmd+K as the start of its chords; the editor wires BTW itself.
+  if (isSearchKey(event)) {
+    return { type: "search" };
+  }
+  // Monaco owns Cmd+K as the start of its chords; the editor wires BTW itself. With Shift it is
+  // a private BTW, whose replies never reach the main chat.
   if (mod && !event.altKey && key === "k" && !inEditor) {
-    return { type: "btw" };
+    return { type: "btw", private: event.shiftKey };
+  }
+  // The tasks panel, from anywhere but the editor. Control+T stays the shell's inside the terminal.
+  const inTerminal = matches(event.target, ".xterm");
+  if (mod && !event.altKey && !event.shiftKey && key === "t" && !inEditor && !(inTerminal && event.ctrlKey) && !event.repeat) {
+    return { type: "tasks" };
   }
   // Go to a branch from a link or a name, from anywhere (not inside the editor, where Monaco has its own).
   if (mod && event.shiftKey && !event.altKey && key === "b" && !inEditor && !event.repeat) {
@@ -124,7 +143,7 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (event.shiftKey) {
     return null;
   }
-  const reviewing = context.space === "code" || context.space === "decisions";
+  const reviewing = context.space === "code";
   if (!reviewing || event.repeat) {
     return null;
   }
@@ -145,9 +164,12 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Alt", "W"], label: "Switch to the previous workspace", scope: "Everywhere" },
   { keys: ["Shift", "↑/↓"], label: "Previous / next space, even while typing or in the editor and terminal", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "K"], label: "BTW: ask about what you have open, in any space", scope: "Everywhere" },
-  { keys: ["Ctrl/⌘", "Shift", "B"], label: "Go to a branch: paste an Azure DevOps link or type a name", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "Shift", "K"], label: "Private BTW: nothing of it is sent to the main chat", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "T"], label: "Tasks panel", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "B"], label: "Global search", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "Shift", "B"], label: "Go to a branch by name or URL", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },
-  { keys: ["Ctrl/⌘", "`"], label: "Toggle the terminal", scope: "Everywhere" },
+  { keys: ["Ctrl", "`"], label: "Toggle the terminal (Control, on the Mac too)", scope: "Everywhere" },
   { keys: ["Esc"], label: "Close the overlay or stop the running turn", scope: "Everywhere" },
   { keys: ["Enter"], label: "Send the message, or add it to the queue while the agent works", scope: "Message field" },
   { keys: ["Ctrl/⌘", "Shift", "M"], label: "Dictate: speak, and it is written into the message field on this computer", scope: "Chat" },
@@ -155,7 +177,7 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Alt", "V"], label: "Switch between the current version (editable) and the previous one (read-only)", scope: "Code" },
   { keys: ["Alt", "Z"], label: "Wrap long lines or let them run on", scope: "Code" },
   { keys: ["Ctrl/⌘", "S"], label: "Save the open file (an * after its name means unsaved changes)", scope: "Code" },
-  { keys: ["J", "K"], label: "Next / previous item in the queue", scope: "Code, Decisions" },
-  { keys: ["C"], label: "Comment on the selection", scope: "Code, Decisions" },
+  { keys: ["J", "K"], label: "Next / previous item in the queue", scope: "Code" },
+  { keys: ["C"], label: "Comment on the selection", scope: "Code" },
   { keys: ["?"], label: "Show this legend", scope: "Everywhere" },
 ];

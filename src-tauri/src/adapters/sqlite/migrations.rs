@@ -29,6 +29,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (12, include_str!("../../../migrations/012_autocomplete.sql")),
     (13, include_str!("../../../migrations/013_tasks.sql")),
+    (14, include_str!("../../../migrations/014_search.sql")),
 ];
 
 fn io(error: rusqlite::Error) -> Error {
@@ -58,13 +59,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             continue;
         }
         let applied_at = now_rfc3339()?;
-        let script = format!(
-            "BEGIN;\n{sql}\nINSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ({version}, '{applied_at}');\nCOMMIT;"
-        );
-        if let Err(error) = conn.execute_batch(&script) {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(io(error));
+        let tx = conn.unchecked_transaction().map_err(io)?;
+        tx.execute_batch(sql).map_err(io)?;
+        if *version == 14 {
+            super::search::install_triggers(&tx).map_err(io)?;
         }
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![version, applied_at],
+        )
+        .map_err(io)?;
+        tx.commit().map_err(io)?;
     }
     Ok(())
 }
@@ -94,7 +99,8 @@ mod tests {
             "INSERT INTO repositories VALUES ('r1', '/w/app', 'app', 't', 't');
              INSERT INTO worktrees VALUES ('w1', 'r1', '/w/app', 'main', 'abc', 't', 't');
              INSERT INTO chat_sessions (id, repository_id, worktree_id, provider, title, status, created_at, updated_at)
-               VALUES ('s1', 'r1', 'w1', 'fake', 'Chat 1', 'idle', 't', 't');",
+               VALUES ('s1', 'r1', 'w1', 'fake', 'Chat 1', 'idle', 't', 't');
+             INSERT INTO chat_items VALUES ('s1', 0, '{\"kind\":\"message\",\"role\":\"user\",\"id\":\"m1\",\"text\":\"existing transcript\"}');",
         )
         .unwrap();
 
@@ -119,6 +125,18 @@ mod tests {
         assert_eq!(
             workspace, "r1",
             "the chat moved into its repository's workspace"
+        );
+        let matching_message: String = conn
+            .query_row(
+                "SELECT d.item_id FROM search_fts JOIN search_documents d ON d.id = search_fts.rowid
+                 WHERE search_fts MATCH 'transcript'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            matching_message, "m1",
+            "existing messages are indexed at migration"
         );
     }
 }

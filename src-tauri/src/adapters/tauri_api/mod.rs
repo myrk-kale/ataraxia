@@ -51,6 +51,14 @@ pub fn core_status() -> String {
     app::core_status_message()
 }
 
+#[tauri::command(async)]
+pub fn global_search(
+    state: tauri::State<'_, AppState>,
+    request: crate::adapters::sqlite::SearchRequest,
+) -> std::result::Result<Vec<crate::adapters::sqlite::SearchResult>, String> {
+    state.sqlite.search(&request).map_err(map_error)
+}
+
 #[tauri::command]
 pub fn workspace_bootstrap(
     state: tauri::State<'_, AppState>,
@@ -216,14 +224,17 @@ pub fn workspace_create_session(
     worktree_id: WorktreeId,
     title: Option<String>,
     provider: Option<ProviderKind>,
+    like: Option<SessionId>,
 ) -> std::result::Result<WorkspaceSnapshot, String> {
     with_workspace(&state, |workspace| {
-        workspace.create_session(
-            repository_id,
-            worktree_id,
-            title,
-            provider.unwrap_or(ProviderKind::Fake),
-        )
+        let provider = provider.unwrap_or(ProviderKind::Fake);
+        // The chat on screen, when it runs the same harness: the new one keeps its model and
+        // effort (another harness has other models).
+        let settings = like
+            .and_then(|id| workspace.store.get_session(id).ok().flatten())
+            .filter(|session| session.provider == provider)
+            .map(|session| (session.model, session.effort));
+        workspace.create_session_with(repository_id, worktree_id, title, provider, settings)
     })
 }
 

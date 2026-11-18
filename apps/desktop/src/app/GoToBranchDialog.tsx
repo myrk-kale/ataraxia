@@ -8,11 +8,6 @@ function problemText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Goes to a branch from a pasted link or a name: an Azure DevOps (or GitHub, GitLab) link, a
- * branch name, a ref, or a `git checkout` line. The app finds the branch here or on the remote,
- * fetching when it has to, and switches to it, in the right repository of the workspace.
- */
 export function GoToBranchDialog({
   isOpen,
   currentBranch,
@@ -70,11 +65,12 @@ export function GoToBranchDialog({
           Go to branch
         </h2>
         <input
-          aria-label="Branch link or name"
+          aria-describedby="go-to-branch-hint"
+          aria-label="Branch name or URL"
           autoComplete="off"
           autoFocus
           className="w-full rounded-cg-md border border-cg-control bg-cg-panel px-3 py-2 text-ui text-cg-ink focus:border-cg-ink"
-          placeholder="Paste an Azure DevOps link or type a branch name"
+          placeholder="Branch name or URL"
           readOnly={busy}
           spellCheck={false}
           value={text}
@@ -83,7 +79,7 @@ export function GoToBranchDialog({
             setProblem(null);
           }}
         />
-        <p aria-live="polite" className="min-h-5 text-small text-cg-muted-strong">
+        <p id="go-to-branch-hint" aria-live="polite" className="min-h-5 text-small text-cg-muted-strong">
           {problem ? (
             <span className="text-cg-red" role="alert">
               {problem}
@@ -99,7 +95,10 @@ export function GoToBranchDialog({
           ) : parsed ? (
             <span className="text-cg-red">{parsed.problem}</span>
           ) : (
-            "Nothing changes while there are edits git would have to overwrite."
+            <>
+              Paste a branch link from Azure DevOps, GitHub, GitLab, or Bitbucket.
+              For HTTP(S) or SSH clone URLs, append <code className="font-mono">#branch</code>.
+            </>
           )}
         </p>
         <div className="flex justify-end gap-2">

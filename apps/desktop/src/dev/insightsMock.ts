@@ -1,4 +1,6 @@
 // Browser-only sample data for Code, Decisions, Flow, BTW and artifacts (see tauriMock.ts).
+import { SEARCH_KINDS, type SearchResult } from "../lib/search";
+
 export {};
 
 type Emit = (event: string, payload: unknown) => void;
@@ -234,6 +236,27 @@ const artifactList = () => [
 type Task = Record<string, unknown> & { status: string; summary: string | null };
 let btwTasks: Task[] = [];
 
+type InsightSearchItem = Pick<SearchResult, "kind" | "itemId" | "title" | "excerpt" | "sessionId" | "checkpointId">;
+
+export function searchableInsights(): InsightSearchItem[] {
+  return [
+    ...decisions.map((item) => ({
+      kind: "decision_item" as const, itemId: item.id, title: String(item.title),
+      excerpt: String(item.summary), sessionId, checkpointId: item.checkpoint_id,
+    })),
+    ...artifactList().flatMap<InsightSearchItem>((item) => {
+      const kind = item.kind;
+      if (kind !== "flow" && kind !== "decision" && kind !== "review_priority") {
+        return [];
+      }
+      return [{
+        kind, itemId: String(item.id), title: SEARCH_KINDS[kind], excerpt: JSON.stringify(item.content),
+        sessionId, checkpointId: String(item.checkpoint_id),
+      }];
+    }),
+  ];
+}
+
 export function handleInsights(cmd: string, args: Record<string, unknown> | undefined, emit: Emit): { handled: boolean; value?: unknown } {
   const ok = (value: unknown) => ({ handled: true, value });
   switch (cmd) {
@@ -345,6 +368,9 @@ export function handleInsights(cmd: string, args: Record<string, unknown> | unde
     case "decision_set_state": {
       const decision = decisions.find((d) => d.id === args?.decisionId)!;
       const note = String(args?.comment ?? "").trim();
+      if (args?.decisionState === "rejected" && !note) {
+        throw new Error("say why you reject it: a rejection needs a comment");
+      }
       if (note) {
         messages.set(decision.id, [...(messages.get(decision.id) ?? []), { id: crypto.randomUUID(), decision_id: decision.id, author: "user", text: note, code_ref: null, created_at: new Date().toISOString() }]);
       }

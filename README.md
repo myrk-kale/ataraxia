@@ -135,14 +135,15 @@ the terminal. Settings has the rest, including a switch for the few sounds the a
   </tr>
 </table>
 
-Small things are one key away: `Ctrl/Cmd+Shift+B` goes to a branch from a pasted Azure DevOps link or a name
-(fetching it when the remote has it and you do not yet), `Ctrl/Cmd+Enter` sends a message at once instead of
+Small things are one key away: `Ctrl/Cmd+Shift+B` goes to a branch by name or from a branch link on
+Azure DevOps, GitHub, GitLab, or Bitbucket. You can also paste an HTTP(S) or SSH clone URL with `#branch`
+appended. Ataraxia fetches the branch from the configured remote if needed. `Ctrl/Cmd+Enter` sends a message at once instead of
 queueing it behind the agent, and `Ctrl/Cmd+Shift+M` dictates into the message field with Whisper, built into the app
 and running on your own computer (the model, about 570 MB, is downloaded once, after you agree). A file the agent names in the chat, `src/app.ts:42-50` or a markdown link, opens in the
 editor at those lines, and a Jupyter notebook opens as a notebook. The Tasks screen is a list of your own, one
 line each, numbered: say `#12` in a chat and the agent reads task 12.
 
-Everything has a shortcut: `Shift+↑/↓` changes screen, `` Ctrl/Cmd+` `` opens a terminal in the current worktree,
+Everything has a shortcut: `Shift+↑/↓` changes screen, `` Ctrl+` `` (Control, on the Mac too) opens a terminal in the current worktree,
 `J` and `K` step through the queue, `C` comments, and `?` lists them all.
 
 ## What stays on your machine

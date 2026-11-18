@@ -1,8 +1,13 @@
 # Decisions
 
-A decision is a choice the reviewer should consciously accept or reject. It opens as a thread in
-the Decisions tab and stays open while the code changes. The developer can discuss it, approve
-it, or reopen it.
+A decision is a choice the reviewer should consciously accept or reject. It shows in the chat as
+an artifact (a Decisions card); the developer opens it full screen and approves or rejects each
+decision. A rejection always comes with the developer's comment.
+
+When the last open decision gets its verdict, Ataraxia sends you one message that starts with
+`[Decision review`: either everything was approved (nothing to change), or which decisions were
+rejected and the comment on each. Act on the rejected ones: change the code as the comment asks,
+or ask the developer when the comment is unclear.
 
 ## Which ones to record
 
@@ -24,7 +29,7 @@ inventing them. Call `GET /v1/decisions` first so you do not repeat one that exi
 - `files`: the code it is about (in a workspace of several repositories, `<repository>/<path>` outside the first one), as objects with a `path` and, where you know them,
   `start_line` and `end_line`.
 
-Call it once per decision. Do not bundle several choices in one thread. The response is the
+Call it once per decision. Do not bundle several choices in one decision. The response is the
 decision, and its `id` is what the calls below need. `api.md` has a complete script.
 
 ## After the decision exists
@@ -32,5 +37,5 @@ decision, and its `id` is what the calls below need. `api.md` has a complete scr
 - A commit that settles, changes or contradicts a decision:
   `POST /v1/decisions/{decision_id}/commits` with the `commit` (an id, a short id, a branch or a
   tag) and a `note` on what it did to the decision.
-- A reply to something in a thread: `POST /v1/decisions/{decision_id}/messages` with the `text`.
-- To read one with its discussion: `GET /v1/decisions/{decision_id}`.
+- A note on a decision: `POST /v1/decisions/{decision_id}/messages` with the `text`.
+- To read one with its comments and verdicts: `GET /v1/decisions/{decision_id}`.

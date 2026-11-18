@@ -251,6 +251,7 @@ fn file_units(
                 tested: None,
                 dirs: 0,
                 generated: false,
+                skipped: false,
             },
             None,
         ));
@@ -319,6 +320,7 @@ fn blank_unit(
         tested: None,
         dirs: 0,
         generated: false,
+        skipped: false,
     };
     unit.sensitive = sensitivity(&file.path, symbol);
     unit
@@ -362,6 +364,7 @@ fn file_level_unit(file: &ChangedFile, score: &FileScore) -> Unit {
         tested: None,
         dirs: 0,
         generated: false,
+        skipped: false,
     }
 }
 

@@ -128,6 +128,9 @@ pub struct Unit {
     /// The file looks machine-generated.
     #[serde(default)]
     pub generated: bool,
+    /// The triage found nothing in it that needs a person's eyes: the queue leaves it out.
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 /// One itemised contribution to a unit's score.

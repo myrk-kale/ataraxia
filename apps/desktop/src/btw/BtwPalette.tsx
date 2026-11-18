@@ -1,6 +1,7 @@
-import { Check, Loader2, Pencil, TextSelect } from "lucide-react";
+import { Check, EyeOff, Loader2, Pencil, TextSelect } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "../chat/ChatPanel";
+import type { ConversationJump } from "../lib/search";
 import { Markdown } from "../chat/Markdown";
 import {
   agentGetOptions,
@@ -36,7 +37,10 @@ function remembered(): string | null {
  * nothing in it but its placeholder and, joined to its body, the choice of which model runs the
  * question. It answers below the bar. It can also comment on a component, change a priority, or
  * generate decisions or a diagram, but only when asked. Each completed reply adds a short summary
- * of the latest question and answer to the main chat queue.
+ * of the latest question and answer to the main chat queue, unless the BTW is private (its own
+ * shortcut): then nothing of it reaches the main chat, and its border says so.
+ *
+ * It may edit files and run commands by default; the pencil makes one question read-only.
  */
 export function BtwPalette({
   isOpen,
@@ -47,9 +51,16 @@ export function BtwPalette({
   others,
   providers,
   resume,
+  jumpTo,
+  private: privateRequested = false,
+  worktreeId = null,
   onError,
 }: {
   isOpen: boolean;
+  /** A private BTW: its replies never go to the main chat. */
+  private?: boolean;
+  /** The worktree on screen, so BTW runs on the current branch. */
+  worktreeId?: string | null;
   onClose: () => void;
   session: ChatSession | null;
   space: string;
@@ -59,6 +70,7 @@ export function BtwPalette({
   providers: ProviderDescriptor[];
   /** A past investigation to reopen, from the session's history. */
   resume: BtwTask | null;
+  jumpTo?: ConversationJump;
   onError: (message: string) => void;
 }) {
   // What the question is about is fixed when the bar opens: a click in the editor behind it, or a
@@ -73,8 +85,8 @@ export function BtwPalette({
   // Only a pick the user made is kept; until then the BTW follows the model the chat is on.
   const [picked, setPicked] = useState<string | null>(remembered);
   const [choice, setChoice] = useState("");
-  // Whether the question may edit files. Off, it only looks: turning it on is the authorization.
-  const [mayEdit, setMayEdit] = useState(false);
+  // Whether the question may edit files and run commands. On by default; off, it only looks.
+  const [mayEdit, setMayEdit] = useState(true);
   const [allowing, setAllowing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const sessionId = session?.id ?? null;
@@ -94,7 +106,7 @@ export function BtwPalette({
     setAnswer("");
     setTask(null);
     setExpanded(null);
-    setMayEdit(false);
+    setMayEdit(true);
     if (resume) {
       setTask(resume);
       void btwSession(resume.id)
@@ -125,6 +137,9 @@ export function BtwPalette({
       // Not remembering the choice is harmless.
     }
   }
+
+  // A reopened BTW keeps the privacy it was started with.
+  const isPrivate = resume ? resume.return_policy === "manual" : privateRequested;
 
   // The answer streams in through the same events as any conversation.
   const taskSession = task?.session_id ?? null;
@@ -213,10 +228,11 @@ export function BtwPalette({
         edit ? "change" : "ask",
         text,
         { space, item: asked.item, active: asked.others },
-        "on-completion",
+        isPrivate ? "manual" : "on-completion",
         edit,
         pick?.provider ?? null,
         pick?.model ?? null,
+        worktreeId,
       );
       setTask(started);
       setQuestion("");
@@ -249,7 +265,14 @@ export function BtwPalette({
 
   if (expanded) {
     return (
-      <Dialog isOpen={isOpen} label="BTW conversation" size="lg" placement="center" onClose={onClose}>
+      <Dialog
+        className={isPrivate ? PRIVATE_BORDER : ""}
+        isOpen={isOpen}
+        label={isPrivate ? "Private BTW conversation" : "BTW conversation"}
+        size="lg"
+        placement="center"
+        onClose={onClose}
+      >
         <div className="flex h-[78vh] min-h-0 w-full flex-col">
           <div className="flex items-center gap-3 border-b border-cg-line px-5 py-3 text-small text-cg-muted-strong">
             <span className="min-w-0 flex-1 truncate font-medium text-cg-ink">{expanded.title}</span>
@@ -266,11 +289,12 @@ export function BtwPalette({
               </button>
             ) : null}
             <span className="flex-none">{expanded.kind === "delegate" ? "Can edit files" : "Read-only"}</span>
-            {task ? <MainChatNote task={task} /> : null}
+            {isPrivate ? <PrivateNote /> : task ? <MainChatNote task={task} /> : null}
           </div>
           <div className="min-h-0 flex-1">
             <ChatPanel
               bare
+              jumpTo={jumpTo}
               contextLabel={null}
               provider={providers.find((candidate) => candidate.kind === expanded.provider) ?? null}
               session={expanded}
@@ -289,8 +313,21 @@ export function BtwPalette({
   const chip = !resume && asked.item?.kind === "selection" ? contextChip(asked.item) : null;
 
   return (
-    <Dialog isOpen={isOpen} label="BTW" placement="top" size="lg" wide onClose={onClose}>
+    <Dialog
+        className={isPrivate ? PRIVATE_BORDER : ""}
+        isOpen={isOpen}
+        label={isPrivate ? "Private BTW" : "BTW"}
+        placement="top"
+        size="lg"
+        wide
+        onClose={onClose}
+      >
       <div className="flex w-full flex-col">
+        {isPrivate ? (
+          <p className="px-5 pt-3">
+            <PrivateNote />
+          </p>
+        ) : null}
         {chip ? (
           <p
             className="flex items-center gap-1.5 truncate px-5 pt-3 text-small text-cg-muted-strong"
@@ -316,8 +353,8 @@ export function BtwPalette({
             placeholder={
               session
                 ? mayEdit
-                  ? "Describe the change. BTW may edit files…"
-                  : "Ask about what you are looking at…"
+                  ? "Ask or describe a change. BTW may edit files and run commands…"
+                  : "Ask about what you are looking at. Read-only…"
                 : "Open a chat first"
             }
             readOnly={phase === "running"}
@@ -337,7 +374,7 @@ export function BtwPalette({
               }
             }}
           />
-          <Tip label={mayEdit ? "BTW may edit files. Click to make it read-only" : "Let BTW edit files for this question. Ctrl/⌘ Enter asks and lets it edit"}>
+          <Tip label={mayEdit ? "BTW may edit files and run commands. Click to make this question read-only" : "Read-only. Click to let BTW edit files and run commands"}>
             <button
               aria-label="Allow BTW to edit files"
               aria-pressed={mayEdit}
@@ -387,11 +424,24 @@ export function BtwPalette({
                 </ul>
               </section>
             ) : null}
-            {task && phase === "done" ? <MainChatNote task={task} /> : null}
+            {task && phase === "done" && !isPrivate ? <MainChatNote task={task} /> : null}
           </div>
         ) : null}
       </div>
     </Dialog>
+  );
+}
+
+/** The accent border marks a private BTW, together with the words in `PrivateNote`. */
+const PRIVATE_BORDER = "border-2! border-cg-accent!";
+
+/** Says, in words, what the coloured border means. */
+function PrivateNote() {
+  return (
+    <span className="inline-flex flex-none items-center gap-1.5 text-small font-medium text-cg-accent">
+      <EyeOff aria-hidden="true" size={12} />
+      Private: not sent to the main chat
+    </span>
   );
 }
 

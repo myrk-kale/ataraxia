@@ -4,6 +4,7 @@ import {
   applyChoice,
   commandItems,
   expandGlobMentions,
+  expandSkillMention,
   findTrigger,
   mentionItems,
   mentionText,
@@ -120,6 +121,38 @@ describe("commandItems", () => {
     expect(items[0].aside).toBe("[branch]");
     expect(items[1].aside).toBe("user");
     expect(items[0].insert).toBe("/review ");
+  });
+});
+
+describe("skills picked after a slash", () => {
+  const resources = [
+    { kind: "skill" as const, name: "release", description: "", hint: null, source: null },
+    { kind: "skill" as const, name: "12-principles-of-animation", description: "", hint: null, source: null },
+    { kind: "mcp" as const, name: "Notion", description: "", hint: null, source: null },
+    { kind: "command" as const, name: "review", description: "", hint: null, source: null },
+    { kind: "skill" as const, name: "review", description: "", hint: null, source: null },
+  ];
+
+  it("puts only its name in the field", () => {
+    expect(commandItems(resources, "rel")[0]?.insert).toBe("/release ");
+    expect(commandItems(resources, "Not")[0]?.insert).toBe("Use the Notion MCP server for this task: ");
+  });
+
+  it("is turned into what the agent should do when it is sent, with or without more text", () => {
+    expect(expandSkillMention("/release", resources)).toBe("Use the release skill for this task.");
+    expect(expandSkillMention("/release bump the minor", resources)).toBe(
+      "Use the release skill for this task: bump the minor",
+    );
+    expect(expandSkillMention("/12-principles-of-animation", resources)).toBe(
+      "Use the 12-principles-of-animation skill for this task.",
+    );
+  });
+
+  it("leaves commands of the agent, unknown names and plain text as typed", () => {
+    expect(expandSkillMention("/review the diff", resources)).toBe("/review the diff");
+    expect(expandSkillMention("/nothing here", resources)).toBe("/nothing here");
+    expect(expandSkillMention("release it", resources)).toBe("release it");
+    expect(expandSkillMention("/release", [])).toBe("/release");
   });
 });
 

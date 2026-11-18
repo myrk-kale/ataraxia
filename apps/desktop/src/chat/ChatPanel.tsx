@@ -38,8 +38,10 @@ import {
   type QueuedLocally,
   type RepositoryMcpApproval,
   type SessionOptions,
+  agentListComposerResources,
 } from "../lib/agent";
 import type { ChatSession, WorkspaceSnapshot } from "../lib/workspace";
+import type { ConversationJump } from "../lib/search";
 import { workspaceCreateSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
 import { toRows } from "./rows";
@@ -67,6 +69,9 @@ import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
 import { ContextMeter } from "./ContextMeter";
 import { SubagentBar } from "./SubagentBar";
+import { DecisionsCard } from "../decisions/DecisionsReview";
+import { loadClosedSubagents, saveClosedSubagents } from "./closedSubagents";
+import { announceSettled, markDraftChat } from "./draftChats";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { VirtualTranscript } from "./VirtualTranscript";
 import { takesBack, withTakenBack } from "./takeBack";
@@ -81,7 +86,7 @@ import { useFileIndex } from "./useFileIndex";
 import { useDictation } from "./useDictation";
 import { SpeechModelDialog } from "./SpeechModelDialog";
 import { appendDictation } from "./wav";
-import { expandGlobMentions } from "./pickerChoices";
+import { expandGlobMentions, expandSkillMention } from "./pickerChoices";
 import { Dialog } from "../ui/Overlay";
 
 const STICK_THRESHOLD_PX = 80;
@@ -117,6 +122,8 @@ export function ChatPanel({
   onPreviousWorkspace,
   ownRoot = null,
   onOpenFile,
+  onOpenDecisions,
+  jumpTo,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
@@ -130,6 +137,9 @@ export function ChatPanel({
   ownRoot?: string | null;
   /** Opens a file the chat named in the editor. Without it, files named in messages are plain text. */
   onOpenFile?: (cite: FileCite) => void;
+  /** Opens the decisions review; without it the chat shows no decisions card. */
+  onOpenDecisions?: () => void;
+  jumpTo?: ConversationJump;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
@@ -160,8 +170,9 @@ export function ChatPanel({
   const [trustingRepositoryMcp, setTrustingRepositoryMcp] = useState(false);
   // The subagent whose conversation is on screen; null shows the main conversation.
   const [view, setView] = useState<string | null>(null);
-  // Closing a subagent hides its chip for this view; its saved conversation stays untouched.
-  const [closedSubagents, setClosedSubagents] = useState<Set<string>>(() => new Set());
+  // Closing a subagent hides its chip in this chat for good (it survives leaving the chat); its
+  // saved conversation stays untouched.
+  const [closedSubagents, setClosedSubagents] = useState<Set<string>>(() => loadClosedSubagents(session.id));
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);
@@ -171,6 +182,7 @@ export function ChatPanel({
   const pendingSends = useRef(new Map<string, { previews: string[]; urls: string[] }>());
   // The last message on its way to the agent, so the next one waits for it.
   const inFlight = useRef<Promise<unknown>>(Promise.resolve());
+  const preparingSend = useRef(false);
   const [queue, setQueue] = useMessageQueue(sessionId);
   const schedules = useSchedules(sessionId);
   // What was sent to the queue and is not in the app's list yet.
@@ -324,6 +336,22 @@ export function ChatPanel({
 
   const visibleSubagents = state.subagents.filter((item) => !closedSubagents.has(item.id));
   const activeSubagent = visibleSubagents.find((item) => item.id === view) ?? null;
+  const handledJump = useRef<ConversationJump | undefined>(undefined);
+  const foundSubagent = state.subagents.find((item) => item.id === jumpTo?.subagentId);
+  useLayoutEffect(() => {
+    if (!jumpTo || handledJump.current === jumpTo || (jumpTo.subagentId && !foundSubagent)) {
+      return;
+    }
+    handledJump.current = jumpTo;
+    if (foundSubagent) {
+      setClosedSubagents((current) => {
+        const next = new Set(current);
+        next.delete(foundSubagent.id);
+        return next;
+      });
+    }
+    setView(foundSubagent?.id ?? null);
+  }, [jumpTo, foundSubagent]);
   const activeBtwSubagent = activeSubagent?.title.startsWith("BTW: ") ?? false;
   const btwSession =
     session.title.startsWith("BTW: ") && (session.kind === "btw" || session.kind === "delegate");
@@ -498,9 +526,13 @@ export function ChatPanel({
 
   /** `now` skips the line: while the agent works, the message stops it and goes next. */
   async function send(now = false) {
-    let text = draft.trim();
+    if (preparingSend.current) {
+      return;
+    }
+    const input = draftRef.current;
+    let text = input.trim();
     const sending = activeSubagent ? [] : attachments;
-    const commandName = /^\/([A-Za-z][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
+    const commandName = /^\/([A-Za-z0-9][A-Za-z0-9_:.-]*)(?=$|\s)/.exec(text)?.[1];
     if (commandName && activeSubagent !== null) {
       setAttachNotice("Slash commands are available only in the main chat.");
       return;
@@ -589,7 +621,11 @@ export function ChatPanel({
           session.worktree_id,
           undefined,
           session.provider,
+          session.id,
         );
+        if (workspace.selected_session_id) {
+          markDraftChat(workspace.selected_session_id);
+        }
         onNewSession(workspace);
         setDraft("");
         setAttachNotice(null);
@@ -598,14 +634,6 @@ export function ChatPanel({
       }
       return;
     }
-    if (/@(?:"[^\"]*[*?][^\"]*"|[^\s]*[*?][^\s]*)/.test(text)) {
-      try {
-        text = expandGlobMentions(text, await sessionPaths(sessionId));
-      } catch (err) {
-        dispatch({ type: "failed", message: errorText(err) });
-        return;
-      }
-    }
     if (
       (!text && sending.length === 0) ||
       (activeBtwSubagent && activeSubagent?.status === "running") ||
@@ -613,10 +641,34 @@ export function ChatPanel({
     ) {
       return;
     }
+    const resolveSkill = commandName && commandName !== "compact";
+    const resolveGlobs = /@(?:"[^"]*[*?][^"]*"|[^\s]*[*?][^\s]*)/.test(text);
+    if (resolveSkill || resolveGlobs) {
+      preparingSend.current = true;
+      try {
+        if (resolveSkill) {
+          const resources = await agentListComposerResources(sessionId).catch(() => []);
+          text = expandSkillMention(text, resources);
+        }
+        if (resolveGlobs) {
+          text = expandGlobMentions(text, await sessionPaths(sessionId));
+        }
+      } catch (err) {
+        dispatch({ type: "failed", message: errorText(err) });
+        return;
+      } finally {
+        preparingSend.current = false;
+      }
+      if (draftRef.current !== input || attachmentsRef.current !== attachments) {
+        return;
+      }
+    }
     setDraft("");
     setAttachments([]);
     setAttachNotice(null);
     stickRef.current = true;
+    // The first message makes a chat made with + a chat for good.
+    announceSettled(sessionId);
     // A message sent straight to the agent is shown, and the agent shown as working, at once;
     // the app's own report of it replaces what is shown (see `reconcile`). What goes to the
     // queue or to a subagent is shown by its own list, when the app says so.
@@ -703,7 +755,7 @@ export function ChatPanel({
       // Nothing was sent: the message and its pictures are back where they were, ahead of
       // anything typed since.
       if (pendingId === null || waiting) {
-        setDraft((current) => (current.trim() === "" ? text : `${text}\n${current}`));
+        setDraft((current) => (current.trim() === "" ? input : `${input}\n${current}`));
         setAttachments(sending);
       }
       dispatch({ type: "failed", message: errorText(err) });
@@ -753,7 +805,11 @@ export function ChatPanel({
   }
 
   function closeSubagent(id: string) {
-    setClosedSubagents((closed) => new Set(closed).add(id));
+    setClosedSubagents((closed) => {
+      const next = new Set(closed).add(id);
+      saveClosedSubagents(session.id, next);
+      return next;
+    });
     if (view === id) {
       stickRef.current = true;
       setView(null);
@@ -997,6 +1053,7 @@ export function ChatPanel({
             {rows.length > 0 ? (
               <VirtualTranscript
                 key="main"
+                jumpTo={jumpTo}
                 rows={rows}
                 scrollRef={scrollRef}
                 sessionId={sessionId}
@@ -1124,6 +1181,8 @@ export function ChatPanel({
           dictation.toggle();
         }}
       />
+
+      {onOpenDecisions ? <DecisionsCard sessionId={sessionId} onOpen={onOpenDecisions} /> : null}
 
       <SubagentBar
         busy={busy && view !== null && !activeBtwSubagent}

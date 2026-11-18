@@ -2,6 +2,9 @@
 
 mod insights;
 mod migrations;
+mod search;
+
+pub use search::{SearchRequest, SearchResult};
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -603,18 +606,26 @@ impl Store for SqliteStore {
             let tx = conn
                 .unchecked_transaction()
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            let session = id.0.to_string();
+            {
+                let mut upsert = tx
+                    .prepare_cached(
+                        "INSERT INTO chat_items (session_id, position, payload) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(session_id, position) DO UPDATE SET payload = excluded.payload
+                     WHERE chat_items.payload <> excluded.payload",
+                    )
+                    .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+                for (position, payload) in payloads.iter().enumerate() {
+                    upsert
+                        .execute(params![session, position as i64, payload])
+                        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+                }
+            }
             tx.execute(
-                "DELETE FROM chat_items WHERE session_id = ?1",
-                params![id.0.to_string()],
+                "DELETE FROM chat_items WHERE session_id = ?1 AND position >= ?2",
+                params![session, payloads.len() as i64],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-            for (position, payload) in payloads.iter().enumerate() {
-                tx.execute(
-                    "INSERT INTO chat_items (session_id, position, payload) VALUES (?1, ?2, ?3)",
-                    params![id.0.to_string(), position as i64, payload],
-                )
-                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-            }
             tx.commit()
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
         })

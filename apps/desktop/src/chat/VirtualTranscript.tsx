@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { estimateRow, type Row } from "./rows";
 import { TranscriptRow } from "./TranscriptRow";
+import type { ConversationJump } from "../lib/search";
 
 /** Rows kept ready past each edge of the window, so ordinary scrolling never shows a gap. */
 const OVERSCAN = 4;
@@ -21,11 +22,13 @@ export function VirtualTranscript({
   scrollRef,
   stick,
   sessionId,
+  jumpTo,
 }: {
   rows: Row[];
   scrollRef: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
   sessionId: string;
+  jumpTo?: ConversationJump;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   // How far down the scroll area this list starts, below whatever is above it.
@@ -45,6 +48,16 @@ export function VirtualTranscript({
   });
 
   const total = virtualizer.getTotalSize();
+  const appliedJump = useRef<ConversationJump | undefined>(undefined);
+  const jumpIndex = jumpTo?.messageId ? rows.findIndex((row) => row.key === jumpTo.messageId) : -1;
+  useLayoutEffect(() => {
+    if (jumpIndex < 0 || appliedJump.current === jumpTo) {
+      return;
+    }
+    appliedJump.current = jumpTo;
+    stick.current = false;
+    virtualizer.scrollToIndex(jumpIndex, { align: "center" });
+  }, [jumpIndex, jumpTo, stick, virtualizer]);
   // A row grew (the reply is streaming, a picture loaded): stay at the bottom if that is where
   // the reader is.
   useLayoutEffect(() => {
@@ -62,7 +75,7 @@ export function VirtualTranscript({
           <div
             key={virtual.key}
             ref={virtualizer.measureElement}
-            className="absolute top-0 left-0 flex w-full flex-col"
+            className={`absolute top-0 left-0 flex w-full flex-col ${virtual.index === jumpIndex ? "rounded-cg-md outline-1 outline-cg-accent" : ""}`}
             data-index={virtual.index}
             style={{
               paddingBottom: row.after,

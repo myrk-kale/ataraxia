@@ -100,12 +100,15 @@ fn approvals_reviewer() -> Option<String> {
     }
 }
 
+/// `network`: the agent has Ataraxia's local API to call. Codex's `workspace-write` sandbox cuts
+/// every connection, localhost included, so without it each `curl` to the API fails.
 fn thread_start_params(
     cwd: &Path,
     reviewer: Option<&str>,
     model: Option<&str>,
     read_only: bool,
     extra_dirs: &[PathBuf],
+    network: bool,
 ) -> Value {
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
@@ -119,12 +122,19 @@ fn thread_start_params(
         params["model"] = json!(model);
     }
     // Other repositories of the workspace may be written too. Reading is open already.
+    let mut sandbox = serde_json::Map::new();
     if !read_only && !extra_dirs.is_empty() {
         let roots: Vec<String> = extra_dirs
             .iter()
             .map(|dir| dir.to_string_lossy().into_owned())
             .collect();
-        params["config"] = json!({ "sandbox_workspace_write": { "writable_roots": roots } });
+        sandbox.insert("writable_roots".into(), json!(roots));
+    }
+    if !read_only && network {
+        sandbox.insert("network_access".into(), json!(true));
+    }
+    if !sandbox.is_empty() {
+        params["config"] = json!({ "sandbox_workspace_write": sandbox });
     }
     params
 }
@@ -138,6 +148,10 @@ fn codex_mcp_servers(servers: &Map<String, Value>) -> Map<String, Value> {
                 if let Some(headers) = config.remove("headers") {
                     config.insert("http_headers".into(), headers);
                 }
+                // Codex tells a remote server from a local one by `url` against `command`; the
+                // transport names other harnesses need are not part of its config.
+                config.remove("type");
+                config.remove("transport");
             }
             (name.clone(), server)
         })
@@ -248,6 +262,7 @@ impl AgentBackend for CodexBackend {
                 ctx.model.as_deref(),
                 ctx.read_only,
                 &ctx.extra_dirs,
+                ctx.api.is_some(),
             );
             params["config"]["mcp_servers"] = json!(codex_mcp_servers(&ctx.config.mcp_servers));
             // The thread of the last run, if Codex still has it; a thread that never got a
@@ -2158,14 +2173,15 @@ mod tests {
             Some("gpt-x"),
             false,
             &[],
+            false,
         );
         assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["approvalsReviewer"], "auto_review");
         assert_eq!(params["approvalPolicy"], "on-request");
         assert_eq!(params["sandbox"], "workspace-write");
-        let manual = thread_start_params(Path::new("/work"), None, None, false, &[]);
+        let manual = thread_start_params(Path::new("/work"), None, None, false, &[], false);
         assert_eq!(
-            thread_start_params(Path::new("/work"), None, None, true, &[])["sandbox"],
+            thread_start_params(Path::new("/work"), None, None, true, &[], false)["sandbox"],
             "read-only"
         );
         assert!(manual.get("approvalsReviewer").is_none());
@@ -2176,13 +2192,43 @@ mod tests {
     #[test]
     fn the_other_repositories_of_a_workspace_become_writable_roots_unless_read_only() {
         let others = [PathBuf::from("/work/api"), PathBuf::from("/work/web")];
-        let params = thread_start_params(Path::new("/work/app"), None, None, false, &others);
+        let params = thread_start_params(Path::new("/work/app"), None, None, false, &others, false);
         assert_eq!(
             params["config"]["sandbox_workspace_write"]["writable_roots"],
             json!(["/work/api", "/work/web"])
         );
-        let reading = thread_start_params(Path::new("/work/app"), None, None, true, &others);
+        let reading = thread_start_params(Path::new("/work/app"), None, None, true, &others, true);
         assert!(reading.get("config").is_none());
+    }
+
+    #[test]
+    fn a_writing_agent_can_reach_the_local_api_through_the_sandbox() {
+        let params = thread_start_params(Path::new("/work"), None, None, false, &[], true);
+        assert_eq!(
+            params["config"]["sandbox_workspace_write"]["network_access"],
+            true
+        );
+        assert!(
+            params["config"]["sandbox_workspace_write"]
+                .get("writable_roots")
+                .is_none()
+        );
+        let others = [PathBuf::from("/work/api")];
+        let both = thread_start_params(Path::new("/work"), None, None, false, &others, true);
+        assert_eq!(
+            both["config"]["sandbox_workspace_write"]["writable_roots"],
+            json!(["/work/api"])
+        );
+        assert_eq!(
+            both["config"]["sandbox_workspace_write"]["network_access"],
+            true
+        );
+        // Without the API nothing opens, and a read-only sandbox stays closed.
+        assert!(
+            thread_start_params(Path::new("/work"), None, None, false, &[], false)
+                .get("config")
+                .is_none()
+        );
     }
 
     use std::sync::mpsc::{self, Receiver};

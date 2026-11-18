@@ -279,10 +279,49 @@ fn opencode_skill_permissions(skills: &[super::config::SkillDefinition]) -> Vec<
 
 /// OpenCode ACP's MCP entry omits `cwd`, so entries with an explicit working directory use its
 /// native config format instead.
+/// A remote server goes through OpenCode's own config, where OpenCode signs in to it (OAuth)
+/// and keeps the sign-in; over ACP it would need a transport the agent may not offer, and a
+/// server that asks for a sign-in would never get one.
+fn is_remote(config: &Value) -> bool {
+    config.get("url").is_some() && config.get("command").is_none()
+}
+
+/// Whether a server is set up through OpenCode's own config rather than ACP.
+fn native_mcp(config: &Value) -> bool {
+    is_remote(config) || (config.get("command").is_some() && config.get("cwd").is_some())
+}
+
 fn opencode_config_mcp_servers(servers: &Map<String, Value>) -> Result<Map<String, Value>> {
     let mut configured = Map::new();
     for (name, config) in servers {
-        if config.get("command").is_none() || config.get("cwd").is_none() {
+        if is_remote(config) {
+            let url = config
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|url| !url.is_empty())
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Invalid,
+                        format!("MCP server {name} url must be a non-empty string"),
+                    )
+                })?;
+            let mut server = json!({ "type": "remote", "url": url });
+            if let Some(headers) = config.get("headers") {
+                if !headers
+                    .as_object()
+                    .is_some_and(|values| values.values().all(Value::is_string))
+                {
+                    return Err(Error::new(
+                        ErrorCode::Invalid,
+                        format!("MCP server {name} headers must be an object of strings"),
+                    ));
+                }
+                server["headers"] = headers.clone();
+            }
+            configured.insert(name.clone(), server);
+            continue;
+        }
+        if !native_mcp(config) {
             continue;
         }
         let command = config
@@ -357,7 +396,7 @@ fn acp_mcp_servers(
 ) -> Result<Vec<Value>> {
     servers
         .iter()
-        .filter(|(_, config)| !(config.get("command").is_some() && config.get("cwd").is_some()))
+        .filter(|(_, config)| !native_mcp(config))
         .map(|(name, config)| {
             let mut entry = Map::new();
             entry.insert("name".into(), Value::String(name.clone()));
@@ -1539,6 +1578,25 @@ mod tests {
         let acp = acp_mcp_servers(servers, true, true).expect("ACP config");
         assert_eq!(acp.len(), 1);
         assert_eq!(acp[0]["name"], "default-cwd");
+    }
+
+    #[test]
+    fn remote_mcp_servers_use_native_config_so_opencode_can_sign_in_to_them() {
+        let servers = json!({
+            "Notion": { "url": "https://mcp.notion.com/mcp" },
+            "api": { "url": "https://example.test/mcp", "headers": { "X-Key": "k" } }
+        });
+        let servers = servers.as_object().expect("MCP server map");
+
+        let native = opencode_config_mcp_servers(servers).expect("native config");
+        assert_eq!(
+            native["Notion"],
+            json!({ "type": "remote", "url": "https://mcp.notion.com/mcp" })
+        );
+        assert_eq!(native["api"]["headers"]["X-Key"], "k");
+        // Never over ACP: an agent without the HTTP transport would refuse the whole session.
+        let acp = acp_mcp_servers(servers, false, false).expect("ACP config");
+        assert!(acp.is_empty());
     }
 
     fn mock_backend() -> OpenCodeBackend {

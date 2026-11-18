@@ -154,17 +154,20 @@ export function workspaceSelectWorktree(worktreeId: WorktreeId) {
   });
 }
 
+/** `like`: the chat on screen, whose model and effort the new one keeps (same provider only). */
 export function workspaceCreateSession(
   repositoryId: RepositoryId,
   worktreeId: WorktreeId,
   title?: string,
   provider?: ProviderKind,
+  like?: SessionId | null,
 ) {
   return invoke<WorkspaceSnapshot>("workspace_create_session", {
     repositoryId,
     worktreeId,
     title: title ?? null,
     provider: provider ?? null,
+    like: like ?? null,
   });
 }
 

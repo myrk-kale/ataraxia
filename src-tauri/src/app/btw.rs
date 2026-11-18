@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::actions;
 use super::engine::Engine;
-use crate::domain::ids::SessionId;
+use crate::domain::ids::{SessionId, WorktreeId};
 use crate::domain::{
     ArtifactStatus, BtwMode, BtwTask, BtwTaskId, ChatSession, Error, ErrorCode, InsightEvent,
     Result, ReturnPolicy, SessionKind,
@@ -228,6 +228,11 @@ impl Engine {
         context: &BtwContext,
     ) -> Result<String> {
         let session = self.session(session_id)?;
+        self.render_btw_context(&session, context)
+    }
+
+    /// [`Self::btw_render_context`] for a chat as BTW sees it: on the worktree it runs in.
+    fn render_btw_context(&self, session: &ChatSession, context: &BtwContext) -> Result<String> {
         let repository = self
             .db
             .get_repository(session.repository_id)?
@@ -291,11 +296,13 @@ impl Engine {
             authorized,
             None,
             None,
+            None,
         )
     }
 
     /// Like [`Self::btw_start`], on the provider and model the person chose (the chat's own when
-    /// none).
+    /// none), in the worktree on screen (`worktree`): BTW always opens on the branch the developer
+    /// is looking at. A worktree of another repository than the chat's is ignored.
     #[allow(clippy::too_many_arguments)]
     pub fn btw_start_with(
         &self,
@@ -307,6 +314,7 @@ impl Engine {
         authorized: bool,
         provider: Option<crate::domain::agent::ProviderKind>,
         model: Option<String>,
+        worktree: Option<WorktreeId>,
     ) -> Result<BtwTask> {
         let question = question.trim();
         if question.is_empty() {
@@ -325,13 +333,18 @@ impl Engine {
         if parent.kind != SessionKind::Chat {
             return Err(Error::new(ErrorCode::Invalid, "BTW attaches to a chat"));
         }
-        // Every completed BTW reply is automatically queued as a short update for the parent chat.
-        // Keep the policy argument for older callers, but use the current automatic behavior.
-        let _ = policy;
-        let policy = ReturnPolicy::OnCompletion;
-        let context_text = self.btw_render_context(parent_session_id, context)?;
+        // `OnCompletion`: each completed reply is queued as a short update for the parent chat.
+        // `Manual`: a private BTW, whose replies never reach the main chat.
+        // The worktree on screen, so BTW sees the branch the developer is on.
+        let mut base = parent.clone();
+        if let Some(chosen) = worktree.and_then(|id| self.db.get_worktree(id).ok().flatten()) {
+            if chosen.repository_id == parent.repository_id {
+                base.worktree_id = chosen.id;
+            }
+        }
+        let context_text = self.render_btw_context(&base, context)?;
         let hidden = self.hidden_session_with(
-            &parent,
+            &base,
             if mode == BtwMode::Ask {
                 SessionKind::Btw
             } else {
@@ -369,12 +382,23 @@ impl Engine {
                  files in this worktree. Finish with a short summary of what you changed."
             }
         };
-        let handoff_instructions = "This is your own conversation with the developer, separate from the main agent. \
-             Keep answering follow-up messages here even while the main agent is busy. Ataraxia \
-             automatically adds a concise summary of each completed interaction to the main chat's \
-             queue. Keep each reply concise and focused on the developer's latest question. The \
-             main agent is told this comes from a parallel BTW conversation and must ask the \
-             developer before acting on a suggested change or other action.";
+        let handoff_instructions = match policy {
+            ReturnPolicy::OnCompletion => {
+                "This is your own conversation with the developer, separate from the main agent. \
+                 Keep answering follow-up messages here even while the main agent is busy. Ataraxia \
+                 automatically adds a concise summary of each completed interaction to the main chat's \
+                 queue. Keep each reply concise and focused on the developer's latest question. The \
+                 main agent is told this comes from a parallel BTW conversation and must ask the \
+                 developer before acting on a suggested change or other action."
+            }
+            ReturnPolicy::Manual => {
+                "This is a private conversation with the developer, separate from the main agent. \
+                 Nothing of it is passed to the main agent: do not write for it, and do not assume \
+                 it will hear about what you do here. Keep answering follow-up messages here even \
+                 while the main agent is busy. Keep each reply concise and focused on the \
+                 developer's latest question."
+            }
+        };
         let brief = self.btw_actions_brief(&parent);
         // From the chat it is a fork: it starts from what the main conversation has said so far.
         let fork = if context.space == "chat" {
@@ -742,7 +766,11 @@ impl Engine {
             parent_session_id: task.parent_session_id,
             status,
         });
-        if ok && let Some(summary) = turn_summary.as_deref() {
+        // A private BTW keeps its replies to itself.
+        if ok
+            && task.return_policy == ReturnPolicy::OnCompletion
+            && let Some(summary) = turn_summary.as_deref()
+        {
             if let Err(error) = self.queue_btw_result(&task, question, summary) {
                 eprintln!("ataraxia: could not queue the BTW summary: {error}");
             }

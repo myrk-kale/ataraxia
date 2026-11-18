@@ -48,6 +48,67 @@ fn session_pref(id: DecisionId) -> String {
     format!("decision_session:{}", id.0)
 }
 
+/// The version of a decision whose verdict the main agent was last told about.
+fn reported_pref(id: DecisionId) -> String {
+    format!("decision_reported:{}", id.0)
+}
+
+/// What the main agent is told once every decision of a round has a verdict: that all is well,
+/// or what was rejected and the reviewer's reason for each.
+pub fn review_report(settled: &[(Decision, Option<String>)]) -> String {
+    let rejected: Vec<&(Decision, Option<String>)> = settled
+        .iter()
+        .filter(|(decision, _)| decision.state == DecisionState::Rejected)
+        .collect();
+    let approved: Vec<&Decision> = settled
+        .iter()
+        .map(|(decision, _)| decision)
+        .filter(|decision| decision.state == DecisionState::Approved)
+        .collect();
+    let mut out = String::from(
+        "[Decision review, sent by Ataraxia when the developer finished reviewing the decisions.]\n",
+    );
+    if rejected.is_empty() {
+        out.push_str(&format!(
+            "The developer approved all {} decision{}. Everything is fine: nothing to change.\n",
+            approved.len(),
+            if approved.len() == 1 { "" } else { "s" }
+        ));
+        for decision in &approved {
+            out.push_str(&format!(
+                "- Approved #{}: {}\n",
+                decision.seq, decision.title
+            ));
+        }
+        return out;
+    }
+    out.push_str(&format!(
+        "The developer rejected {} of {} decision{}. Address each rejected one: change the code \
+         as the comment asks, or, if the comment is unclear, ask the developer before changing \
+         anything.\n\nRejected:\n",
+        rejected.len(),
+        settled.len(),
+        if settled.len() == 1 { "" } else { "s" }
+    ));
+    for (decision, comment) in &rejected {
+        out.push_str(&format!(
+            "- #{} {} ({})\n  What was decided: {}\n  Developer's comment: {}\n",
+            decision.seq,
+            decision.title,
+            decision.kind.as_str(),
+            decision.summary,
+            comment.as_deref().unwrap_or("(none)")
+        ));
+    }
+    if !approved.is_empty() {
+        out.push_str("\nApproved (keep as they are):\n");
+        for decision in &approved {
+            out.push_str(&format!("- #{} {}\n", decision.seq, decision.title));
+        }
+    }
+    out
+}
+
 fn describe(decision: &Decision) -> String {
     let mut out = format!(
         "Decision ({}): {}\nSummary: {}\n",
@@ -321,8 +382,9 @@ impl Engine {
         self.set_decision_state_with_comment(id, state, None)
     }
 
-    /// A verdict, with the comment the reviewer wrote beside it, if any. The comment is kept in
-    /// the thread ahead of the verdict, and it is a note: nothing answers it.
+    /// A verdict, with the comment the reviewer wrote beside it, if any. A rejection always
+    /// carries one: it is what the agent is told to act on. The comment is kept ahead of the
+    /// verdict. Once every decision of the round has a verdict, the main agent hears about it.
     pub fn set_decision_state_with_comment(
         &self,
         id: DecisionId,
@@ -335,8 +397,15 @@ impl Engine {
                 "a decision is superseded by a newer one, not by hand",
             ));
         }
+        let comment = comment.map(str::trim).filter(|text| !text.is_empty());
+        if state == DecisionState::Rejected && comment.is_none() {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "say why you reject it: a rejection needs a comment",
+            ));
+        }
         let mut decision = self.decision(id)?;
-        if let Some(text) = comment.map(str::trim).filter(|text| !text.is_empty()) {
+        if let Some(text) = comment {
             self.comment_decision(id, text)?;
         }
         if decision.state == state {
@@ -350,7 +419,61 @@ impl Engine {
         self.sink.emit_insight(InsightEvent::Decisions {
             session_id: decision.session_id,
         });
+        if state != DecisionState::Pending {
+            if let Err(error) = self.report_settled_decisions(decision.session_id) {
+                eprintln!("ataraxia: could not tell the agent about the review: {error}");
+            }
+        }
         Ok(decision)
+    }
+
+    /// The decisions whose verdict the agent has not heard yet. When none of them is still
+    /// pending, one message tells the main chat how the review went, and they count as told.
+    fn report_settled_decisions(&self, session_id: SessionId) -> Result<()> {
+        let round: Vec<Decision> = self
+            .db
+            .list_decisions(session_id)?
+            .into_iter()
+            .filter(|decision| decision.state != DecisionState::Superseded)
+            .filter(|decision| {
+                self.db
+                    .get_preference(&reported_pref(decision.id))
+                    .ok()
+                    .flatten()
+                    .and_then(|version| version.parse::<u32>().ok())
+                    != Some(decision.version)
+            })
+            .collect();
+        if round.is_empty()
+            || round
+                .iter()
+                .any(|decision| decision.state == DecisionState::Pending)
+        {
+            return Ok(());
+        }
+        let settled: Vec<(Decision, Option<String>)> = round
+            .into_iter()
+            .map(|decision| {
+                let comment = (decision.state == DecisionState::Rejected)
+                    .then(|| {
+                        self.db
+                            .list_decision_messages(decision.id)
+                            .ok()?
+                            .into_iter()
+                            .rev()
+                            .find(|message| message.author == "user")
+                            .map(|message| message.text)
+                    })
+                    .flatten();
+                (decision, comment)
+            })
+            .collect();
+        for (decision, _) in &settled {
+            self.db
+                .set_preference(&reported_pref(decision.id), &decision.version.to_string())?;
+        }
+        self.enqueue(session_id, &review_report(&settled), Vec::new())?;
+        Ok(())
     }
 
     /// A comment in the thread, from the reviewer. Unlike a question it is not answered by an

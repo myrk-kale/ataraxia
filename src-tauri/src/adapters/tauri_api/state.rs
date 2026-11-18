@@ -22,6 +22,7 @@ use crate::ports::{AgentRuntime, ApiGateway, Database, Git, PtyHost, Store};
 pub struct AppState {
     pub git: Arc<dyn Git>,
     pub store: Arc<dyn Store>,
+    pub sqlite: Arc<SqliteStore>,
     pub pty: Arc<NativePtyHost>,
     pub agents: Arc<AgentHost>,
     pub engine: Arc<Engine>,
@@ -96,6 +97,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     Ok(AppState {
         git,
         store,
+        sqlite,
         pty: Arc::new(pty),
         agents,
         engine,

@@ -16,6 +16,7 @@ pub mod queue;
 pub mod review;
 pub mod schedule;
 pub mod tasks;
+pub mod triage;
 pub mod units;
 pub mod wake;
 pub mod workspace;

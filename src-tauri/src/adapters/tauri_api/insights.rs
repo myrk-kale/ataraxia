@@ -366,6 +366,7 @@ pub fn btw_preview_context(
         .map_err(map_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub fn btw_start(
     state: tauri::State<'_, AppState>,
@@ -377,6 +378,7 @@ pub fn btw_start(
     authorized: bool,
     provider: Option<crate::domain::agent::ProviderKind>,
     model: Option<String>,
+    worktree_id: Option<crate::domain::ids::WorktreeId>,
 ) -> Res<BtwTask> {
     state
         .engine
@@ -389,6 +391,7 @@ pub fn btw_start(
             authorized,
             provider,
             model,
+            worktree_id,
         )
         .map_err(map_error)
 }
@@ -506,6 +509,28 @@ pub fn review_reset_priority(
     state
         .engine
         .reset_unit_priority(checkpoint_id, &path, &name)
+        .map_err(map_error)
+}
+
+/// A read-only subagent orders the review queue and leaves out what needs no person's eyes.
+#[tauri::command(async)]
+pub fn review_triage(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    checkpoint_id: Option<CheckpointId>,
+) -> Res<crate::app::triage::TriageOutcome> {
+    state
+        .engine
+        .review_triage(session_id, checkpoint_id)
+        .map_err(map_error)
+}
+
+/// Takes the triage's order back: the queue is the computed one again.
+#[tauri::command(async)]
+pub fn review_untriage(state: tauri::State<'_, AppState>, checkpoint_id: CheckpointId) -> Res<()> {
+    state
+        .engine
+        .review_untriage(checkpoint_id)
         .map_err(map_error)
 }
 

@@ -41,8 +41,27 @@ describe("shortcuts", () => {
 
   it("opens BTW with Ctrl/Cmd+K only, never with Space", () => {
     expect(resolveShortcut(press(" "), idle)).toBeNull();
-    expect(resolveShortcut(press("k", { ctrlKey: true }), idle)).toEqual({ type: "btw" });
-    expect(resolveShortcut(press("k", { metaKey: true }), idle)).toEqual({ type: "btw" });
+    expect(resolveShortcut(press("k", { ctrlKey: true }), idle)).toEqual({ type: "btw", private: false });
+    expect(resolveShortcut(press("k", { metaKey: true }), idle)).toEqual({ type: "btw", private: false });
+  });
+
+  it("opens a private BTW with Ctrl/Cmd+Shift+K", () => {
+    expect(resolveShortcut(press("K", { metaKey: true, shiftKey: true }), idle)).toEqual({ type: "btw", private: true });
+    expect(resolveShortcut(press("k", { ctrlKey: true, shiftKey: true }, el("<input />")), idle)).toEqual({
+      type: "btw",
+      private: true,
+    });
+  });
+
+  it("opens the tasks panel with Ctrl/Cmd+T, leaving Control+T to the shell in the terminal", () => {
+    expect(resolveShortcut(press("t", { metaKey: true }), idle)).toEqual({ type: "tasks" });
+    expect(resolveShortcut(press("t", { ctrlKey: true }, el("<textarea></textarea>")), idle)).toEqual({ type: "tasks" });
+    const terminal = el("<div class='xterm'><span tabindex='0'></span></div>");
+    expect(resolveShortcut(press("t", { ctrlKey: true }, terminal.firstElementChild), idle)).toBeNull();
+    expect(resolveShortcut(press("t", { metaKey: true }, terminal.firstElementChild), idle)).toEqual({ type: "tasks" });
+    const editor = el("<div class='monaco-editor'><span tabindex='0'></span></div>");
+    expect(resolveShortcut(press("t", { metaKey: true }, editor.firstElementChild), idle)).toBeNull();
+    expect(resolveShortcut(press("t", { metaKey: true }), { ...idle, overlay: true })).toBeNull();
   });
 
   it("goes to a branch with Ctrl/Cmd+Shift+B, even from a field, but not from the editor or an overlay", () => {
@@ -50,10 +69,19 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("b", { metaKey: true, shiftKey: true }, el("<textarea></textarea>")), idle)).toEqual({
       type: "branch",
     });
-    expect(resolveShortcut(press("b", { metaKey: true }), idle)).toBeNull();
     expect(resolveShortcut(press("B", { ctrlKey: true, shiftKey: true }), { ...idle, overlay: true })).toBeNull();
     const editor = el("<div class='monaco-editor'><span tabindex='0'></span></div>");
     expect(resolveShortcut(press("B", { ctrlKey: true, shiftKey: true }, editor.firstElementChild), idle)).toBeNull();
+  });
+
+  it("opens global search with Ctrl/Cmd+B, including in the editor and terminal", () => {
+    const editor = el("<div class='monaco-editor'><textarea></textarea></div>");
+    const terminal = el("<div class='xterm'><textarea></textarea></div>");
+    expect(resolveShortcut(press("b", { metaKey: true }, editor.firstElementChild), idle)).toEqual({ type: "search" });
+    expect(resolveShortcut(press("b", { ctrlKey: true }, terminal.firstElementChild), idle)).toEqual({ type: "search" });
+    expect(resolveShortcut(press("b", { ctrlKey: true }), { ...idle, overlay: true })).toBeNull();
+    expect(resolveShortcut(press("b", { ctrlKey: true, isComposing: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("b"), idle)).toBeNull();
   });
 
   it("never captures keys typed into fields, editors or the terminal", () => {
@@ -99,7 +127,7 @@ describe("shortcuts", () => {
   });
 
   it("allows Ctrl+K in a text field but leaves it to Monaco inside the editor", () => {
-    expect(resolveShortcut(press("k", { ctrlKey: true }, el("<input />")), idle)).toEqual({ type: "btw" });
+    expect(resolveShortcut(press("k", { ctrlKey: true }, el("<input />")), idle)).toEqual({ type: "btw", private: false });
     const editor = el("<div class='monaco-editor'><span tabindex='0'></span></div>");
     expect(resolveShortcut(press("k", { ctrlKey: true }, editor.firstElementChild), idle)).toBeNull();
   });
@@ -144,12 +172,11 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press(" ", { isComposing: true }), idle)).toBeNull();
   });
 
-  it("scopes review keys to the spaces that have a queue", () => {
+  it("scopes review keys to the space that has a queue", () => {
     const code: ShortcutContext = { space: "code", overlay: false };
-    const decisions: ShortcutContext = { space: "decisions", overlay: false };
     expect(resolveShortcut(press("j"), code)).toEqual({ type: "item", delta: 1 });
-    expect(resolveShortcut(press("k"), decisions)).toEqual({ type: "item", delta: -1 });
-    expect(resolveShortcut(press("c"), decisions)).toEqual({ type: "comment" });
+    expect(resolveShortcut(press("k"), code)).toEqual({ type: "item", delta: -1 });
+    expect(resolveShortcut(press("c"), code)).toEqual({ type: "comment" });
     for (const key of ["j", "k", "c"]) {
       expect(resolveShortcut(press(key), idle)).toBeNull();
       expect(resolveShortcut(press(key), { space: "flow", overlay: false })).toBeNull();
@@ -161,12 +188,14 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("?", { shiftKey: true }), idle)).toEqual({ type: "legend" });
   });
 
-  it("toggles the terminal with Ctrl/Cmd+backtick from anywhere, even while typing", () => {
+  it("toggles the terminal with Control+backtick from anywhere, even while typing, and never with Cmd", () => {
     expect(resolveShortcut(press("`", { ctrlKey: true }), idle)).toEqual({ type: "terminal" });
-    expect(resolveShortcut(press("`", { metaKey: true }, el("<input />")), idle)).toEqual({ type: "terminal" });
-    expect(resolveShortcut(press("`", { metaKey: true }, el("<div class='xterm'><span tabindex='0'></span></div>")), idle)).toEqual({
+    expect(resolveShortcut(press("`", { ctrlKey: true }, el("<input />")), idle)).toEqual({ type: "terminal" });
+    expect(resolveShortcut(press("`", { ctrlKey: true }, el("<div class='xterm'><span tabindex='0'></span></div>")), idle)).toEqual({
       type: "terminal",
     });
+    expect(resolveShortcut(press("`", { metaKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("`", { metaKey: true, ctrlKey: true }), idle)).toBeNull();
     expect(resolveShortcut(press("`", { ctrlKey: true }), { space: "chat", overlay: true })).toEqual({ type: "terminal" });
   });
 
@@ -184,8 +213,9 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("~", { metaKey: true, shiftKey: true }), idle)).toBeNull();
     expect(resolveShortcut(press("`", { ctrlKey: true, shiftKey: true }), idle)).toBeNull();
     expect(resolveShortcut(press("`", { ctrlKey: true, altKey: true }), idle)).toBeNull();
-    expect(isTerminalToggle(press("`", { metaKey: true }))).toBe(true);
-    expect(isTerminalToggle(press("`", { metaKey: true, shiftKey: true }))).toBe(false);
+    expect(isTerminalToggle(press("`", { ctrlKey: true }))).toBe(true);
+    expect(isTerminalToggle(press("`", { metaKey: true }))).toBe(false);
+    expect(isTerminalToggle(press("`", { ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
   it("leaves the keyboard to an open overlay", () => {

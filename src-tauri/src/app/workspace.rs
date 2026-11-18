@@ -1066,6 +1066,20 @@ impl<'a> WorkspaceService<'a> {
         title: Option<String>,
         provider: ProviderKind,
     ) -> Result<WorkspaceSnapshot> {
+        self.create_session_with(repository_id, worktree_id, title, provider, None)
+    }
+
+    /// Like [`Self::create_session`], starting on the `(model, effort)` of the chat the developer
+    /// was in, so a new chat keeps what is on screen. `None` starts on what was last chosen for the
+    /// harness.
+    pub fn create_session_with(
+        &self,
+        repository_id: RepositoryId,
+        worktree_id: WorktreeId,
+        title: Option<String>,
+        provider: ProviderKind,
+        settings: Option<(Option<String>, Option<String>)>,
+    ) -> Result<WorkspaceSnapshot> {
         let repository = self
             .store
             .get_repository(repository_id)?
@@ -1102,9 +1116,20 @@ impl<'a> WorkspaceService<'a> {
 
         let now = now_rfc3339()?;
         let count = self.store.list_workspace_sessions(workspace.id)?.len() + 1;
-        // A new chat starts with the model and effort last chosen for its harness.
-        let model = self.remembered_setting(&provider.model_preference_key());
-        let effort = self.remembered_setting(&provider.effort_preference_key());
+        // A new chat starts with the model and effort of the chat it was made from, else with
+        // the ones last chosen for its harness.
+        let clean = |value: Option<String>| {
+            value
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let (model, effort) = match settings {
+            Some((model, effort)) => (clean(model), clean(effort)),
+            None => (
+                self.remembered_setting(&provider.model_preference_key()),
+                self.remembered_setting(&provider.effort_preference_key()),
+            ),
+        };
         let session = ChatSession {
             id: SessionId::new(),
             workspace_id: Some(workspace.id),
@@ -1249,6 +1274,47 @@ mod tests {
         let snapshot = service.open_repository(&root).expect("reopen");
         assert_eq!(snapshot.repositories.len(), 1);
         assert_eq!(store.list_repositories().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_new_chat_keeps_the_model_and_effort_of_the_chat_it_was_made_from() {
+        let root = PathBuf::from("/tmp/ataraxia-demo");
+        let git = FakeGit::with_repo(
+            root.clone(),
+            vec![WorktreeInfo {
+                path: root.clone(),
+                branch: Some("main".into()),
+                head: Some("abc".into()),
+            }],
+        );
+        let mut store = FakeStore::default();
+        store.healthy = true;
+        let service = WorkspaceService {
+            git: &git,
+            store: &store,
+        };
+        let snapshot = service.open_repository(&root).expect("open");
+        let (repo_id, worktree_id) = (snapshot.repositories[0].id, snapshot.worktrees[0].id);
+        // What was chosen last elsewhere does not win over the chat on screen.
+        store
+            .set_preference(&ProviderKind::Fake.model_preference_key(), "haiku")
+            .unwrap();
+        let snapshot = service
+            .create_session_with(
+                repo_id,
+                worktree_id,
+                None,
+                ProviderKind::Fake,
+                Some((Some("opus".into()), Some("xhigh".into()))),
+            )
+            .expect("create");
+        let newest = snapshot
+            .sessions
+            .iter()
+            .find(|session| Some(session.id) == snapshot.selected_session_id)
+            .expect("selected");
+        assert_eq!(newest.model.as_deref(), Some("opus"));
+        assert_eq!(newest.effort.as_deref(), Some("xhigh"));
     }
 
     #[test]

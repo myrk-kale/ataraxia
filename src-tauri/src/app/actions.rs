@@ -87,8 +87,15 @@ pub fn find_unit<'a>(priority: &'a ReviewPriority, path: &str, name: &str) -> Re
     }
 }
 
+/// Who set a priority when the review triage did: its score 0 leaves the unit out of the queue.
+pub const TRIAGE: &str = "triage";
+
 fn who(set_by: &str) -> &str {
-    if set_by == "you" { "You" } else { "The agent" }
+    match set_by {
+        "you" => "You",
+        TRIAGE => "The review triage",
+        _ => "The agent",
+    }
 }
 
 fn signed(points: i32) -> String {
@@ -137,6 +144,7 @@ pub fn apply_overrides(priority: &mut ReviewPriority, overrides: &[UnitPriority]
         );
         unit.score = set.score;
         unit.level = Level::of_unit(set.score);
+        unit.skipped = set.set_by == TRIAGE && set.score == 0;
         changed = true;
     }
     if changed {
@@ -299,6 +307,7 @@ mod tests {
             tested: None,
             dirs: 0,
             generated: false,
+            skipped: false,
         }
     }
 
@@ -390,5 +399,37 @@ mod tests {
         );
         assert_eq!(again.units[0].name, "verify");
         assert!(again.units.iter().all(|u| u.factors.is_empty()));
+    }
+
+    #[test]
+    fn the_triage_leaves_a_unit_out_with_a_zero_and_any_other_score_keeps_it() {
+        let mut queue = priority();
+        let checkpoint = CheckpointId::new();
+        let set = |name: &str, path: &str, score: u32, set_by: &str| UnitPriority {
+            checkpoint_id: checkpoint,
+            path: path.into(),
+            name: name.into(),
+            score,
+            reason: "formatting only".into(),
+            set_by: set_by.into(),
+            updated_at: String::new(),
+        };
+        apply_overrides(
+            &mut queue,
+            &[
+                set("Repo.create", "src/repo.rs", 0, TRIAGE),
+                set("verify", "src/auth.rs", 0, "you"),
+            ],
+        );
+        let skipped = |name: &str| queue.units.iter().find(|u| u.name == name).unwrap().skipped;
+        assert!(skipped("Repo.create"));
+        // A zero someone else set is a low priority, not a removal.
+        assert!(!skipped("verify"));
+        let left_out = queue
+            .units
+            .iter()
+            .find(|u| u.name == "Repo.create")
+            .unwrap();
+        assert!(left_out.reasons[0].starts_with("The review triage set the priority to 0"));
     }
 }

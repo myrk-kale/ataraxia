@@ -125,13 +125,24 @@ export function commandItems(resources: ComposerResource[], query: string): Pick
     detail: resource.description,
     aside: resource.hint ?? resource.source ?? "",
     insert:
-      resource.kind === "command"
-        ? `/${resource.name} `
-        : resource.kind === "skill"
-          ? `Use the ${resource.name} skill for this task: `
-          : `Use the ${resource.name} MCP server for this task: `,
+      resource.kind === "mcp"
+        ? `Use the ${resource.name} MCP server for this task: `
+        : `/${resource.name} `,
     continues: false,
   }));
+}
+
+/** Expand skill mentions that the harness does not handle as native slash commands. */
+export function expandSkillMention(text: string, resources: readonly ComposerResource[]): string {
+  const [, name, args] = /^\/([A-Za-z0-9][A-Za-z0-9_:.-]*)(?:\s+([\s\S]*))?$/.exec(text) ?? [];
+  if (!name || resources.some((resource) => resource.kind === "command" && resource.name === name)) {
+    return text;
+  }
+  if (!resources.some((resource) => resource.kind === "skill" && resource.name === name)) {
+    return text;
+  }
+  const rest = args?.trim();
+  return rest ? `Use the ${name} skill for this task: ${rest}` : `Use the ${name} skill for this task.`;
 }
 
 /** A path that has a space in it is quoted so the agent reads it as one. */

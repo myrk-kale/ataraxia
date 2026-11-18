@@ -137,6 +137,14 @@ impl ClaudeBackend {
                     permission_mode()
                 };
                 let mut args = launch_args(mode.as_deref(), model, effort, agent, conversation);
+                // Claude's own ways to come back later never fire here: its cron is off (see
+                // `claude_env`) and a wakeup lives and dies with the process. The agent would
+                // promise to resume and never would, so the tools are taken away for good and
+                // Ataraxia's schedule (the guide) is the one way to come back.
+                args.extend([
+                    "--disallowedTools".into(),
+                    HARNESS_SCHEDULING_TOOLS.join(","),
+                ]);
                 args.extend(["--setting-sources".into(), "".into()]);
                 if let Some(path) = plugin {
                     args.extend(["--plugin-dir".into(), path.to_string_lossy().into_owned()]);
@@ -164,6 +172,15 @@ impl ClaudeBackend {
         }
     }
 }
+
+/// Claude's built-in scheduling tools, replaced by Ataraxia's schedule.
+const HARNESS_SCHEDULING_TOOLS: [&str; 5] = [
+    "ScheduleWakeup",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "RemoteTrigger",
+];
 
 /// The environment of the CLI: what makes it forward subagent text, and the local API.
 fn claude_env(
@@ -453,6 +470,9 @@ struct ClaudeState {
     tails: HashMap<String, (PathBuf, Arc<AtomicBool>)>,
     /// The commands and skills Claude Code runs from a `/name` message, as it last said.
     commands: Vec<SlashCommand>,
+    /// Commands and watches the agent left running (a `Monitor`, a background `Bash`): task id →
+    /// what it watches. Claude starts a turn of its own when one ends.
+    background: HashMap<String, String>,
 }
 
 struct ClaudeShared {
@@ -1139,12 +1159,70 @@ impl ClaudeShared {
 
     /// Claude Code says again which commands there are when they change (a plugin loads).
     fn on_system(&self, frame: &Value) {
-        if frame.get("subtype").and_then(Value::as_str) != Some("commands_changed") {
+        match frame.get("subtype").and_then(Value::as_str) {
+            Some("commands_changed") => {
+                if let Some(commands) = frame.get("commands").and_then(Value::as_array) {
+                    self.state.lock().commands = parse_commands(commands);
+                }
+            }
+            Some("task_started") => self.on_background_started(frame),
+            Some("task_notification") => self.on_background_ended(frame),
+            _ => {}
+        }
+    }
+
+    /// A command or watch the agent left running. It shows next to the subagents while it runs,
+    /// so it is plain that the agent is waiting on it and will come back when it ends. Background
+    /// subagents are already shown through their own tool call.
+    fn on_background_started(&self, frame: &Value) {
+        let text = |key: &str| frame.get(key).and_then(Value::as_str).unwrap_or_default();
+        let (id, kind) = (text("task_id"), text("task_type"));
+        if id.is_empty()
+            || frame.get("is_backgrounded").and_then(Value::as_bool) == Some(false)
+            || kind.contains("agent")
+        {
             return;
         }
-        if let Some(commands) = frame.get("commands").and_then(Value::as_array) {
-            self.state.lock().commands = parse_commands(commands);
+        let mut state = self.state.lock();
+        if state.subagent_titles.contains_key(text("tool_use_id")) {
+            return;
         }
+        let description = match text("description") {
+            "" => "a command".to_string(),
+            described => described.to_string(),
+        };
+        let title = format!("Waiting on: {description}");
+        state.background.insert(id.to_string(), title.clone());
+        drop(state);
+        (self.emit)(BackendEvent::Subagent {
+            id: id.to_string(),
+            title,
+            update: SubagentUpdate::Detached,
+        });
+    }
+
+    fn on_background_ended(&self, frame: &Value) {
+        let text = |key: &str| frame.get(key).and_then(Value::as_str).unwrap_or_default();
+        let Some(title) = self.state.lock().background.remove(text("task_id")) else {
+            return;
+        };
+        let summary = text("summary");
+        if !summary.is_empty() {
+            (self.emit)(BackendEvent::Subagent {
+                id: text("task_id").to_string(),
+                title: title.clone(),
+                update: SubagentUpdate::Delta {
+                    text: summary.to_string(),
+                },
+            });
+        }
+        (self.emit)(BackendEvent::Subagent {
+            id: text("task_id").to_string(),
+            title,
+            update: SubagentUpdate::Done {
+                ok: !matches!(text("status"), "failed" | "error" | "killed"),
+            },
+        });
     }
 
     fn on_control_cancel(&self, frame: &Value) {
@@ -1887,7 +1965,16 @@ mod tests {
             )
             .expect("build Claude command");
 
-        assert!(!args.contains(&"--disallowedTools".into()));
+        // Only the scheduling tools that cannot come back are denied; skills stay available.
+        let denied = args
+            .iter()
+            .position(|argument| argument == "--disallowedTools")
+            .expect("deny the harness scheduling tools");
+        assert_eq!(
+            args[denied + 1],
+            "ScheduleWakeup,CronCreate,CronDelete,CronList,RemoteTrigger"
+        );
+        assert!(!args[denied + 1].contains("Skill"));
         let plugin = args
             .iter()
             .position(|argument| argument == "--plugin-dir")
@@ -2378,6 +2465,33 @@ mod tests {
             .position(|event| matches!(event, BackendEvent::TurnStarted { .. }))
             .expect("the wakeup turn is announced");
         assert_eq!(deltas(&rest[started..]), "The release is ready.");
+    }
+
+    #[test]
+    fn a_watch_left_running_shows_while_it_runs_and_the_agent_comes_back_when_it_ends() {
+        let h = start();
+        h.session.prompt(TurnId::new(), "monitor").expect("prompt");
+        let first = h.until("first turn done", is_turn_done);
+        let rest = h.until("the turn after the watch", is_turn_done);
+        h.session.shutdown();
+        assert!(first.iter().any(|event| matches!(
+            event,
+            BackendEvent::Subagent { id, title, update: SubagentUpdate::Detached }
+                if id == "bmon1" && title == "Waiting on: Wait for the test suite"
+        )));
+        let ended = rest
+            .iter()
+            .position(|event| matches!(
+                event,
+                BackendEvent::Subagent { id, update: SubagentUpdate::Done { ok: true }, .. } if id == "bmon1"
+            ))
+            .expect("the watch is shown as ended");
+        let started = rest
+            .iter()
+            .position(|event| matches!(event, BackendEvent::TurnStarted { .. }))
+            .expect("the agent comes back on its own");
+        assert!(ended < started);
+        assert_eq!(deltas(&rest[started..]), "The tests passed.");
     }
 
     #[test]

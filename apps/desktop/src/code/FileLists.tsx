@@ -136,12 +136,23 @@ function withoutExtension(name: string): string {
  * that changed, not the files they live in. A component the parser could not break down (a lock
  * file, a README) is a row of its own.
  */
-function queueRows(priority: ReviewPriority, marks: ReadonlyMap<string, ReviewMark["state"]>): QueueRow[] {
-  const units = new Map((priority.units ?? []).map((unit) => [unit.id, unit]));
+function queueRows(
+  priority: ReviewPriority,
+  marks: ReadonlyMap<string, ReviewMark["state"]>,
+  showSkipped = false,
+): QueueRow[] {
+  // What the triage left out is not in the queue, unless asked for.
+  const units = new Map(
+    (priority.units ?? []).filter((unit) => showSkipped || !unit.skipped).map((unit) => [unit.id, unit]),
+  );
   const seen = new Set<string>();
   const rows: QueueRow[] = [];
   for (const component of priority.components) {
     const members = (component.units ?? []).map((id) => units.get(id)).filter((unit): unit is Unit => Boolean(unit));
+    // A component whose every unit the triage left out is gone from the queue, not a file row.
+    if (members.length === 0 && (component.units ?? []).length > 0) {
+      continue;
+    }
     if (members.length === 0) {
       for (const path of component.files) {
         if (!seen.has(path)) {
@@ -194,18 +205,21 @@ export function ComponentQueue({
   marks,
   activeUnit,
   openPath,
+  showSkipped = false,
   onOpenUnit,
   onOpenFile,
 }: {
   priority: ReviewPriority;
   marks: ReadonlyMap<string, ReviewMark["state"]>;
   activeUnit: string | null;
+  /** Also list what the review triage left out. */
+  showSkipped?: boolean;
   /** The file open in the editor, for a row that is a file rather than a unit. */
   openPath?: string | null;
   onOpenUnit: (unit: Unit) => void;
   onOpenFile: (path: string) => void;
 }) {
-  const rows = useMemo(() => queueRows(priority, marks), [priority, marks]);
+  const rows = useMemo(() => queueRows(priority, marks, showSkipped), [priority, marks, showSkipped]);
   return (
     <ul aria-label="Components to review" className="flex flex-col gap-0.5 px-2 pb-4">
       {rows.map((row) => {
@@ -226,6 +240,7 @@ export function ComponentQueue({
                 <span className="min-w-0 truncate">
                   {row.detail}
                   {row.signatureChanged ? " · signature changed" : ""}
+                  {row.unit?.skipped ? " · left out by the triage" : ""}
                 </span>
                 <span className="ml-auto flex-none">
                   <MarkGlyph state={row.mark} />

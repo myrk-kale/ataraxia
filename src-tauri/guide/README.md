@@ -43,7 +43,7 @@ developer names a task, even if nobody asked for decisions or a flow.
    ask after an exchange that neither reviewed nor changed code.
 3. If the developer says no, or does not answer, drop it. Do not ask again for the same work.
 4. When they say yes, do what they chose and nothing more, then say in a sentence what you
-   created and where it is (the Decisions tab, the Flow tab, the review queue).
+   created and where it is (the chat's Decisions card, the Flow tab, the review queue).
 5. Everything you write must be true of the code as it is: refer to files and lines that exist.
 6. If `ATARAXIA_API_URL` or `ATARAXIA_API_TOKEN` is not set in your shell, tell the developer and
    stop (see `api.md`). Do not write to the app's database or try another route.

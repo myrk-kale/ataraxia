@@ -102,6 +102,8 @@ export type Unit = {
   tested?: boolean | null;
   dirs?: number;
   generated?: boolean;
+  /** The review triage found nothing here that needs a person's eyes. */
+  skipped?: boolean;
 };
 
 export type ScoreFactor = {
@@ -463,8 +465,10 @@ export const btwStart = (
   authorized: boolean,
   provider: ProviderKind | null = null,
   model: string | null = null,
+  /** The worktree on screen: BTW always opens on the branch the developer is on. */
+  worktreeId: string | null = null,
 ) =>
-  invoke<BtwTask>("btw_start", { sessionId, mode, question, context, returnPolicy, authorized, provider, model });
+  invoke<BtwTask>("btw_start", { sessionId, mode, question, context, returnPolicy, authorized, provider, model, worktreeId });
 export const btwList = (sessionId: SessionId) => invoke<BtwTask[]>("btw_list", { sessionId });
 export const btwSession = (taskId: BtwTaskId) => invoke<ChatSession>("btw_session", { taskId });
 /** Lets a read-only BTW conversation edit files from now on; it picks its conversation up where it was. */
@@ -497,6 +501,13 @@ export const codeCompare = (
   mergeBase: boolean,
   repositoryId: RepositoryId | null = null,
 ) => invoke<Checkpoint>("code_compare", { sessionId, base, head, mergeBase, repositoryId });
+
+export type TriageOutcome = { reordered: number; skipped: number; ignored: number };
+/** A read-only subagent orders the review queue and leaves out what needs no person's eyes. */
+export const reviewTriage = (sessionId: SessionId, checkpointId: CheckpointId | null) =>
+  invoke<TriageOutcome>("review_triage", { sessionId, checkpointId });
+/** Takes the triage's order back: the queue is the computed one again. */
+export const reviewUntriage = (checkpointId: CheckpointId) => invoke<void>("review_untriage", { checkpointId });
 
 /** Takes a priority that was set on a unit away: it goes back to what the code says. */
 export const reviewResetPriority = (checkpointId: CheckpointId, path: string, name: string) =>

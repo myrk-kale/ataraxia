@@ -301,26 +301,52 @@ pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<
         }
     }
     if let Some(source) = auth_source.filter(|source| source.is_file()) {
-        #[cfg(unix)]
+        link_credentials(source, &destination)?;
+        // Remote MCP servers the developer signed in to keep their OAuth tokens here when Codex
+        // stores them in a file instead of the keychain; without it they would need signing in
+        // again for every chat.
+        if let Some(store) = source
+            .parent()
+            .map(|home| home.join(".credentials.json"))
+            .filter(|store| store.is_file())
         {
-            std::os::unix::fs::symlink(source, &destination).map_err(|error| {
-                Error::new(
-                    ErrorCode::Io,
-                    format!("could not link Codex credentials: {error}"),
-                )
-            })?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::copy(source, &destination).map_err(|error| {
-                Error::new(
-                    ErrorCode::Io,
-                    format!("could not copy Codex credentials: {error}"),
-                )
-            })?;
+            let target = root.join(".credentials.json");
+            match fs::symlink_metadata(&target) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    let _ = fs::remove_file(&target);
+                }
+                _ => {}
+            }
+            if let Err(error) = link_credentials(&store, &target) {
+                eprintln!(
+                    "ataraxia: Codex MCP sign-ins not carried over: {}",
+                    error.message
+                );
+            }
         }
     }
     Ok(root.to_path_buf())
+}
+
+fn link_credentials(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, destination).map_err(|error| {
+            Error::new(
+                ErrorCode::Io,
+                format!("could not link Codex credentials: {error}"),
+            )
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        fs::copy(source, destination).map(|_| ()).map_err(|error| {
+            Error::new(
+                ErrorCode::Io,
+                format!("could not copy Codex credentials: {error}"),
+            )
+        })
+    }
 }
 
 /// Creates a private directory for a provider's isolated configuration.
@@ -610,6 +636,49 @@ fn frontmatter_scalar(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// The portable entries in the shape Claude Code reads. A remote server needs its transport
+/// spelled out: Claude takes an entry without `type` for a local command and, finding no
+/// command, drops the server without a word, so the agent never sees its tools.
+pub(super) fn claude_mcp_servers(servers: &Map<String, Value>) -> Map<String, Value> {
+    servers
+        .iter()
+        .map(|(name, server)| {
+            let mut server = server.clone();
+            if let Some(config) = server.as_object_mut() {
+                let transport = config.remove("transport");
+                if config.contains_key("url") && !config.contains_key("type") {
+                    let kind = transport
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| remote_transport(config.get("url")).to_string());
+                    config.insert("type".into(), Value::String(kind));
+                }
+            }
+            (name.clone(), server)
+        })
+        .collect()
+}
+
+/// `sse` for an endpoint that says so in its path, streamable HTTP otherwise (what remote MCP
+/// servers speak today).
+pub(super) fn remote_transport(url: Option<&Value>) -> &'static str {
+    let path = url
+        .and_then(Value::as_str)
+        .map(|url| {
+            url.split(['?', '#'])
+                .next()
+                .unwrap_or(url)
+                .trim_end_matches('/')
+        })
+        .unwrap_or_default();
+    if path.ends_with("/sse") {
+        "sse"
+    } else {
+        "http"
+    }
+}
+
 fn write_mcp_config(path: &Path, servers: &Map<String, Value>) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         Error::new(
@@ -633,7 +702,7 @@ fn write_mcp_config(path: &Path, servers: &Map<String, Value>) -> Result<()> {
             )
         })?;
     }
-    let bytes = serde_json::to_vec_pretty(&json!({ "mcpServers": servers }))
+    let bytes = serde_json::to_vec_pretty(&json!({ "mcpServers": claude_mcp_servers(servers) }))
         .map_err(|error| Error::new(ErrorCode::Invalid, error.to_string()))?;
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
@@ -774,5 +843,23 @@ mod tests {
         assert_ne!(changed.fingerprint, first_fingerprint);
 
         fs::remove_dir_all(root).expect("clean temporary directory");
+    }
+
+    #[test]
+    fn a_remote_server_reaches_claude_with_its_transport_spelled_out() {
+        let servers = json!({
+            "Notion": { "url": "https://mcp.notion.com/mcp" },
+            "legacy": { "url": "https://example.test/sse/" },
+            "chosen": { "url": "https://example.test/mcp", "transport": "sse" },
+            "typed": { "type": "http", "url": "https://example.test/x" },
+            "local": { "command": "mcp-tool", "args": ["--stdio"] }
+        });
+        let converted = claude_mcp_servers(servers.as_object().unwrap());
+        assert_eq!(converted["Notion"]["type"], "http");
+        assert_eq!(converted["legacy"]["type"], "sse");
+        assert_eq!(converted["chosen"]["type"], "sse");
+        assert!(converted["chosen"].get("transport").is_none());
+        assert_eq!(converted["typed"]["type"], "http");
+        assert!(converted["local"].get("type").is_none());
     }
 }
