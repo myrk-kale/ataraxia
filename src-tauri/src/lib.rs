@@ -152,6 +152,7 @@ pub fn run() {
             tauri_api::speech_download_cancel,
             tauri_api::speech_transcribe,
             tauri_api::tasks_list,
+            tauri_api::speech_warmup,
             tauri_api::task_create,
             tauri_api::task_update,
             tauri_api::task_delete,

@@ -87,6 +87,11 @@ whisper-rs = "0.16"
 
 [dev-dependencies]
 pretty_assertions = "1"
+# Without this whisper.cpp is built with Metal switched off, and the model runs on the CPU alone:
+# several times slower on Apple silicon, which has a GPU made for it.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
 
 [profile.release]
 codegen-units = 1
