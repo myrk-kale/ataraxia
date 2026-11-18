@@ -145,6 +145,8 @@ pub fn run() {
             tauri_api::autocomplete_forget,
             tauri_api::speech_status,
             tauri_api::speech_set,
+            tauri_api::speech_download,
+            tauri_api::speech_download_cancel,
             tauri_api::speech_transcribe,
             tauri_api::tasks_list,
             tauri_api::task_create,

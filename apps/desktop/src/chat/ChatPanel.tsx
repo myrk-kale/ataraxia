@@ -79,6 +79,7 @@ import { FileLinksContext, type FileLinks } from "./fileLinks";
 import type { FileCite } from "./fileRefs";
 import { useFileIndex } from "./useFileIndex";
 import { useDictation } from "./useDictation";
+import { SpeechModelDialog } from "./SpeechModelDialog";
 import { appendDictation } from "./wav";
 import { expandGlobMentions } from "./pickerChoices";
 import { Dialog } from "../ui/Overlay";
@@ -346,7 +347,10 @@ export function ChatPanel({
       composerRef.current?.focus();
     },
     onProblem: (message) => setAttachNotice(message),
+    onNeedsModel: (megabytes) => setModelDialog({ megabytes }),
   });
+  // Asked before the speech model is downloaded; once it is there, dictation starts by itself.
+  const [modelDialog, setModelDialog] = useState<{ megabytes: number } | null>(null);
   const dictateRef = useRef(dictation.toggle);
   dictateRef.current = dictation.toggle;
   const cancelDictationRef = useRef(dictation.cancel);
@@ -1110,6 +1114,16 @@ export function ChatPanel({
           </div>
         ) : null}
       </Dialog>
+
+      <SpeechModelDialog
+        isOpen={modelDialog !== null}
+        megabytes={modelDialog?.megabytes ?? 0}
+        onClose={() => setModelDialog(null)}
+        onReady={() => {
+          setModelDialog(null);
+          dictation.toggle();
+        }}
+      />
 
       <SubagentBar
         busy={busy && view !== null && !activeBtwSubagent}

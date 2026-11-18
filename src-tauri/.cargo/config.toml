@@ -1,0 +1,8 @@
+# whisper.cpp is compiled into the app. Without this it is tuned for the machine that builds it
+# (`-march=native`), and a release built on a CI runner would crash with an illegal instruction on an
+# older CPU. The portable build is just as quick for what dictation needs.
+[env]
+GGML_NATIVE = "OFF"
+# A `ccache` that is installed but broken (a missing library after a Homebrew upgrade) makes the
+# build of whisper.cpp abort on every file; the compiler cache is not worth that risk.
+GGML_CCACHE = "OFF"

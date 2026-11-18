@@ -301,6 +301,8 @@ function emit(event: string, payload: unknown) {
 function handle(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "core_status": return "ready";
+    case "speech_status": return { ready: false, engine: "built-in Whisper", needs_model: true, downloading: false, model_megabytes: 574, model_url: "", problem: null, command: "", language: "", languages: [{ code: "", name: "Detect it" }, { code: "en", name: "English" }, { code: "pt", name: "Português" }] };
+    case "speech_set": return handle("speech_status");
     case "tasks_list": return devTasks.slice();
     case "task_create": {
       const made = { number: devTasks.reduce((top, item) => Math.max(top, item.number), 0) + 1, title: String(args?.title), notes: "", status: "draft", created_at: now, updated_at: now };

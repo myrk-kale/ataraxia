@@ -22,7 +22,16 @@ function problemText(err: unknown): string {
  * into text with the Whisper engine on this computer, which `onText` receives. Nothing leaves the
  * machine. `toggle` starts and stops; `cancel` throws the recording away.
  */
-export function useDictation({ onText, onProblem }: { onText: (text: string) => void; onProblem: (message: string) => void }) {
+export function useDictation({
+  onText,
+  onProblem,
+  onNeedsModel,
+}: {
+  onText: (text: string) => void;
+  onProblem: (message: string) => void;
+  /** The built-in engine has no model yet: the person is to be asked before it is downloaded. */
+  onNeedsModel: (megabytes: number) => void;
+}) {
   const [state, setState] = useState<DictationState>("idle");
   const [loudness, setLoudness] = useState(0);
   const session = useRef<{
@@ -34,8 +43,8 @@ export function useDictation({ onText, onProblem }: { onText: (text: string) => 
     timer: number;
   } | null>(null);
   const live = useRef(true);
-  const handlers = useRef({ onText, onProblem });
-  handlers.current = { onText, onProblem };
+  const handlers = useRef({ onText, onProblem, onNeedsModel });
+  handlers.current = { onText, onProblem, onNeedsModel };
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -102,9 +111,14 @@ export function useDictation({ onText, onProblem }: { onText: (text: string) => 
     try {
       // Better to learn there is no engine before the person has said anything.
       const status = await speechStatus();
+      if (status.needs_model) {
+        setState("idle");
+        handlers.current.onNeedsModel(status.model_megabytes);
+        return;
+      }
       if (!status.ready) {
         setState("idle");
-        handlers.current.onProblem(status.problem ?? "No speech engine is available. See Settings > Voice.");
+        handlers.current.onProblem(status.problem ?? "Dictation is not available. See Settings > Voice.");
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({

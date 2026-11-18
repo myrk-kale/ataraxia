@@ -28,6 +28,8 @@ pub struct AppState {
     pub db_path: PathBuf,
     /// The local HTTP API agents call; `None` when it could not start.
     pub api: Option<Arc<ApiServer>>,
+    /// Speech to text: the Whisper model and the engine that listens.
+    pub speech: Arc<crate::adapters::speech::Recognizer>,
 }
 
 pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
@@ -99,6 +101,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         engine,
         db_path,
         api,
+        speech: crate::adapters::speech::Recognizer::new(data_dir.join("models")),
     })
 }
 

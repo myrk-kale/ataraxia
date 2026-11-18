@@ -49,6 +49,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            cmake \
+            libclang-dev \
             curl \
             wget \
             file \

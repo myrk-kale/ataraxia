@@ -6,6 +6,14 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- Dictation no longer depends on a Whisper you install yourself. Whisper is built into Ataraxia and runs on
+  your computer; the first time you press the microphone it asks before downloading the model (about
+  574 MB, once, with progress, cancellable and resumable) and then listens. Settings > Voice shows the
+  state, downloads the model, sets the language (detected by default) and can still use a command of your
+  own instead. The external `whisper-cli`, `mlx_whisper` and `whisper` lookups are gone.
+
 ## [0.12.0] - 2026-11-18
 
 ### Added
