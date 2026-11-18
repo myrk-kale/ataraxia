@@ -111,17 +111,23 @@ describe("the task list", () => {
     expect(host.textContent).toContain("Everything is done.");
   });
 
-  it("asks twice before deleting a task", async () => {
+  it("confirms deletion from a collapsed task without opening the card", async () => {
     store = [{ number: 3, title: "old idea", notes: "", status: "draft", created_at: "t", updated_at: "t" }];
     await act(async () => {
       root.unmount();
       root = createRoot(host);
-      root.render(<TasksSpace active onError={() => undefined} />);
+      root.render(<TasksSpace active layout="drawer" onError={() => undefined} />);
     });
     await flush();
-    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
-    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Delete #3"]')!.click());
+    const remove = host.querySelector<HTMLButtonElement>('button[aria-label="Delete #3"]')!;
+    await act(async () => remove.click());
+    expect(host.querySelector('input[aria-label="Title of #3"]')).toBeNull();
     expect(calls.some((call) => call.cmd === "task_delete")).toBe(false);
+    const keep = [...host.querySelectorAll("button")].find((button) => button.textContent === "Keep")!;
+    await act(async () => keep.click());
+    expect(document.activeElement).toBe(remove);
+    expect(calls.some((call) => call.cmd === "task_delete")).toBe(false);
+    await act(async () => remove.click());
     const sure = [...host.querySelectorAll("button")].find((button) => button.textContent === "Delete for good")!;
     await act(async () => sure.click());
     await flush();

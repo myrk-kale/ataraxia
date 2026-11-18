@@ -234,6 +234,7 @@ function TaskCard({
   const [notes, setNotes] = useState(task.notes);
   const [copied, setCopied] = useState<"ref" | "text" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const deleteButton = useRef<HTMLButtonElement>(null);
   useEffect(() => setTitle(task.title), [task.title]);
   useEffect(() => setNotes(task.notes), [task.notes]);
   useEffect(() => {
@@ -261,6 +262,11 @@ function TaskCard({
     await copy(what === "ref" ? taskRef(task) : taskAsMessage(task));
     setCopied(what);
     window.setTimeout(() => setCopied(null), 1400);
+  }
+
+  function keepTask() {
+    setConfirming(false);
+    deleteButton.current?.focus();
   }
 
   return (
@@ -300,7 +306,29 @@ function TaskCard({
             <ChevronRight aria-hidden="true" className="flex-none text-cg-muted" size={14} />
           )}
         </button>
+        <Button
+          ref={deleteButton}
+          aria-expanded={confirming}
+          aria-label={`Delete ${taskRef(task)}`}
+          className="flex-none"
+          title={`Delete ${taskRef(task)}`}
+          variant="icon"
+          onClick={() => setConfirming((current) => !current)}
+        >
+          <Trash2 aria-hidden="true" size={14} />
+        </Button>
       </div>
+
+      {confirming ? (
+        <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-cg-line px-3 py-2 text-small">
+          <Button autoFocus size="sm" variant="quiet" onClick={keepTask}>
+            Keep
+          </Button>
+          <Button size="sm" variant="danger" onClick={onDelete}>
+            Delete for good
+          </Button>
+        </div>
+      ) : null}
 
       {open ? (
         <div className="flex flex-col gap-3 border-t border-cg-line px-3.5 pt-3 pb-3.5">
@@ -343,22 +371,6 @@ function TaskCard({
             <Button title="Copy the number, title and notes" variant="quiet" onClick={() => void copyIt("text")}>
               {copied === "text" ? "Copied" : "Copy as message"}
             </Button>
-            <span className="ml-auto">
-              {confirming ? (
-                <span className="flex items-center gap-1.5 text-small">
-                  <Button autoFocus size="sm" variant="danger" onClick={onDelete}>
-                    Delete for good
-                  </Button>
-                  <Button size="sm" variant="quiet" onClick={() => setConfirming(false)}>
-                    Keep
-                  </Button>
-                </span>
-              ) : (
-                <Button aria-label={`Delete ${taskRef(task)}`} variant="icon" onClick={() => setConfirming(true)}>
-                  <Trash2 aria-hidden="true" size={14} />
-                </Button>
-              )}
-            </span>
           </div>
         </div>
       ) : null}
