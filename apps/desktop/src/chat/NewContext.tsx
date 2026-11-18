@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ProviderDescriptor } from "../lib/agent";
 import { Button } from "../ui/Button";
 import { AsciiMark } from "./AsciiMark";
@@ -10,6 +11,7 @@ export function NewContext({
   contextLabel,
   hasRepository,
   providerLabel,
+  providerSelector,
   providers,
   onNewChat,
   onOpenRepository,
@@ -20,6 +22,7 @@ export function NewContext({
   hasRepository: boolean;
   /** The provider a new chat will use; `null` when none can run. */
   providerLabel: string | null;
+  providerSelector?: ReactNode;
   /** The providers the person can pick from; `null` while they are still being detected. */
   providers: ProviderDescriptor[] | null;
   onNewChat: () => void;
@@ -35,9 +38,12 @@ export function NewContext({
       <Hero contextLabel={contextLabel}>
         <div className="mt-8 flex justify-center">
           {hasRepository ? (
-            <Button disabled={!canCreate} variant="primary" onClick={onNewChat}>
-              {providerLabel ? `Start a chat with ${providerLabel}` : "Start a chat"}
-            </Button>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              {providerLabel ? providerSelector : null}
+              <Button disabled={!canCreate} variant="primary" onClick={onNewChat}>
+                {providerLabel ? `Start a chat with ${providerLabel}` : "Start a chat"}
+              </Button>
+            </div>
           ) : (
             <Button disabled={busy} variant="primary" onClick={onOpenRepository}>
               Open a repository

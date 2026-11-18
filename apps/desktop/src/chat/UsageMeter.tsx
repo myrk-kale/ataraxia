@@ -98,7 +98,7 @@ export function UsageView({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [box, setBox] = useState({ left: 0, bottom: 0 });
+  const [box, setBox] = useState({ left: 0, top: 0 });
   const views = viewUsage(usage, now);
   if (views.length === 0) {
     return null;
@@ -109,11 +109,11 @@ export function UsageView({
     if (!rect) {
       return;
     }
-    // The meter lives in the composer at the bottom of the window: the details open upwards,
+    // The meter lives in the header at the top of the window: the details open downwards,
     // and never past the right edge.
     setBox({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - 316)),
-      bottom: window.innerHeight - rect.top + 6,
+      top: rect.bottom + 6,
     });
     menuRef.current?.showPopover();
   }
@@ -140,7 +140,7 @@ export function UsageView({
         id={menuId}
         popover="auto"
         role="dialog"
-        style={{ left: box.left, bottom: box.bottom, top: "auto", right: "auto" }}
+        style={{ left: box.left, top: box.top, bottom: "auto", right: "auto" }}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             // Closes this and nothing behind it.

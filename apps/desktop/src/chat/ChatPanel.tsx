@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { ArrowDown, ListPlus, Loader2, Mic, Paperclip, Square, Zap } from "lucide-react";
 import {
   useCallback,
@@ -9,6 +10,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import {
   agentCancel,
@@ -44,7 +46,7 @@ import type { ChatSession, WorkspaceSnapshot } from "../lib/workspace";
 import type { ConversationJump } from "../lib/search";
 import { workspaceCreateSession } from "../lib/workspace";
 import { play } from "../app/sound/sound";
-import { toRows } from "./rows";
+import { toRows, withDecisionRows } from "./rows";
 import { useSuggestion } from "./autocomplete";
 import { AsciiMark } from "./AsciiMark";
 import {
@@ -69,7 +71,7 @@ import { StatusDot } from "./StatusDot";
 import { UsageMeter } from "./UsageMeter";
 import { ContextMeter } from "./ContextMeter";
 import { SubagentBar } from "./SubagentBar";
-import { DecisionsCard } from "../decisions/DecisionsReview";
+import { DecisionsCard, useDecisions } from "../decisions/DecisionsReview";
 import { loadClosedSubagents, saveClosedSubagents } from "./closedSubagents";
 import { announceSettled, markDraftChat } from "./draftChats";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -84,6 +86,7 @@ import { FileLinksContext, type FileLinks } from "./fileLinks";
 import type { FileCite } from "./fileRefs";
 import { useFileIndex } from "./useFileIndex";
 import { useDictation } from "./useDictation";
+import { RecordingBar } from "./RecordingBar";
 import { SpeechModelDialog } from "./SpeechModelDialog";
 import { appendDictation } from "./wav";
 import { expandGlobMentions, expandSkillMention } from "./pickerChoices";
@@ -115,8 +118,10 @@ function errorText(err: unknown): string {
 export function ChatPanel({
   session,
   provider,
+  providerSelector,
   contextLabel,
   bare = false,
+  meterSlot = null,
   onSessionChange,
   onNewSession,
   onPreviousWorkspace,
@@ -127,9 +132,12 @@ export function ChatPanel({
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
+  providerSelector?: ReactNode;
   contextLabel: string | null;
   /** No agent mark or name beside the composer. */
   bare?: boolean;
+  /** Where the limits and context meters are drawn (the window header); none, none shown. */
+  meterSlot?: HTMLElement | null;
   onSessionChange: (session: ChatSession) => void;
   onNewSession?: (workspace: WorkspaceSnapshot) => void;
   onPreviousWorkspace?: () => Promise<WorkspaceSnapshot>;
@@ -137,7 +145,6 @@ export function ChatPanel({
   ownRoot?: string | null;
   /** Opens a file the chat named in the editor. Without it, files named in messages are plain text. */
   onOpenFile?: (cite: FileCite) => void;
-  /** Opens the decisions review; without it the chat shows no decisions card. */
   onOpenDecisions?: () => void;
   jumpTo?: ConversationJump;
 }) {
@@ -398,12 +405,13 @@ export function ChatPanel({
   }, [bare]);
 
   // Follow the stream while the reader is at the bottom; leave them alone once they scroll up.
-  useLayoutEffect(() => {
+  const followTranscript = useCallback(() => {
     const element = scrollRef.current;
     if (element && stickRef.current) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [state.items, state.status, state.pending, state.loaded, activeSubagent]);
+  }, []);
+  useLayoutEffect(followTranscript, [followTranscript, state.items, state.status, state.pending, state.loaded, activeSubagent]);
 
   // Grow the composer with its content up to a cap.
   useLayoutEffect(() => {
@@ -919,10 +927,15 @@ export function ChatPanel({
 
   const providerLabel = PROVIDER_LABELS[session.provider] ?? session.provider;
 
-  // The transcript is cut into rows, and only the rows on screen are put in the page.
+  const decisionReview = useDecisions(!bare && state.loaded ? sessionId : null);
+  const decisionActivity = decisionReview.generation.kind === "working" || decisionReview.state.kind === "failed";
   const rows = useMemo(
-    () => toRows(state.items, state.restoredCount > 0 ? state.restoredCount : -1),
-    [state.items, state.restoredCount],
+    () => withDecisionRows(
+      toRows(state.items, state.restoredCount > 0 ? state.restoredCount : -1),
+      decisionReview.decisions,
+      decisionActivity,
+    ),
+    [state.items, state.restoredCount, decisionReview.decisions, decisionActivity],
   );
   const subagentRows = useMemo(
     () => (activeSubagent ? toRows(activeSubagent.items, -1) : []),
@@ -935,6 +948,15 @@ export function ChatPanel({
   return (
     <FileLinksContext.Provider value={fileLinks}>
     <section className="cg-chat relative flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
+      {meterSlot && !bare
+        ? createPortal(
+            <>
+              <UsageMeter label={providerLabel} provider={session.provider} />
+              <ContextMeter usage={state.contextUsage} />
+            </>,
+            meterSlot,
+          )
+        : null}
       {background.enabled ? (
         <div aria-hidden="true" className="pointer-events-none absolute inset-0">
           <AsciiMark mark={emptyChat} />
@@ -1055,6 +1077,14 @@ export function ChatPanel({
                 key="main"
                 jumpTo={jumpTo}
                 rows={rows}
+                renderDecisions={(row) => (
+                  <DecisionsCard
+                    review={decisionReview}
+                    decisions={row.decisions}
+                    onOpenFullscreen={onOpenDecisions}
+                    onOpenFile={onOpenFile ? (path, line) => onOpenFile({ path, line, endLine: null }) : undefined}
+                  />
+                )}
                 scrollRef={scrollRef}
                 sessionId={sessionId}
                 stick={stickRef}
@@ -1182,8 +1212,6 @@ export function ChatPanel({
         }}
       />
 
-      {onOpenDecisions ? <DecisionsCard sessionId={sessionId} onOpen={onOpenDecisions} /> : null}
-
       <SubagentBar
         busy={busy && view !== null && !activeBtwSubagent}
         mainLabel={MAIN_AGENT}
@@ -1241,6 +1269,13 @@ export function ChatPanel({
               {attachNotice}
             </p>
           ) : null}
+          <RecordingBar
+            listening={dictation.listening}
+            loudness={dictation.loudness}
+            partial={dictation.partial}
+            silence={dictation.silence}
+            state={dictation.state}
+          />
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
           <div className="relative">
           {completion ? <div ref={completionRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-body [overflow-wrap:anywhere]"><span className="invisible">{draft}</span><span className="text-cg-muted">{completion}</span></div> : null}
@@ -1283,89 +1318,15 @@ export function ChatPanel({
           />
           </div>
           <div className="mt-1 flex min-h-[29px] items-center justify-between text-small text-cg-muted">
-            <div className="flex min-w-0 items-center gap-2.5">
-              {activeSubagent ? null : (
-                <>
-                  <input
-                    ref={fileInputRef}
-                    accept={IMAGE_ACCEPT}
-                    aria-hidden="true"
-                    className="hidden"
-                    multiple
-                    tabIndex={-1}
-                    type="file"
-                    onChange={(event) => {
-                      addFiles(Array.from(event.target.files ?? []));
-                      event.target.value = "";
-                    }}
-                  />
-                  <button
-                    aria-label="Attach images"
-                    className="grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!state.loaded || attachments.length >= MAX_IMAGES}
-                    title="Attach images (PNG, JPEG, GIF or WebP), or paste them"
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Paperclip aria-hidden="true" size={15} />
-                  </button>
-                  {dictation.supported ? (
-                    <button
-                      aria-label={
-                        dictation.state === "recording"
-                          ? "Stop recording and turn it into text"
-                          : dictation.state === "transcribing"
-                            ? "Turning your voice into text"
-                            : "Dictate"
-                      }
-                      aria-pressed={dictation.state === "recording"}
-                      className={`relative grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${
-                        dictation.state === "recording" ? "bg-cg-del-bg text-cg-del-fg" : "text-cg-muted-strong"
-                      }`}
-                      disabled={!state.loaded || dictation.state === "starting" || dictation.state === "transcribing"}
-                      title={
-                        dictation.state === "recording"
-                          ? "Stop and write what you said (Ctrl/⌘ Shift M). Esc throws it away"
-                          : "Dictate: speak, and it is written here on this computer (Ctrl/⌘ Shift M)"
-                      }
-                      type="button"
-                      onClick={dictation.toggle}
-                    >
-                      {dictation.state === "transcribing" || dictation.state === "starting" ? (
-                        <Loader2 aria-hidden="true" className="animate-spin" size={15} />
-                      ) : (
-                        <Mic aria-hidden="true" size={15} />
-                      )}
-                      {dictation.state === "recording" ? (
-                        <span
-                          aria-hidden="true"
-                          className="absolute inset-0 rounded-cg-md border border-cg-del-fg"
-                          style={{ opacity: 0.25 + dictation.loudness * 4, transform: `scale(${1 + Math.min(0.35, dictation.loudness * 3)})` }}
-                        />
-                      ) : null}
-                    </button>
-                  ) : null}
-                </>
-              )}
+            <div className="flex min-w-0 items-center gap-4">
               {bare ? null : (
-                <>
+                <div className="flex min-w-0 items-center gap-2.5">
                   <ProfileMark provider={session.provider} size={24} />
-                  <span className="truncate text-ui font-semibold text-cg-ink">{MAIN_AGENT}</span>
-                </>
+                  {providerSelector ?? <span className="truncate text-ui font-semibold text-cg-ink">{MAIN_AGENT}</span>}
+                </div>
               )}
               <StatusDot status={state.status} />
-              {bare ? null : <><UsageMeter label={providerLabel} provider={session.provider} /><ContextMeter usage={state.contextUsage} /></>}
-            </div>
-            {activeSubagent ? (
-              <button
-                className="rounded-cg-sm px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
-                type="button"
-                onClick={() => setView(null)}
-              >
-                ← Back to {MAIN_AGENT} (Esc)
-              </button>
-            ) : (
-            <div className="flex flex-none items-center gap-3">
+              {activeSubagent ? null : (
               <SessionSettings
                 disabled={busy || !state.loaded}
                 disabledReason="Wait for the current turn to finish"
@@ -1378,6 +1339,18 @@ export function ChatPanel({
                   void configure(model, effort, agent);
                 }}
               />
+              )}
+            </div>
+            {activeSubagent ? (
+              <button
+                className="rounded-cg-sm px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
+                type="button"
+                onClick={() => setView(null)}
+              >
+                ← Back to {MAIN_AGENT} (Esc)
+              </button>
+            ) : (
+            <div className="flex flex-none items-center gap-3">
               {queues ? (
                 <>
                   <button
@@ -1411,6 +1384,71 @@ export function ChatPanel({
                   <Square fill="currentColor" size={11} />
                 </button>
               ) : null}
+              {activeSubagent ? null : (
+                <>
+                  {dictation.supported ? (
+                    <button
+                      aria-label={
+                        dictation.state === "recording"
+                          ? "Stop recording"
+                          : dictation.state === "transcribing"
+                            ? "Writing what you said"
+                            : "Dictate"
+                      }
+                      aria-pressed={dictation.state === "recording"}
+                      className={`relative grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${
+                        dictation.state === "recording" ? "bg-cg-del-bg text-cg-del-fg" : "text-cg-muted-strong"
+                      }`}
+                      disabled={!state.loaded || dictation.state === "starting" || dictation.state === "transcribing"}
+                      title={
+                        dictation.state === "recording"
+                          ? "Stop now (Ctrl/⌘ Shift M). It also stops by itself after a pause. Esc drops what is not written yet"
+                          : "Dictate: speak, and it is written here as you go, on this computer (Ctrl/⌘ Shift M)"
+                      }
+                      type="button"
+                      onClick={dictation.toggle}
+                    >
+                      {dictation.state === "transcribing" || dictation.state === "starting" ? (
+                        <Loader2 aria-hidden="true" className="animate-spin" size={15} />
+                      ) : dictation.state === "recording" ? (
+                        <Square aria-hidden="true" fill="currentColor" size={11} />
+                      ) : (
+                        <Mic aria-hidden="true" size={15} />
+                      )}
+                      {dictation.state === "recording" ? (
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-0 rounded-cg-md border border-cg-del-fg"
+                          style={{ opacity: 0.25 + dictation.loudness * 4, transform: `scale(${1 + Math.min(0.35, dictation.loudness * 3)})` }}
+                        />
+                      ) : null}
+                    </button>
+                  ) : null}
+                  <input
+                    ref={fileInputRef}
+                    accept={IMAGE_ACCEPT}
+                    aria-hidden="true"
+                    className="hidden"
+                    multiple
+                    tabIndex={-1}
+                    type="file"
+                    onChange={(event) => {
+                      addFiles(Array.from(event.target.files ?? []));
+                      event.target.value = "";
+                    }}
+                  />
+                  <button
+                    aria-label="Attach images"
+                    className="grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!state.loaded || attachments.length >= MAX_IMAGES}
+                    title="Attach images (PNG, JPEG, GIF or WebP), or paste them"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Paperclip aria-hidden="true" size={15} />
+                  </button>
+                </>
+              )}
             </div>
             )}
           </div>

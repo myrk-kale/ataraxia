@@ -209,6 +209,7 @@ export function AppShell() {
   const { kind: theme, toggleKind: toggleTheme } = useAppearance();
   // The header is the window's title bar on macOS: it makes room for the window buttons.
   const titlebarInset = useTitlebarInset();
+  const [meterSlot, setMeterSlot] = useState<HTMLElement | null>(null);
 
   const loadWorkspace = useCallback(() => {
     setBoot({ kind: "loading" });
@@ -804,6 +805,26 @@ export function AppShell() {
         </StateMessage>
       );
     }
+    const providerSelector = (
+      <QuietSelect
+        aria-label="Provider"
+        sound
+        className="max-w-[130px] text-small text-cg-muted-strong"
+        disabled={busy || choices.length === 0}
+        options={choices.map((item) => ({
+          value: item.kind,
+          label: `${item.display_name}${item.available ? "" : " (unavailable)"}`,
+          disabled: !item.available,
+          hint: item.detail ?? undefined,
+        }))}
+        placeholder="No agent found"
+        title={selectedSession ? "Provider for this chat" : "Provider for new chats"}
+        value={shownProvider ?? ""}
+        onChange={(value) => {
+          void onProviderSwitch(value as ProviderKind);
+        }}
+      />
+    );
     if (selectedSession) {
       return (
         <ChatPanel
@@ -812,6 +833,8 @@ export function AppShell() {
           contextLabel={contextLabel}
           provider={providers?.find((item) => item.kind === selectedSession.provider) ?? null}
           session={selectedSession}
+          providerSelector={providerSelector}
+          meterSlot={meterSlot}
           ownRoot={workspace.worktrees.find((item) => item.id === selectedSession.worktree_id)?.path ?? null}
           onNewSession={(snapshot) => {
             setDrafts(draftChats());
@@ -842,6 +865,7 @@ export function AppShell() {
         hasRepository={Boolean(selectedRepository)}
         providerLabel={provider ? PROVIDER_LABELS[provider] : null}
         providers={providers === null ? null : choices}
+        providerSelector={providerSelector}
         onNewChat={() => {
           void onNewChat();
         }}
@@ -960,24 +984,7 @@ export function AppShell() {
             <Chip icon={<Loader2 aria-hidden="true" className="animate-spin" size={12} />}>Agent working</Chip>
           ) : null}
 
-          <QuietSelect
-            aria-label="Provider"
-            sound
-            className="max-w-[130px] text-small text-cg-muted-strong"
-            disabled={busy || choices.length === 0}
-            options={choices.map((item) => ({
-              value: item.kind,
-              label: `${item.display_name}${item.available ? "" : " (unavailable)"}`,
-              disabled: !item.available,
-              hint: item.detail ?? undefined,
-            }))}
-            placeholder="No agent found"
-            title={selectedSession ? "Provider for this chat" : "Provider for new chats"}
-            value={shownProvider ?? ""}
-            onChange={(value) => {
-              void onProviderSwitch(value as ProviderKind);
-            }}
-          />
+          <span ref={setMeterSlot} className="flex items-center" />
 
           <Tip label="MCP servers">
             <Button
