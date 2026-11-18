@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { CopyButton } from "./CopyButton";
 import { codeText, languageOf, tableCopy } from "./markdownCopy";
 import { Mermaid } from "./Mermaid";
+import { SvgBlock } from "./SvgBlock";
 import { readFileHref, remarkFileLinks, useFileLinks, type FileLinks } from "./fileLinks";
 import { resolveCite } from "./fileRefs";
 
@@ -26,12 +27,15 @@ function CopyableTable({ children }: { children: ReactNode }) {
   );
 }
 
-/** A fenced block: a `mermaid` one becomes a diagram, any other gets a button that copies its code. */
+/** A fenced block: `mermaid` becomes a diagram and `svg` a drawing; any other gets a button that copies its code. */
 function CodeBlock({ children }: { children: ReactNode }) {
   const code = isValidElement<{ className?: string; children?: unknown }>(children) ? children.props : null;
   const text = codeText(code?.children);
   if (code && languageOf(code.className) === "mermaid") {
     return <Mermaid source={text} />;
+  }
+  if (code && languageOf(code.className) === "svg") {
+    return <SvgBlock source={text} />;
   }
   return (
     <div className="group/copy relative my-2">

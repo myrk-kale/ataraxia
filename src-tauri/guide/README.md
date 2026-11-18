@@ -16,13 +16,17 @@ bash with curl, as `api.md` explains. There are no tools to look for and no othe
 Only after the developer says yes to your closing question, or asks you for decisions, a flow,
 review comments or a priority change. Do not read it before, and do not read all of it: read this
 page, then only the topic you need, and always `api.md` before the first call. The exception is
-`schedule.md` and `tasks.md`: read them when you need to come back to something later or the
-developer names a task, even if nobody asked for decisions or a flow.
+`schedule.md`, `tasks.md` and `svg.md`: read them when you need to come back to something later,
+the developer names a task, or you are about to draw an SVG, even if nobody asked for decisions or
+a flow.
 
 ## Topics
 
 - `decisions.md`: what a decision is, which ones are worth recording, and how.
 - `flow.md`: how to draw a diagram that holds up.
+- `svg.md`: how to draw a picture (a concept map, a mind map, an architecture sketch) in a ```svg
+  block of your reply, which the chat shows as an image. Read it before your first drawing in a
+  chat, without waiting for a yes to anything: it is not an artifact, only part of an answer.
 - `review.md`: comments on components, and changing their priority.
 - `tasks.md`: the developer's own numbered tasks ("#12"), and how to read one. Read it when they
   name a task or ask what is ready to be developed, without waiting for a yes to anything.

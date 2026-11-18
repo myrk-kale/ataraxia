@@ -13,6 +13,7 @@ const FILES: &[(&str, &str)] = &[
     ("README.md", include_str!("../../../guide/README.md")),
     ("decisions.md", include_str!("../../../guide/decisions.md")),
     ("flow.md", include_str!("../../../guide/flow.md")),
+    ("svg.md", include_str!("../../../guide/svg.md")),
     ("review.md", include_str!("../../../guide/review.md")),
     ("schedule.md", include_str!("../../../guide/schedule.md")),
     ("tasks.md", include_str!("../../../guide/tasks.md")),
@@ -38,14 +39,16 @@ pub fn preamble(index: &Path) -> String {
          - When you finish reviewing code, or writing or changing code, end your reply with one short question, in the developer's language, asking whether they want you to generate decisions, a flow diagram, review comments or priorities. Do not ask after an exchange that neither reviewed nor changed code.\n\
          - Write a TLDR last. After reviewing or changing code, the last thing in your reply, right before that question, is a TLDR of two to four short lines in the developer's language: what changed, why, and what to check first to validate it. Skip it after an exchange that neither reviewed nor changed code.\n\
          - Only once the developer says yes, or asks for any of them, read {} (it says what each is and how to call the API), then do what they chose. Do not read it before.\n\
-         - When the developer asks for a diagram and does not say which kind, ask first, in their language, whether they want a Flow diagram (saved in Ataraxia's Flow tab) or a Mermaid diagram (a mermaid code block in your reply), and wait for the answer. Do not choose for them. If the request already says which, or says \"Flow\" or \"Mermaid\", do not ask.\n\
+         - A diagram asked for with no kind is a Mermaid diagram (a mermaid code block in your reply). Make a Flow diagram (saved in Ataraxia's Flow tab) only when the developer says Flow, and do not ask which.\n\
          - For Mermaid flowcharts, use the animated renderer's compatible subset: `flowchart TD` or `flowchart LR`, simple node IDs and quoted plain-text labels, and `-->` links with optional `|label|`. Avoid HTML, backticks, escaped newlines, styling, subgraphs and special link syntax; keep labels short and diagrams under 60 nodes and 100 edges. Do not replace an explicitly requested non-flowchart diagram type. Rendering also depends on device support.\n\
+         - When explaining structure, relations or three or more things compared, or when asked for an SVG or mind map, add an SVG in a ```svg code block (the chat shows an image). Before your first in a chat, read {} (how, and when not).\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
          - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
          - The developer keeps numbered tasks in Ataraxia. When they name one (\"#12\", \"task 12\"), fetch it with `curl -sS \"$ATARAXIA_API_URL/v1/tasks/12\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\"` and work from its title and notes; {} has details. Do not guess a task from its number.\n\
          The developer's message follows.\n\n",
         index.display(),
+        index.with_file_name("svg.md").display(),
         index.with_file_name("schedule.md").display(),
         index.with_file_name("queue.md").display(),
         index.with_file_name("tasks.md").display()
@@ -104,6 +107,9 @@ mod tests {
         assert!(prompt.contains("hold their queue"));
         assert!(prompt.contains("Do not pause when the work is done"));
         assert!(prompt.contains("Flow diagram") && prompt.contains("Mermaid diagram"));
+        // Drawings: the fence to use, and the page that teaches how to make them well.
+        assert!(prompt.contains("```svg"));
+        assert!(prompt.contains(&index.with_file_name("svg.md").display().to_string()));
         assert!(prompt.contains("Avoid HTML"));
         // The TLDR comes last, ahead of the closing question, and tasks can be fetched by number.
         assert!(prompt.contains("Write a TLDR last"));
@@ -133,25 +139,53 @@ mod tests {
     }
 
     #[test]
-    fn a_request_for_a_diagram_with_no_kind_is_answered_with_a_question_and_not_a_choice() {
+    fn a_request_for_a_diagram_with_no_kind_is_a_mermaid_diagram_and_flow_only_when_it_is_named() {
         let text = preamble(Path::new("/data/guide/README.md"));
         let line = text
             .lines()
-            .find(|line| line.contains("asks for a diagram"))
+            .find(|line| line.contains("asked for with no kind"))
             .expect("a line about diagrams");
-        assert!(line.contains("ask first"));
-        assert!(line.contains("Flow diagram"));
-        assert!(line.contains("Mermaid diagram"));
-        assert!(line.contains("Do not choose for them"));
-        // And it does not ask when the kind was already said.
-        assert!(line.contains("do not ask"));
+        assert!(line.contains("is a Mermaid diagram"));
+        assert!(line.contains("only when the developer says Flow"));
+        // It never asks which one: the default answers that.
+        assert!(line.contains("do not ask which"));
+        assert!(!line.contains("ask first"));
+    }
+
+    #[test]
+    fn the_svg_guide_teaches_with_drawings_that_are_well_formed_xml() {
+        let (_, text) = FILES
+            .iter()
+            .find(|(name, _)| *name == "svg.md")
+            .expect("the svg page");
+        let drawings: Vec<&str> = text
+            .split("```svg\n")
+            .skip(1)
+            .filter_map(|part| part.split("```").next())
+            .collect();
+        assert!(drawings.len() >= 2, "the page shows what to make");
+        for drawing in drawings {
+            assert!(
+                drawing
+                    .trim_start()
+                    .starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 ")
+            );
+            assert!(drawing.contains("<title>") && drawing.contains("<desc>"));
+            assert!(drawing.trim_end().ends_with("</svg>"));
+            // Every tag that opens is closed or closes itself.
+            let opened = drawing.matches("<rect").count()
+                + drawing.matches("<path").count()
+                + drawing.matches("<text").count();
+            let closed = drawing.matches("/>").count() + drawing.matches("</text>").count();
+            assert!(closed >= opened);
+        }
     }
 
     #[test]
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"));
         assert!(
-            text.split_whitespace().count() < 520,
+            text.split_whitespace().count() < 540,
             "{} words",
             text.split_whitespace().count()
         );

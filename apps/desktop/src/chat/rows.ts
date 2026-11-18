@@ -83,7 +83,8 @@ function markdownHeight(text: string, perLine: number): number {
   for (const line of text.split("\n")) {
     if (line.startsWith("```")) {
       if (fence === null) {
-        fence = line.slice(3).trim() === "mermaid" ? "diagram" : "code";
+        const language = line.slice(3).trim();
+        fence = language === "mermaid" || language === "svg" ? "diagram" : "code";
         height += fence === "diagram" ? DIAGRAM : BLOCK_PADDING;
       } else {
         fence = null;
