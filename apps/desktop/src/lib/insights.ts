@@ -195,6 +195,7 @@ export type Decision = {
   session_id: SessionId;
   checkpoint_id: CheckpointId;
   artifact_id: ArtifactId | null;
+  turn_id?: string | null;
   seq: number;
   kind: DecisionKind;
   title: string;

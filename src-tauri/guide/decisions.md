@@ -1,7 +1,7 @@
 # Decisions
 
 A decision is a choice the reviewer should consciously accept or reject. It shows in the chat as
-an artifact (a Decisions card); the developer opens it full screen and approves or rejects each
+an artifact (a Decisions row); the developer expands it in the chat and approves or rejects each
 decision. A rejection always comes with the developer's comment.
 
 When the last open decision gets its verdict, Ataraxia sends you one message that starts with

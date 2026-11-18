@@ -30,6 +30,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (12, include_str!("../../../migrations/012_autocomplete.sql")),
     (13, include_str!("../../../migrations/013_tasks.sql")),
     (14, include_str!("../../../migrations/014_search.sql")),
+    (
+        15,
+        include_str!("../../../migrations/015_decision_turn.sql"),
+    ),
 ];
 
 fn io(error: rusqlite::Error) -> Error {

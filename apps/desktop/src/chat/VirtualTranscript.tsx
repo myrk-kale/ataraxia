@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { estimateRow, type Row } from "./rows";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { estimateRow, type DecisionRow, type Row } from "./rows";
 import { TranscriptRow } from "./TranscriptRow";
 import type { ConversationJump } from "../lib/search";
 
@@ -23,12 +23,14 @@ export function VirtualTranscript({
   stick,
   sessionId,
   jumpTo,
+  renderDecisions,
 }: {
   rows: Row[];
   scrollRef: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
   sessionId: string;
   jumpTo?: ConversationJump;
+  renderDecisions?: (row: DecisionRow) => ReactNode;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   // How far down the scroll area this list starts, below whatever is above it.
@@ -82,7 +84,7 @@ export function VirtualTranscript({
               transform: `translateY(${virtual.start - margin}px)`,
             }}
           >
-            <TranscriptRow row={row} sessionId={sessionId} />
+            {"decisions" in row ? renderDecisions?.(row) : <TranscriptRow row={row} sessionId={sessionId} />}
           </div>
         );
       })}

@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe("spaces render with real data shapes", () => {
-  it("Decisions open full screen: one card per decision, open ones first, approve or reject with a comment", async () => {
+  it("Decisions full screen advances one decision at a time after a verdict", async () => {
     const { DecisionsReview } = await import("../decisions/DecisionsReview");
     const errors: string[] = [];
     act(() =>
@@ -70,57 +70,72 @@ describe("spaces render with real data shapes", () => {
     const page = document.body.textContent ?? "";
     expect(page).toContain("2 decisions to review");
     expect(page).toContain("Write the retry helper locally");
-    expect(page).toContain("Store only a hash of issued tokens?");
-    // A decided one stays visible, after the open ones, with its verdict in words.
-    expect(page).toContain("Return 202 Accepted");
-    expect(page).toContain("Approved");
-    // No threads any more: nothing to discuss, only a verdict.
-    expect(page).not.toContain("Thread");
+    expect(page).not.toContain("Store only a hash of issued tokens?");
+    expect(page).not.toContain("Return 202 Accepted");
     expect(calls.some((c) => c.cmd === "decisions_generate")).toBe(false);
 
-    const cards = () => [...document.body.querySelectorAll("li")].filter((li) => li.querySelector("h2"));
+    const card = () => {
+      const cards = [...document.body.querySelectorAll("li")].filter((li) => li.querySelector("h2"));
+      expect(cards).toHaveLength(1);
+      return cards[0];
+    };
     const button = (card: Element, label: string) =>
       [...card.querySelectorAll("button")].find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
-    const hash = () => cards().find((card) => card.textContent?.includes("Store only a hash"))!;
 
     // Reject asks why first, and cannot be sent empty.
-    act(() => button(hash(), "Reject").click());
-    const send = button(hash(), "Reject with this comment");
+    act(() => button(card(), "Reject").click());
+    const send = button(card(), "Reject with this comment");
     expect(send.disabled).toBe(true);
-    const field = hash().querySelector("textarea")!;
+    const field = card().querySelector("textarea")!;
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
       setter.call(field, "Use bcrypt instead");
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(button(hash(), "Reject with this comment").disabled).toBe(false);
-    act(() => button(hash(), "Reject with this comment").click());
+    expect(button(card(), "Reject with this comment").disabled).toBe(false);
+    act(() => button(card(), "Reject with this comment").click());
     await flush();
     expect(calls.find((c) => c.cmd === "decision_set_state")?.args).toMatchObject({
       decisionState: "rejected",
       comment: "Use bcrypt instead",
     });
 
-    const retry = cards().find((card) => card.textContent?.includes("Write the retry helper locally"))!;
-    act(() => button(retry, "Approve").click());
+    expect(card().querySelector("h2")?.textContent).toBe("Store only a hash of issued tokens?");
+    act(() => button(card(), "Approve").click());
     await flush();
     expect(calls.filter((c) => c.cmd === "decision_set_state").at(-1)?.args).toMatchObject({ decisionState: "approved", comment: null });
     expect(document.body.textContent).toContain("All reviewed. The agent was sent what you rejected");
     expect(errors).toEqual([]);
   });
 
-  it("the chat shows its decisions as a card that opens the review, and nothing when there are none", async () => {
-    const { DecisionsCard } = await import("../decisions/DecisionsReview");
-    let opened = 0;
-    act(() => root.render(<DecisionsCard sessionId="s1" onOpen={() => (opened += 1)} />));
+  it("expands and reviews decisions inside the chat, and hides the row when there are none", async () => {
+    const { DecisionsCard, useDecisions } = await import("../decisions/DecisionsReview");
+    function ChatDecisions({ sessionId }: { sessionId: string }) {
+      const review = useDecisions(sessionId);
+      return <DecisionsCard review={review} decisions={review.decisions} onOpenFullscreen={openFullscreen} />;
+    }
+    const openFullscreen = vi.fn();
+    act(() => root.render(<ChatDecisions sessionId="s1" />));
     await flush();
-    expect(host.textContent).toContain("Decisions");
-    expect(host.textContent).toMatch(/to review|Reviewed:/);
-    act(() => (host.querySelector("button") as HTMLButtonElement).click());
-    expect(opened).toBe(1);
+    const row = host.querySelector("details")!;
+    const summary = row.querySelector("summary")!;
+    expect(summary.textContent).toContain("Decisions");
+    expect(summary.textContent).toMatch(/to review|Reviewed:/);
+    expect(row.open).toBe(false);
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Open decisions full screen"]')!.click());
+    expect(openFullscreen).toHaveBeenCalledOnce();
+    expect(row.open).toBe(false);
+    act(() => summary.click());
+    expect(row.open).toBe(true);
+    const verdict = [...row.querySelectorAll("button")].find((button) => /^(Approve|Reopen)$/.test(button.textContent ?? ""))!;
+    act(() => verdict.click());
+    await flush();
+    expect(calls.some((call) => call.cmd === "decision_set_state")).toBe(true);
+    act(() => summary.click());
+    expect(row.open).toBe(false);
 
     forced = { decisions_list: [], artifacts_list: [] };
-    act(() => root.render(<DecisionsCard sessionId="s2" onOpen={() => undefined} />));
+    act(() => root.render(<ChatDecisions sessionId="s2" />));
     await flush();
     expect(host.textContent).toBe("");
   });

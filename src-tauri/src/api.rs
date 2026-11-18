@@ -797,11 +797,25 @@ impl ApiService {
                     .collect()
             })
             .unwrap_or_default();
+        let turn_id = self
+            .db
+            .list_chat_items(checkpoint.session_id)?
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                crate::domain::ChatItem::Message(message)
+                    if message.role == crate::domain::ChatRole::User =>
+                {
+                    message.turn_id
+                }
+                _ => None,
+            });
         let decision = Decision {
             id: DecisionId::new(),
             session_id: checkpoint.session_id,
             checkpoint_id: checkpoint.id,
             artifact_id: None,
+            turn_id,
             seq,
             kind: DecisionKind::parse_lenient(&arg_str(args, "type")),
             title,
@@ -2717,6 +2731,20 @@ mod tests {
     fn decisions_flow_through_the_api_from_the_first_call_to_the_last() {
         let repo = repo_with_a_file();
         let (db, a, _, cp) = seeded_at(repo.clone());
+        let turn = crate::domain::ids::TurnId::new();
+        db.replace_chat_items(
+            a,
+            &[crate::domain::ChatItem::Message(
+                crate::domain::ChatMessage {
+                    id: "request".into(),
+                    role: crate::domain::ChatRole::User,
+                    text: "Generate decisions".into(),
+                    turn_id: Some(turn),
+                    images: Vec::new(),
+                },
+            )],
+        )
+        .unwrap();
         let server = start(&db);
         let token = server.issue_token(a, true).token;
         let token = Some(token.as_str());
@@ -2735,6 +2763,7 @@ mod tests {
         let listed = req("GET", "/v1/decisions", token).go(&server);
         assert_eq!(listed.status, 200);
         assert_eq!(listed.body.as_array().unwrap().len(), 1);
+        assert_eq!(listed.body[0]["turn_id"], turn.0.to_string());
 
         let message = req("POST", &format!("/v1/decisions/{id}/messages"), token)
             .with(json!({"text":"noted"}))

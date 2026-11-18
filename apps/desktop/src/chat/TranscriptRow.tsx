@@ -5,7 +5,7 @@ import { parseScheduledMessage, type ChatItem } from "../lib/agent";
 import { parseBtwReport } from "./btwReport";
 import { Markdown } from "./Markdown";
 import { MessageImages } from "./MessageImages";
-import type { Row } from "./rows";
+import type { MessageRow } from "./rows";
 import { ToolCard } from "./ToolCard";
 
 const RESTORED_NOTICE = (
@@ -102,7 +102,7 @@ function Item({ item, sessionId }: { item: ChatItem; sessionId: string }) {
  * reply streams in, the rows above it cost nothing.
  */
 export const TranscriptRow = memo(
-  function TranscriptRow({ row, sessionId }: { row: Row; sessionId: string }) {
+  function TranscriptRow({ row, sessionId }: { row: MessageRow; sessionId: string }) {
     return (
       <div className={`flex flex-col ${row.notice ? "gap-9.5" : "gap-3"}`}>
         {row.notice ? RESTORED_NOTICE : null}

@@ -301,6 +301,8 @@ pub struct Decision {
     pub session_id: SessionId,
     pub checkpoint_id: CheckpointId,
     pub artifact_id: Option<ArtifactId>,
+    #[serde(default)]
+    pub turn_id: Option<super::ids::TurnId>,
     pub seq: u32,
     pub kind: DecisionKind,
     pub title: String,
