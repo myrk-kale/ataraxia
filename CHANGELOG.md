@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-18
+
 ### Changed
 
 - Dictation no longer depends on a Whisper you install yourself. Whisper is built into Ataraxia and runs on
