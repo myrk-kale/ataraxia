@@ -137,8 +137,8 @@ the terminal. Settings has the rest, including a switch for the few sounds the a
 
 Small things are one key away: `Ctrl/Cmd+Shift+B` goes to a branch from a pasted Azure DevOps link or a name
 (fetching it when the remote has it and you do not yet), `Ctrl/Cmd+Enter` sends a message at once instead of
-queueing it behind the agent, and `Ctrl/Cmd+Shift+M` dictates into the message field with a Whisper engine on
-your own computer. A file the agent names in the chat, `src/app.ts:42-50` or a markdown link, opens in the
+queueing it behind the agent, and `Ctrl/Cmd+Shift+M` dictates into the message field with Whisper, built into the app
+and running on your own computer (the model, about 570 MB, is downloaded once, after you agree). A file the agent names in the chat, `src/app.ts:42-50` or a markdown link, opens in the
 editor at those lines, and a Jupyter notebook opens as a notebook. The Tasks screen is a list of your own, one
 line each, numbered: say `#12` in a chat and the agent reads task 12.
 
@@ -203,11 +203,11 @@ Prerequisites:
 - Node.js 22+ and pnpm 11+ (`corepack enable` gives you pnpm)
 - Rust 1.85+ (`cargo` / `rustc` on `PATH`; Homebrew Rust works if rustup cannot reach `static.rust-lang.org`)
 - The Tauri system libraries for your OS:
-  - **macOS:** `xcode-select --install`
-  - **Debian, Ubuntu:** `sudo apt install build-essential curl wget file patchelf pkg-config libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`
-  - **Fedora:** `sudo dnf install @development-tools gcc-c++ openssl-devel gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel libxdo-devel patchelf`
-  - **Arch:** `sudo pacman -S --needed base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg xdotool openssl patchelf`
-  - **Windows:** the Visual Studio Build Tools with the "Desktop development with C++" workload, Rust with the MSVC toolchain, and WebView2 (already there on Windows 11)
+  - **macOS:** `xcode-select --install`, and CMake (`brew install cmake`)
+  - **Debian, Ubuntu:** `sudo apt install build-essential cmake curl wget file patchelf pkg-config libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`
+  - **Fedora:** `sudo dnf install @development-tools gcc-c++ cmake openssl-devel gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel libxdo-devel patchelf`
+  - **Arch:** `sudo pacman -S --needed base-devel cmake webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg xdotool openssl patchelf`
+  - **Windows:** the Visual Studio Build Tools with the "Desktop development with C++" workload (it brings CMake), Rust with the MSVC toolchain, and WebView2 (already there on Windows 11)
 
 ```bash
 git clone https://github.com/myrk-kale/ataraxia.git

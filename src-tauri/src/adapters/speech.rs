@@ -1,210 +1,104 @@
 //! Speech to text, on this computer: what the person says into the message field becomes text with
-//! a Whisper engine they have installed (the `turbo` model, large-v3-turbo). Nothing is sent
-//! anywhere: the recording goes to a temporary file, an engine reads it, the file is deleted.
+//! Whisper (the `large-v3-turbo` model), which is built into the app (whisper.cpp). Nothing is
+//! sent anywhere to be understood: the recording is read from memory, and the only download is the
+//! model itself, once, when the person agrees to it.
 //!
-//! Engines, in the order they are tried:
-//! - a command the person set (`{file}` stands for the recording; it prints the text),
-//! - `whisper-cli` / `whisper-cpp` (whisper.cpp) with a large-v3-turbo model file,
-//! - `mlx_whisper` (Apple silicon) with `mlx-community/whisper-large-v3-turbo`,
-//! - `whisper` (OpenAI's Python package) with `--model turbo`.
+//! A command of the person's own (`{file}` stands for the recording; it prints the text) takes
+//! the place of the built-in engine when one is set.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::adapters::agents::process::{enriched_path, resolve_program};
 use crate::domain::{Error, ErrorCode, Result, parse_command};
 
 /// Preference keys under which the person's choices are kept.
 pub const PREF_COMMAND: &str = "speech.command";
-pub const PREF_MODEL: &str = "speech.model";
+pub const PREF_LANGUAGE: &str = "speech.language";
 
 /// A recording longer than this is refused: a message, not a lecture.
 const MAX_WAV_BYTES: usize = 40 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(180);
+/// A model kept in memory is let go of after this long without use.
+const KEEP_LOADED: Duration = Duration::from_secs(300);
 
-const MLX_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
-
+/// The model: Whisper large-v3-turbo, quantised to 5 bits so it is a bit over half a gigabyte.
+pub const MODEL_FILE: &str = "ggml-large-v3-turbo-q5_0.bin";
 pub const MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+/// What the download says it weighs, for the person to read before agreeing.
+pub const MODEL_MEGABYTES: u64 = 574;
+/// Anything smaller than this is not the model (a failed download, an error page).
+const MIN_MODEL_BYTES: u64 = 400 * 1024 * 1024;
+
+/// The languages the person can pin Whisper to; empty is "work it out".
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("", "Detect it"),
+    ("en", "English"),
+    ("pt", "Português"),
+    ("es", "Español"),
+    ("fr", "Français"),
+    ("de", "Deutsch"),
+    ("it", "Italiano"),
+    ("nl", "Nederlands"),
+    ("ja", "日本語"),
+    ("zh", "中文"),
+    ("ko", "한국어"),
+    ("ru", "Русский"),
+];
+
+/// What the person set; empty means the built-in engine, with the language detected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choice {
+    pub command: String,
+    pub language: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Engine {
     /// A command the person wrote; `{file}` is replaced by the recording.
-    Custom {
-        program: PathBuf,
-        args: Vec<String>,
-    },
-    WhisperCpp {
-        program: PathBuf,
-        model: PathBuf,
-    },
-    MlxWhisper {
-        program: PathBuf,
-    },
-    OpenAiWhisper {
-        program: PathBuf,
-    },
+    Custom { program: PathBuf, args: Vec<String> },
+    /// Whisper inside the app; it needs the model downloaded.
+    BuiltIn,
 }
 
 impl Engine {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Custom { .. } => "your command",
-            Self::WhisperCpp { .. } => "whisper.cpp",
-            Self::MlxWhisper { .. } => "mlx-whisper",
-            Self::OpenAiWhisper { .. } => "whisper",
+            Self::BuiltIn => "built-in Whisper",
         }
     }
 }
 
-/// What the person set; empty means "find one".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Choice {
-    pub command: String,
-    pub model: String,
-}
-
-fn program(names: &[&str]) -> Option<PathBuf> {
-    names.iter().find_map(|name| {
-        resolve_program(name).or_else(|| {
-            cfg!(windows)
-                .then(|| resolve_program(&format!("{name}.exe")))
-                .flatten()
-        })
-    })
-}
-
-/// Where a whisper.cpp model may be kept, most likely first.
-fn model_dirs(home: Option<&Path>) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = home {
-        for relative in [
-            ".cache/whisper",
-            ".cache/whisper.cpp",
-            ".cache/whisper-cpp",
-            "whisper.cpp/models",
-            "models",
-            "Library/Application Support/whisper",
-            "Library/Application Support/whisper.cpp",
-            "Library/Application Support/MacWhisper/models",
-            ".local/share/whisper",
-            ".local/share/whisper.cpp",
-        ] {
-            dirs.push(home.join(relative));
-        }
-    }
-    for fixed in [
-        "/opt/homebrew/share/whisper-cpp",
-        "/opt/homebrew/share/whisper.cpp",
-        "/usr/local/share/whisper-cpp",
-        "/usr/local/share/whisper.cpp",
-        "/usr/share/whisper.cpp",
-    ] {
-        dirs.push(PathBuf::from(fixed));
-    }
-    dirs
-}
-
-/// The turbo model first, then any other multilingual model, never an English-only one.
-pub fn pick_model(files: &[String]) -> Option<String> {
-    let usable = |name: &&String| {
-        let lower = name.to_lowercase();
-        lower.starts_with("ggml-") && lower.ends_with(".bin") && !lower.contains(".en")
-    };
-    files
-        .iter()
-        .filter(usable)
-        .find(|name| name.to_lowercase().contains("large-v3-turbo"))
-        .or_else(|| {
-            files
-                .iter()
-                .filter(usable)
-                .find(|name| name.to_lowercase().contains("turbo"))
-        })
-        .or_else(|| files.iter().find(usable))
-        .cloned()
-}
-
-fn find_model(explicit: &str, home: Option<&Path>) -> Option<PathBuf> {
-    let explicit = explicit.trim();
-    if !explicit.is_empty() {
-        let path = expand(explicit, home);
-        return path.is_file().then_some(path);
-    }
-    if let Some(from_env) = std::env::var_os("WHISPER_MODEL").map(PathBuf::from) {
-        if from_env.is_file() {
-            return Some(from_env);
-        }
-    }
-    for dir in model_dirs(home) {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let names: Vec<String> = entries
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        if let Some(name) = pick_model(&names) {
-            return Some(dir.join(name));
-        }
-    }
-    None
-}
-
-fn expand(text: &str, home: Option<&Path>) -> PathBuf {
-    match (text.strip_prefix("~/"), home) {
-        (Some(rest), Some(home)) => home.join(rest),
-        _ => PathBuf::from(text),
-    }
-}
-
-/// Finds the engine to use, or says what to install.
+/// Chooses the engine. The built-in one is the answer unless a command was set.
 pub fn detect(choice: &Choice, home: Option<&Path>) -> Result<Engine> {
     let command = choice.command.trim();
-    if !command.is_empty() {
-        let parsed = parse_command(command, home)?;
-        let name = parsed
-            .program
-            .clone()
-            .ok_or_else(|| Error::new(ErrorCode::Invalid, "the speech command needs a program"))?;
-        let program = resolve_program(&name).ok_or_else(|| {
-            Error::new(
-                ErrorCode::NotFound,
-                format!("the speech command `{name}` was not found"),
-            )
-        })?;
-        return Ok(Engine::Custom {
-            program,
-            args: parsed.args,
-        });
+    if command.is_empty() {
+        return Ok(Engine::BuiltIn);
     }
-    if let Some(program) = program(&["whisper-cli", "whisper-cpp"]) {
-        return match find_model(&choice.model, home) {
-            Some(model) => Ok(Engine::WhisperCpp { program, model }),
-            None => Err(Error::new(
-                ErrorCode::NotFound,
-                format!(
-                    "whisper.cpp is installed but has no model. Download the turbo one: \
-                     `mkdir -p ~/.cache/whisper && curl -L {MODEL_URL} -o ~/.cache/whisper/ggml-large-v3-turbo.bin`, \
-                     or choose a model file in Settings > Voice."
-                ),
-            )),
-        };
-    }
-    if let Some(program) = program(&["mlx_whisper"]) {
-        return Ok(Engine::MlxWhisper { program });
-    }
-    if let Some(program) = program(&["whisper"]) {
-        return Ok(Engine::OpenAiWhisper { program });
-    }
-    Err(Error::new(
-        ErrorCode::NotFound,
-        "no Whisper engine found. Install one: `brew install whisper-cpp` (then download the turbo \
-         model), `pip install mlx-whisper` on a Mac with Apple silicon, or `pip install openai-whisper`; \
-         or set your own command in Settings > Voice.",
-    ))
+    let parsed = parse_command(command, home)?;
+    let name = parsed
+        .program
+        .clone()
+        .ok_or_else(|| Error::new(ErrorCode::Invalid, "the speech command needs a program"))?;
+    let program = resolve_program(&name).ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotFound,
+            format!("the speech command `{name}` was not found"),
+        )
+    })?;
+    Ok(Engine::Custom {
+        program,
+        args: parsed.args,
+    })
 }
 
 /// What the engine printed, without the markers Whisper adds: timestamps, silence and music tags.
@@ -265,81 +159,40 @@ pub fn check_wav(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// The arguments an engine is run with for a recording, and where it leaves its text.
-struct Plan {
-    args: Vec<String>,
-    /// A file the engine writes the text to; otherwise the text is what it prints.
-    output: Option<PathBuf>,
-}
-
-fn plan(engine: &Engine, wav: &Path, dir: &Path) -> Plan {
-    let file = wav.to_string_lossy().into_owned();
-    let stem = wav
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    match engine {
-        Engine::Custom { args, .. } => {
-            let mut args: Vec<String> = args
-                .iter()
-                .map(|arg| arg.replace("{file}", &file))
-                .collect();
-            if !args.iter().any(|arg| arg.contains(&file)) {
-                args.push(file);
+/// The 16-bit mono samples of a WAV file, as the floats Whisper wants.
+pub fn wav_samples(bytes: &[u8]) -> Result<Vec<f32>> {
+    check_wav(bytes)?;
+    let invalid = |what: &str| Error::new(ErrorCode::Invalid, format!("the recording {what}"));
+    let mut at = 12;
+    let mut format: Option<(u16, u16, u32, u16)> = None;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let body = at + 8;
+        if id == b"fmt " && body + 16 <= bytes.len() {
+            let word = |i: usize| u16::from_le_bytes([bytes[body + i], bytes[body + i + 1]]);
+            let rate = u32::from_le_bytes([
+                bytes[body + 4],
+                bytes[body + 5],
+                bytes[body + 6],
+                bytes[body + 7],
+            ]);
+            format = Some((word(0), word(2), rate, word(14)));
+        } else if id == b"data" {
+            let (tag, channels, rate, bits) = format.ok_or_else(|| invalid("has no format"))?;
+            if tag != 1 || channels != 1 || bits != 16 || rate != 16000 {
+                return Err(invalid("must be 16 kHz mono 16-bit"));
             }
-            Plan { args, output: None }
+            let end = (body + size).min(bytes.len());
+            return Ok(bytes[body..end]
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+                .collect());
         }
-        Engine::WhisperCpp { model, .. } => Plan {
-            args: vec![
-                "-m".into(),
-                model.to_string_lossy().into_owned(),
-                "-f".into(),
-                file,
-                "-nt".into(),
-                "-np".into(),
-                "-l".into(),
-                "auto".into(),
-            ],
-            output: None,
-        },
-        Engine::MlxWhisper { .. } => Plan {
-            args: vec![
-                file,
-                "--model".into(),
-                MLX_MODEL.into(),
-                "--output-format".into(),
-                "txt".into(),
-                "--output-dir".into(),
-                dir.to_string_lossy().into_owned(),
-            ],
-            output: Some(dir.join(format!("{stem}.txt"))),
-        },
-        Engine::OpenAiWhisper { .. } => Plan {
-            args: vec![
-                file,
-                "--model".into(),
-                "turbo".into(),
-                "--output_format".into(),
-                "txt".into(),
-                "--output_dir".into(),
-                dir.to_string_lossy().into_owned(),
-                "--fp16".into(),
-                "False".into(),
-                "--verbose".into(),
-                "False".into(),
-            ],
-            output: Some(dir.join(format!("{stem}.txt"))),
-        },
+        at = body + size + (size & 1);
     }
-}
-
-fn program_of(engine: &Engine) -> &Path {
-    match engine {
-        Engine::Custom { program, .. }
-        | Engine::WhisperCpp { program, .. }
-        | Engine::MlxWhisper { program }
-        | Engine::OpenAiWhisper { program } => program,
-    }
+    Err(invalid("has no audio"))
 }
 
 fn drain(mut source: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
@@ -350,9 +203,9 @@ fn drain(mut source: impl Read + Send + 'static) -> std::thread::JoinHandle<Stri
     })
 }
 
-/// Turns a recording into text. The recording lives in a private temporary folder for as long as
-/// the engine needs it.
-pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
+/// Runs the person's own command on the recording and takes what it prints. The recording lives in
+/// a private temporary folder for as long as the command needs it.
+pub fn transcribe_with_command(program: &Path, args: &[String], wav: &[u8]) -> Result<String> {
     check_wav(wav)?;
     let dir = tempfile::Builder::new()
         .prefix("ataraxia-speech-")
@@ -360,9 +213,16 @@ pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
     let file = dir.path().join("recording.wav");
     std::fs::write(&file, wav).map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
-    let plan = plan(engine, &file, dir.path());
-    let mut child = Command::new(program_of(engine))
-        .args(&plan.args)
+    let name = file.to_string_lossy().into_owned();
+    let mut args: Vec<String> = args
+        .iter()
+        .map(|arg| arg.replace("{file}", &name))
+        .collect();
+    if !args.iter().any(|arg| arg.contains(&name)) {
+        args.push(name);
+    }
+    let mut child = Command::new(program)
+        .args(&args)
         .current_dir(dir.path())
         .env("PATH", enriched_path())
         .stdin(Stdio::null())
@@ -372,7 +232,7 @@ pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
         .map_err(|error| {
             Error::new(
                 ErrorCode::Io,
-                format!("could not start {}: {error}", engine.name()),
+                format!("could not start {}: {error}", program.display()),
             )
         })?;
     let stdout = drain(child.stdout.take().expect("piped"));
@@ -387,7 +247,7 @@ pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
                 let _ = child.wait();
                 return Err(Error::new(
                     ErrorCode::Io,
-                    format!("{} took too long to listen", engine.name()),
+                    "your speech command took too long to listen",
                 ));
             }
             Err(error) => return Err(Error::new(ErrorCode::Io, error.to_string())),
@@ -396,7 +256,7 @@ pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
     let printed = stdout.join().unwrap_or_default();
     let complaint = stderr.join().unwrap_or_default();
     if !status.success() {
-        let tail: String = complaint
+        let tail = complaint
             .lines()
             .rev()
             .take(3)
@@ -408,17 +268,247 @@ pub fn transcribe(engine: &Engine, wav: &[u8]) -> Result<String> {
         return Err(Error::new(
             ErrorCode::Io,
             format!(
-                "{} could not read the recording: {}",
-                engine.name(),
+                "your speech command could not read the recording: {}",
                 tail.trim()
             ),
         ));
     }
-    let text = match &plan.output {
-        Some(path) => std::fs::read_to_string(path).unwrap_or(printed),
-        None => printed,
-    };
-    Ok(clean_transcript(&text))
+    Ok(clean_transcript(&printed))
+}
+
+struct Loaded {
+    context: WhisperContext,
+    used: Instant,
+}
+
+/// The built-in engine: the model on disk, loaded when first needed and let go of when it has not
+/// been used for a while, since it takes most of a gigabyte of memory.
+pub struct Recognizer {
+    dir: PathBuf,
+    loaded: Mutex<Option<Loaded>>,
+    downloading: AtomicBool,
+    cancel: AtomicBool,
+}
+
+impl Recognizer {
+    /// `dir` is where the model is kept.
+    pub fn new(dir: PathBuf) -> Arc<Self> {
+        // Whisper prints a lot to the terminal; the app does not want any of it.
+        whisper_rs::install_logging_hooks();
+        let this = Arc::new(Self {
+            dir,
+            loaded: Mutex::new(None),
+            downloading: AtomicBool::new(false),
+            cancel: AtomicBool::new(false),
+        });
+        let weak: Weak<Self> = Arc::downgrade(&this);
+        std::thread::spawn(move || {
+            while let Some(this) = weak.upgrade() {
+                {
+                    let mut loaded = this.loaded.lock();
+                    if loaded
+                        .as_ref()
+                        .is_some_and(|held| held.used.elapsed() > KEEP_LOADED)
+                    {
+                        *loaded = None;
+                    }
+                }
+                drop(this);
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+        this
+    }
+
+    pub fn model_path(&self) -> PathBuf {
+        self.dir.join(MODEL_FILE)
+    }
+
+    /// The model is on disk, whole.
+    pub fn model_ready(&self) -> bool {
+        std::fs::metadata(self.model_path()).is_ok_and(|meta| meta.len() >= MIN_MODEL_BYTES)
+    }
+
+    pub fn downloading(&self) -> bool {
+        self.downloading.load(Ordering::SeqCst)
+    }
+
+    /// Stops a download in progress; what was fetched is kept to be resumed.
+    pub fn cancel_download(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// Fetches the model into the folder, resuming a download that was interrupted. `progress` is
+    /// told how much has arrived and how much there is, when the server says.
+    pub fn download(&self, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
+        if self.model_ready() {
+            return Ok(());
+        }
+        if self.downloading.swap(true, Ordering::SeqCst) {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "the speech model is already being downloaded",
+            ));
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        let outcome = self.fetch(&mut progress);
+        self.downloading.store(false, Ordering::SeqCst);
+        outcome
+    }
+
+    fn fetch(&self, progress: &mut impl FnMut(u64, Option<u64>)) -> Result<()> {
+        let io = |error: std::io::Error| Error::new(ErrorCode::Io, error.to_string());
+        std::fs::create_dir_all(&self.dir).map_err(io)?;
+        let part = self.dir.join(format!("{MODEL_FILE}.part"));
+        let have = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(20)))
+            .user_agent("ataraxia")
+            .build()
+            .into();
+        let mut request = agent.get(MODEL_URL);
+        if have > 0 {
+            request = request.header("Range", format!("bytes={have}-"));
+        }
+        let response = request.call().map_err(|error| {
+            Error::new(
+                ErrorCode::Io,
+                format!("could not download the speech model: {error}"),
+            )
+        })?;
+        let resumed = response.status().as_u16() == 206;
+        let length = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let start = if resumed { have } else { 0 };
+        let total = length.map(|length| length + start);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(resumed)
+            .truncate(!resumed)
+            .open(&part)
+            .map_err(io)?;
+        let mut body = response.into_body().into_reader();
+        let mut received = start;
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut last = Instant::now();
+        progress(received, total);
+        loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(Error::new(ErrorCode::Invalid, "the download was cancelled"));
+            }
+            let read = body.read(&mut buffer).map_err(|error| {
+                Error::new(
+                    ErrorCode::Io,
+                    format!("the download was interrupted: {error}. Try again to resume it."),
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read]).map_err(io)?;
+            received += read as u64;
+            if last.elapsed() > Duration::from_millis(250) {
+                progress(received, total);
+                last = Instant::now();
+            }
+        }
+        file.flush().map_err(io)?;
+        drop(file);
+        progress(received, total);
+        check_model(&part)?;
+        std::fs::rename(&part, self.model_path()).map_err(io)?;
+        Ok(())
+    }
+
+    /// Turns a recording (16 kHz mono WAV) into text. `language` is an ISO code, or empty to let
+    /// Whisper work it out.
+    pub fn transcribe(&self, wav: &[u8], language: &str) -> Result<String> {
+        let samples = wav_samples(wav)?;
+        if !self.model_ready() {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                "the speech model is not downloaded yet",
+            ));
+        }
+        let mut loaded = self.loaded.lock();
+        if loaded.is_none() {
+            let path = self.model_path();
+            let context =
+                WhisperContext::new_with_params(&path, WhisperContextParameters::default())
+                    .map_err(|error| {
+                        Error::new(
+                            ErrorCode::Io,
+                            format!("could not load the speech model: {error}"),
+                        )
+                    })?;
+            *loaded = Some(Loaded {
+                context,
+                used: Instant::now(),
+            });
+        }
+        let held = loaded.as_mut().expect("loaded above");
+        let mut state = held.context.create_state().map_err(|error| {
+            Error::new(ErrorCode::Io, format!("could not start listening: {error}"))
+        })?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let language = language.trim();
+        // "auto" makes Whisper work the language out. (`set_detect_language` would make it do only
+        // that, and stop without transcribing.)
+        params.set_language(Some(if language.is_empty() {
+            "auto"
+        } else {
+            language
+        }));
+        params.set_translate(false);
+        params.set_no_context(true);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+            .min(8);
+        params.set_n_threads(threads as i32);
+        state.full(params, &samples).map_err(|error| {
+            Error::new(
+                ErrorCode::Io,
+                format!("could not make out the recording: {error}"),
+            )
+        })?;
+        let mut text = String::new();
+        for segment in state.as_iter() {
+            if let Ok(piece) = segment.to_str_lossy() {
+                text.push_str(&piece);
+                text.push(' ');
+            }
+        }
+        held.used = Instant::now();
+        Ok(clean_transcript(&text))
+    }
+}
+
+/// A file that is a Whisper model: big enough, and starting with the `ggml` magic.
+fn check_model(path: &Path) -> Result<()> {
+    let io = |error: std::io::Error| Error::new(ErrorCode::Io, error.to_string());
+    let size = std::fs::metadata(path).map_err(io)?.len();
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(io)?;
+    // `ggml` written as a little-endian number, which is how the file starts.
+    if size < MIN_MODEL_BYTES || &magic != b"lmgg" {
+        let _ = std::fs::remove_file(path);
+        return Err(Error::new(
+            ErrorCode::Io,
+            "what was downloaded is not the speech model, so it was deleted. Try again.",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -431,22 +521,26 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn the_turbo_model_is_preferred_and_english_only_ones_never_are() {
-        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            pick_model(&names(&[
-                "ggml-base.bin",
-                "ggml-large-v3-turbo-q5_0.bin",
-                "ggml-small.bin"
-            ])),
-            Some("ggml-large-v3-turbo-q5_0.bin".into())
-        );
-        assert_eq!(
-            pick_model(&names(&["ggml-base.en.bin", "ggml-small.bin"])),
-            Some("ggml-small.bin".into())
-        );
-        assert_eq!(pick_model(&names(&["ggml-base.en.bin", "notes.txt"])), None);
+    /// A real 16 kHz mono 16-bit WAV holding `samples`.
+    fn wav_of(samples: &[i16]) -> Vec<u8> {
+        let data = samples.len() * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&32000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data as u32).to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        bytes
     }
 
     #[test]
@@ -476,68 +570,44 @@ mod tests {
     }
 
     #[test]
-    fn each_engine_is_run_the_way_it_wants() {
-        let dir = Path::new("/tmp/x");
-        let file = dir.join("recording.wav");
-        let cpp = plan(
-            &Engine::WhisperCpp {
-                program: "/bin/whisper-cli".into(),
-                model: "/m/ggml-large-v3-turbo.bin".into(),
+    fn the_samples_of_a_recording_are_read_as_floats() {
+        let bytes = wav_of(&[
+            0, 16384, -16384, 32767, -32768, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        let samples = wav_samples(&bytes).unwrap();
+        assert_eq!(samples.len(), 23);
+        assert_eq!(samples[0], 0.0);
+        assert!((samples[1] - 0.5).abs() < 1e-6);
+        assert!((samples[2] + 0.5).abs() < 1e-6);
+        assert!((samples[4] + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_recording_that_is_not_16khz_mono_is_refused_with_the_reason() {
+        let mut stereo = wav_of(&[0; 40]);
+        stereo[22] = 2;
+        let error = wav_samples(&stereo).unwrap_err();
+        assert!(error.message.contains("16 kHz mono"), "{}", error.message);
+        let mut fast = wav_of(&[0; 40]);
+        fast[24..28].copy_from_slice(&44100u32.to_le_bytes());
+        assert!(wav_samples(&fast).is_err());
+        // A header with no audio after it.
+        assert!(wav_samples(&wav(100)).is_err());
+    }
+
+    #[test]
+    fn the_built_in_engine_is_the_default_and_a_command_of_ones_own_takes_its_place() {
+        assert_eq!(detect(&Choice::default(), None).unwrap(), Engine::BuiltIn);
+        let error = detect(
+            &Choice {
+                command: "/nowhere/listen {file}".into(),
+                language: String::new(),
             },
-            &file,
-            dir,
-        );
-        assert!(
-            cpp.args
-                .windows(2)
-                .any(|pair| pair == ["-m", "/m/ggml-large-v3-turbo.bin"])
-        );
-        assert!(cpp.args.contains(&"-nt".to_string()));
-        assert!(cpp.output.is_none());
-        let openai = plan(
-            &Engine::OpenAiWhisper {
-                program: "/bin/whisper".into(),
-            },
-            &file,
-            dir,
-        );
-        assert!(
-            openai
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--model", "turbo"])
-        );
-        assert_eq!(openai.output, Some(dir.join("recording.txt")));
-        let mlx = plan(
-            &Engine::MlxWhisper {
-                program: "/bin/mlx_whisper".into(),
-            },
-            &file,
-            dir,
-        );
-        assert!(mlx.args.contains(&MLX_MODEL.to_string()));
-        // A command of the person's own gets the file where it says, or at the end.
-        let custom = plan(
-            &Engine::Custom {
-                program: "/bin/say".into(),
-                args: vec!["--in".into(), "{file}".into()],
-            },
-            &file,
-            dir,
-        );
-        assert_eq!(
-            custom.args,
-            vec!["--in".to_string(), file.to_string_lossy().into_owned()]
-        );
-        let bare = plan(
-            &Engine::Custom {
-                program: "/bin/say".into(),
-                args: vec![],
-            },
-            &file,
-            dir,
-        );
-        assert_eq!(bare.args, vec![file.to_string_lossy().into_owned()]);
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert!(error.message.contains("/nowhere/listen"));
     }
 
     #[cfg(unix)]
@@ -548,27 +618,32 @@ mod tests {
         let script = dir.path().join("listen.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\n# prints what a model would, given the file it was handed\n[ -s \"$1\" ] || exit 3\necho '[00:00:00.000 --> 00:00:01.000]  open the settings'\necho '[BLANK_AUDIO]'\n",
+            "#!/bin/sh\n[ -s \"$1\" ] || exit 3\necho '[00:00:00.000 --> 00:00:01.000]  open the settings'\necho '[BLANK_AUDIO]'\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let engine = detect(
             &Choice {
                 command: format!("{} {{file}}", script.display()),
-                model: String::new(),
+                language: String::new(),
             },
             None,
         )
         .unwrap();
-        assert_eq!(engine.name(), "your command");
-        assert_eq!(transcribe(&engine, &wav(200)).unwrap(), "open the settings");
-        // A recording that is not audio never reaches the engine.
-        assert!(transcribe(&engine, b"hello").is_err());
+        let Engine::Custom { program, args } = engine else {
+            panic!("a custom engine");
+        };
+        assert_eq!(
+            transcribe_with_command(&program, &args, &wav(200)).unwrap(),
+            "open the settings"
+        );
+        // A recording that is not audio never reaches the command.
+        assert!(transcribe_with_command(&program, &args, b"hello").is_err());
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_failing_engine_says_what_it_complained_about() {
+    fn a_failing_command_says_what_it_complained_about() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("broken.sh");
@@ -578,11 +653,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let engine = Engine::Custom {
-            program: script,
-            args: vec![],
-        };
-        let error = transcribe(&engine, &wav(200)).unwrap_err();
+        let error = transcribe_with_command(&script, &[], &wav(200)).unwrap_err();
         assert!(
             error.message.contains("model file is corrupt"),
             "{}",
@@ -591,16 +662,64 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_custom_program_is_named() {
-        let error = detect(
-            &Choice {
-                command: "/nowhere/listen {file}".into(),
-                model: String::new(),
-            },
-            None,
-        )
-        .unwrap_err();
+    fn a_file_is_the_model_only_when_it_is_big_and_starts_with_the_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("small.bin");
+        std::fs::write(&small, b"lmgg and then not much").unwrap();
+        assert!(check_model(&small).is_err());
+        assert!(!small.exists(), "a file that is not the model is deleted");
+        // A sparse file stands in for the real size.
+        let big = dir.path().join("big.bin");
+        let mut file = std::fs::File::create(&big).unwrap();
+        file.write_all(b"lmgg").unwrap();
+        file.set_len(MIN_MODEL_BYTES + 1).unwrap();
+        drop(file);
+        assert!(check_model(&big).is_ok());
+        let wrong = dir.path().join("wrong.bin");
+        let mut file = std::fs::File::create(&wrong).unwrap();
+        file.write_all(b"<htm").unwrap();
+        file.set_len(MIN_MODEL_BYTES + 1).unwrap();
+        drop(file);
+        assert!(check_model(&wrong).is_err());
+    }
+
+    #[test]
+    fn the_model_counts_as_ready_only_when_it_is_whole_and_listening_without_it_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let recognizer = Recognizer::new(dir.path().to_path_buf());
+        assert!(!recognizer.model_ready());
+        std::fs::write(recognizer.model_path(), b"truncated").unwrap();
+        assert!(!recognizer.model_ready());
+        let error = recognizer.transcribe(&wav_of(&[0; 4000]), "").unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
-        assert!(error.message.contains("/nowhere/listen"));
+        assert!(!recognizer.downloading());
+    }
+
+    /// Downloads the real model and listens to a real recording. It is a gigabyte of network and a
+    /// few seconds of CPU, so it only runs when asked for:
+    /// `ATARAXIA_SPEECH_WAV=/path/16k-mono.wav cargo test --lib real_model -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_model_downloads_and_listens() {
+        let wav =
+            std::fs::read(std::env::var("ATARAXIA_SPEECH_WAV").expect("a recording")).unwrap();
+        let dir = std::env::var_os("ATARAXIA_SPEECH_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("ataraxia-speech-test"));
+        let recognizer = Recognizer::new(dir);
+        let mut last = 0;
+        recognizer
+            .download(|received, total| {
+                if received / 50_000_000 != last / 50_000_000 {
+                    println!("downloaded {received} of {total:?}");
+                }
+                last = received;
+            })
+            .unwrap();
+        assert!(recognizer.model_ready());
+        let started = Instant::now();
+        let text = recognizer.transcribe(&wav, "").unwrap();
+        println!("heard {text:?} in {:?}", started.elapsed());
+        assert!(!text.is_empty());
     }
 }

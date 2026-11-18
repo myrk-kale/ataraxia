@@ -125,7 +125,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential curl wget file patchelf pkg-config \
+            build-essential cmake libclang-dev curl wget file patchelf pkg-config \
             libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev librsvg2-dev
 
