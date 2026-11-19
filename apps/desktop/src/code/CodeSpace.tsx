@@ -1132,7 +1132,7 @@ export function CodeSpace({
               onChange={onSelectRepository}
             />
           ) : null}
-          <Segmented<Mode> label="Navigator" options={MODES} value={mode} onChange={setMode} />
+          <Segmented<Mode> fill label="Navigator" options={MODES} value={mode} onChange={setMode} />
           {searchCheckpointId ? (
             <div className="flex items-center justify-between gap-2 px-1.5 text-small text-cg-muted-strong">
               <span>{checkpoint ? `Checkpoint #${checkpoint.seq}` : "Checkpoint from search"}</span>

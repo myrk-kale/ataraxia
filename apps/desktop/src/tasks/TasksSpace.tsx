@@ -294,7 +294,7 @@ function TaskCard({
           <span className={`min-w-0 flex-1 truncate text-ui ${done ? "text-cg-muted line-through" : "text-cg-ink"}`}>
             {task.title}
           </span>
-          {task.status === "ready" ? <Chip tone="info" title="Cleared to be developed">Ready for development</Chip> : null}
+          {task.status === "ready" ? <Chip tone="info" title="Ready for development">Ready</Chip> : null}
           {task.notes.trim() && !open ? (
             <span aria-label="Has notes" className="flex-none text-small text-cg-muted" title="Has notes">
               ¶

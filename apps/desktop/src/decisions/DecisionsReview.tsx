@@ -91,7 +91,7 @@ export function DecisionsCard({
   }
 
   return (
-    <div className="relative min-w-0">
+    <div className="relative max-w-[680px] min-w-0">
       <details className="group min-w-0 rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
         <summary className={`flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 rounded-cg-md py-2.5 pl-3.5 [&::-webkit-details-marker]:hidden ${onOpenFullscreen ? "pr-12" : "pr-3.5"}`}>
           <ChevronRight aria-hidden="true" className="shrink-0 text-cg-muted motion-safe:transition-transform group-open:rotate-90" size={14} />

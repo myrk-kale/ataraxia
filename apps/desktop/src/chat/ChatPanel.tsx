@@ -1102,7 +1102,7 @@ export function ChatPanel({
         {!atBottom ? (
           <button
             aria-label="Jump to latest"
-            className="absolute right-6 bottom-3 flex items-center gap-1 rounded-full border border-cg-line-strong bg-cg-panel px-3 py-1 text-small text-cg-muted-strong shadow-md hover:text-cg-ink"
+            className="absolute right-6 bottom-3 flex items-center gap-1 rounded-cg-md border border-cg-line-strong bg-cg-panel px-3 py-1.5 text-small text-cg-muted-strong shadow-cg-lift hover:text-cg-ink"
             type="button"
             onClick={jumpToLatest}
           >

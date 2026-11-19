@@ -119,24 +119,31 @@ export function VoicePanel() {
         hint="Optional. Leave empty to use the built-in Whisper. Or write a command that listens in its place: {file} stands for the recording, and the command prints the text."
         title="Your own command"
         below={
-          <input
-            aria-label="Speech command"
-            autoComplete="off"
-            className={FIELD}
-            placeholder="whisper-cli -m ~/models/ggml-small-q5_1.bin -nt -f {file}"
-            spellCheck={false}
-            value={command}
-            onChange={(event) => setCommand(event.target.value)}
-          />
+          // The button saves this field only, so it sits beside it rather than at the foot of the page.
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void save(command, status.language);
+            }}
+          >
+            <input
+              aria-label="Speech command"
+              autoComplete="off"
+              className={`${FIELD} min-w-0 flex-1`}
+              placeholder="whisper-cli -m ~/models/ggml-small-q5_1.bin -nt -f {file}"
+              spellCheck={false}
+              value={command}
+              onChange={(event) => setCommand(event.target.value)}
+            />
+            <Button className="flex-none self-stretch" size="sm" type="submit" variant="secondary">
+              {saved ? "Saved" : "Save"}
+            </Button>
+          </form>
         }
       >
         {null}
       </SettingRow>
-      <div className="flex justify-end">
-        <Button variant="primary" onClick={() => void save(command, status.language)}>
-          {saved ? "Saved" : "Save"}
-        </Button>
-      </div>
       <SpeechModelDialog
         isOpen={downloading}
         megabytes={status.model_megabytes}

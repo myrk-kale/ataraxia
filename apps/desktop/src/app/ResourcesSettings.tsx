@@ -57,6 +57,7 @@ export function ResourcesSettings({
   const [list, setList] = useState<ResourceList | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [form, setForm] = useState<{ kind: ResourceKind; editing: string | null } | null>(null);
+  const [deleting, setDeleting] = useState<ResourceItem | null>(null);
 
   // A scope that has nothing to point at (no workspace, no repository) falls back to a broader one.
   const available: ResourceScope[] = useMemo(
@@ -92,15 +93,8 @@ export function ResourcesSettings({
   }
 
   async function remove(item: ResourceItem) {
-    if (!window.confirm(`Delete ${item.kind === "skill" ? "the skill" : "the MCP server"} "${item.id}" from the ${SCOPE_LABEL[shown].toLowerCase()} scope?`)) {
-      return;
-    }
-    try {
-      await (item.kind === "skill" ? resourcesDeleteSkill(context, item.id) : resourcesDeleteMcp(context, item.id));
-      await reload();
-    } catch (err) {
-      setProblem(errorText(err));
-    }
+    await (item.kind === "skill" ? resourcesDeleteSkill(context, item.id) : resourcesDeleteMcp(context, item.id));
+    await reload();
   }
 
   const items = (kind === "skill" ? list?.skills : list?.mcps) ?? [];
@@ -210,7 +204,7 @@ export function ResourcesSettings({
                     <Button variant="quiet" onClick={() => setForm({ kind: item.kind, editing: item.id })}>
                       Edit
                     </Button>
-                    <Button variant="quiet" onClick={() => void remove(item)}>
+                    <Button variant="quiet" onClick={() => setDeleting(item)}>
                       Delete
                     </Button>
                   </> : null}
@@ -234,6 +228,12 @@ export function ResourcesSettings({
         isOpen={form?.kind === "mcp"}
         onClose={() => setForm(null)}
         onSaved={() => void reload()}
+      />
+      <DeleteResourceDialog
+        item={deleting}
+        scope={shown}
+        onClose={() => setDeleting(null)}
+        onDelete={remove}
       />
     </div>
   );
@@ -269,6 +269,71 @@ function McpSignIn({ item, context }: { item: ResourceItem; context: ResourceCon
         {action}
       </Button>
     </div>
+  );
+}
+
+/** Deleting removes the definition from the scope's files, so it asks first, in the app's own dialog. */
+function DeleteResourceDialog({
+  item,
+  scope,
+  onClose,
+  onDelete,
+}: {
+  item: ResourceItem | null;
+  scope: ResourceScope;
+  onClose: () => void;
+  onDelete: (item: ResourceItem) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const what = item?.kind === "skill" ? "skill" : "MCP server";
+
+  useEffect(() => {
+    if (item) {
+      setBusy(false);
+      setProblem(null);
+    }
+  }, [item]);
+
+  async function confirm() {
+    if (!item || busy) {
+      return;
+    }
+    setBusy(true);
+    setProblem(null);
+    try {
+      await onDelete(item);
+      onClose();
+    } catch (err) {
+      setProblem(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog isOpen={item !== null} label={`Delete ${what}`} size="sm" onClose={onClose}>
+      <div className="flex flex-col gap-4 p-6">
+        <h2 className="text-heading font-semibold text-cg-ink">Delete this {what}?</h2>
+        <p className="text-ui leading-6 text-cg-ink">
+          <span className="font-mono">{item?.id}</span> is removed from the {SCOPE_LABEL[scope].toLowerCase()} scope. Sessions that
+          are already running keep it until they end.
+        </p>
+        {problem ? (
+          <p className="text-small text-cg-red" role="alert">
+            {problem}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="quiet" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={busy} variant="danger" onClick={() => void confirm()}>
+            {busy ? "Deleting…" : `Delete ${what}`}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 

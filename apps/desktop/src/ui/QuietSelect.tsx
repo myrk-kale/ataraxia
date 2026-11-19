@@ -42,7 +42,7 @@ interface QuietSelectProps {
   /** Extra content at the bottom of the list; `close` dismisses the popover. */
   footer?: (close: () => void) => ReactNode;
   className?: string;
-  /** `chip` is a rounded pill with a border, for a row of filters; the default reads as plain text. */
+  /** `chip` is a bordered box, for a row of filters; the default reads as plain text. */
   variant?: "plain" | "chip";
   /** A chip whose value is not the default, so the filter in force is easy to see. */
   highlighted?: boolean;
@@ -201,7 +201,7 @@ export function QuietSelect({
         aria-label={ariaLabel}
         className={`inline-flex min-w-0 cursor-pointer items-center gap-1 outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
           variant === "chip"
-            ? `rounded-full border px-3 py-1.5 text-small focus-visible:outline-2 focus-visible:outline-cg-accent ${
+            ? `rounded-cg-md border px-3 py-1.5 text-small ${
                 highlighted
                   ? "border-cg-accent bg-cg-accent-bg text-cg-ink"
                   : "border-cg-line bg-transparent text-cg-muted-strong hover:border-cg-control hover:text-cg-ink"
@@ -224,7 +224,8 @@ export function QuietSelect({
             {icon}
           </span>
         ) : null}
-        <span className="truncate">{selected?.display ?? selected?.label ?? placeholder}</span>
+        {/* Grows only when the trigger is wider than its text (a boxed field), so the chevron sits at the edge. */}
+        <span className="min-w-0 flex-1 truncate text-left">{selected?.display ?? selected?.label ?? placeholder}</span>
         <ChevronDown aria-hidden="true" className="flex-none text-cg-muted" size={12} />
       </button>
 

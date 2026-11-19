@@ -6,6 +6,23 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- Buttons and fields now follow the size and weight their classes ask for. A global `font: inherit`
+  rule outside any layer was overriding Tailwind, so every button looked a size and weight off.
+- Deleting a skill or an MCP server asks in an app dialog instead of the system `confirm`.
+- Settings, Keyboard shortcuts and the Memory graph have a close button.
+- The Voice "Save" button sits next to the command field it saves, as a secondary button.
+- The shortcuts dialog is wider, filter chips use the app radius, and the "+ New" buttons in Memory
+  match the controls beside them.
+
+### Fixed
+
+- The Decisions card in the chat is as wide as the other blocks of a reply.
+- Boxed selects keep their chevron at the edge, and segmented tabs fit their own text.
+- Code > Components says what to do when there are changed files but nothing to rank, and the empty
+  MCP servers list says where to add one.
+
 ## [0.14.0] - 2026-11-18
 
 ### Added

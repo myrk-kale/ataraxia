@@ -220,6 +220,13 @@ export function ComponentQueue({
   onOpenFile: (path: string) => void;
 }) {
   const rows = useMemo(() => queueRows(priority, marks, showSkipped), [priority, marks, showSkipped]);
+  if (rows.length === 0) {
+    return (
+      <p className="px-4.5 py-6 text-small leading-5 text-cg-muted-strong" role="status">
+        Nothing in these changes to rank as a component. Changed lists every file that moved.
+      </p>
+    );
+  }
   return (
     <ul aria-label="Components to review" className="flex flex-col gap-0.5 px-2 pb-4">
       {rows.map((row) => {
