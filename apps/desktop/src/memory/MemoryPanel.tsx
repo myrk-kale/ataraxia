@@ -120,6 +120,7 @@ export function MemoryPanel({
             <Network aria-hidden="true" size={13} /> Open the graph
           </Button>
           <Button
+            size="sm"
             variant="secondary"
             onClick={() => {
               setOpenId(null);

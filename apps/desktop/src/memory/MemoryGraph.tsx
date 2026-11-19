@@ -14,7 +14,7 @@ import {
   type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useAppearance } from "../app/appearance/store";
 import {
@@ -342,6 +342,7 @@ export function MemoryGraph({
             Expired
           </Button>
           <Button
+            size="sm"
             variant="primary"
             onClick={() => {
               setSelectedId(null);
@@ -349,6 +350,9 @@ export function MemoryGraph({
             }}
           >
             <Plus aria-hidden="true" size={14} /> New
+          </Button>
+          <Button aria-label="Close memory graph" variant="icon" onClick={onClose}>
+            <X aria-hidden="true" size={16} />
           </Button>
         </header>
 

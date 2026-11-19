@@ -1,6 +1,8 @@
+import { X } from "lucide-react";
 import { useRef, useState, type KeyboardEvent } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
 import type { ProviderKind } from "../lib/workspace";
+import { Button } from "../ui/Button";
 import { Dialog, Toggle } from "../ui/Overlay";
 import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
@@ -66,7 +68,12 @@ export function SettingsDialog({
   return (
     <Dialog className="w-[min(800px,94vw)] max-w-none gap-0 p-0" isOpen={isOpen} label="Settings" size="lg" onClose={onClose}>
       <div className="flex h-[min(620px,84vh)] flex-col">
-        <h2 className="flex-none border-b border-cg-line px-6 py-4 text-heading font-semibold text-cg-ink">Settings</h2>
+        <header className="flex flex-none items-center justify-between gap-4 border-b border-cg-line py-3 pr-4 pl-6">
+          <h2 className="text-heading font-semibold text-cg-ink">Settings</h2>
+          <Button aria-label="Close settings" variant="icon" onClick={onClose}>
+            <X aria-hidden="true" size={16} />
+          </Button>
+        </header>
         <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
           <div
             aria-label="Settings sections"

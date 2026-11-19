@@ -233,13 +233,6 @@ body {
 }
 
 button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-button,
 summary,
 [role="button"],
 [role="tab"],

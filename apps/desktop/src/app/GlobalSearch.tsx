@@ -283,9 +283,10 @@ export function GlobalSearch({
           {!term ? (
             <div className="flex flex-col items-center gap-3.5 px-5 py-8 text-center">
               <p className="text-ui text-cg-muted-strong">Find anything you have done here.</p>
-              <ul className="flex flex-wrap justify-center gap-2">
+              {/* What search covers, as words: drawn as chips these read as buttons that did nothing. */}
+              <ul className="flex flex-wrap justify-center gap-x-5 gap-y-2">
                 {FINDS.map(({ icon: Icon, label }) => (
-                  <li key={label} className="flex items-center gap-1.5 rounded-full bg-cg-tint px-3 py-1.5 text-small text-cg-muted-strong">
+                  <li key={label} className="flex items-center gap-1.5 text-small text-cg-muted-strong">
                     <Icon aria-hidden="true" size={13} />
                     {label}
                   </li>

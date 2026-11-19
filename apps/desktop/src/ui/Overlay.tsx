@@ -227,11 +227,14 @@ export function Segmented<T extends string>({
   label,
   value,
   options,
+  fill = false,
   onChange,
 }: {
   label: string;
   value: T;
   options: readonly { id: T; label: string }[];
+  /** Segments share the full width equally, for a control that spans its column. */
+  fill?: boolean;
   onChange: (value: T) => void;
 }) {
   return (
@@ -239,7 +242,8 @@ export function Segmented<T extends string>({
       <Tabs.ListContainer>
         <Tabs.List aria-label={label} className="text-small">
           {options.map((option) => (
-            <Tabs.Tab key={option.id} id={option.id}>
+            // Unless it fills its column, each segment is as wide as its words: equal widths broke longer labels onto two lines.
+            <Tabs.Tab key={option.id} className={fill ? "whitespace-nowrap" : "w-auto whitespace-nowrap"} id={option.id}>
               {option.label}
               <Tabs.Indicator />
             </Tabs.Tab>

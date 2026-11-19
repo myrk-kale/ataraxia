@@ -198,7 +198,7 @@ export function McpServersDialog({
 
           {loadState.kind === "ready" && items.length === 0 ? (
             <p className="py-8 text-ui text-cg-muted-strong">
-              No live chat has MCP servers configured.
+              No live chat has MCP servers configured. Add one in Settings, under Skills &amp; MCP; chats started after that run it.
             </p>
           ) : null}
 
