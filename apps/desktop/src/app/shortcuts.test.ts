@@ -208,6 +208,14 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("`", { ctrlKey: true }), { space: "chat", overlay: true })).toEqual({ type: "terminal" });
   });
 
+  it("toggles the terminal by the physical Backquote key when the layout reports another character", () => {
+    expect(resolveShortcut(press("Dead", { ctrlKey: true, code: "Backquote" }), idle)).toEqual({ type: "terminal" });
+    expect(resolveShortcut(press("'", { ctrlKey: true, code: "Backquote" }), idle)).toEqual({ type: "terminal" });
+    expect(resolveShortcut(press("Dead", { metaKey: true, code: "Backquote" }), idle)).toBeNull();
+    expect(resolveShortcut(press("Dead", { ctrlKey: true, code: "KeyA" }), idle)).toBeNull();
+    expect(isTerminalToggle(press("`", { ctrlKey: true, isComposing: true }))).toBe(false);
+  });
+
   it("no longer toggles the terminal with Ctrl/Cmd+J", () => {
     expect(resolveShortcut(press("j", { ctrlKey: true }), idle)).toBeNull();
     expect(resolveShortcut(press("j", { metaKey: true }), { space: "code", overlay: false })).toBeNull();

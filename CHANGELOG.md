@@ -6,6 +6,19 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- Tab in the message field takes the whole suggestion, like the Right arrow, instead of one word.
+
+### Fixed
+
+- The machine stays awake while an agent waits on a command or watch it left running in the
+  background (the "Waiting on" chips). Only a working agent, a schedule, a queue or a usage-limit
+  wait held it before, so it could sleep with the chat idle.
+- Control with the backtick opens the terminal on a Mac keyboard that reports the key as a dead key
+  or as another character. It now goes by the physical key, which is the apostrophe on a Brazilian
+  keyboard.
+
 ## [0.14.1] - 2026-11-19
 
 ### Changed

@@ -58,10 +58,21 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 
 /**
  * Control with a backtick, no Alt, Shift or Cmd: the terminal toggle. Control on every platform,
- * the Mac included, as in the editors people know it from.
+ * the Mac included, as in the editors people know it from. It matches the physical key as well as
+ * the character: with Control held, a Mac reports the backtick as a dead key (or as the layout's
+ * own character, the apostrophe on a Brazilian keyboard) while the key stays `Backquote`.
  */
-export function isTerminalToggle(event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): boolean {
-  return event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "`";
+export function isTerminalToggle(
+  event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "isComposing"> & { code?: string },
+): boolean {
+  return (
+    event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !event.isComposing &&
+    (event.key === "`" || event.code === "Backquote")
+  );
 }
 
 export function isSearchKey(event: KeyLike): boolean {
@@ -82,6 +93,11 @@ export function isSpaceKey(event: Pick<KeyLike, "key" | "ctrlKey" | "metaKey" | 
 
 /** Maps a key press to an action, or `null` when the key must be left alone. */
 export function resolveShortcut(event: KeyLike, context: ShortcutContext): ShortcutAction | null {
+  // The terminal toggles from anywhere, even from inside a field or the terminal itself. Before
+  // the guard below: Control and the backtick can arrive as a dead key.
+  if (isTerminalToggle(event)) {
+    return { type: "terminal" };
+  }
   // Never during IME composition: those keys pick candidates.
   if (event.isComposing || event.key === "Process" || event.key === "Dead") {
     return null;
@@ -91,10 +107,6 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   const inEditor = matches(event.target, ".monaco-editor") && !matches(event.target, "[data-editor-readonly='true']");
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
-  // The terminal toggles from anywhere, even from inside a field or the terminal itself.
-  if (isTerminalToggle(event)) {
-    return { type: "terminal" };
-  }
   if (context.overlay) {
     return null;
   }

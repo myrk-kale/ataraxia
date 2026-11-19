@@ -119,6 +119,11 @@ pub trait AgentRuntime: Send + Sync {
     fn live_statuses(&self) -> Vec<SessionStatus> {
         Vec::new()
     }
+    /// Whether any live agent left a command, watch or subagent running in the background (the
+    /// "Waiting on" chips). The agent is `Ready` meanwhile, but it will come back when one ends.
+    fn has_background_work(&self) -> bool {
+        false
+    }
     /// Stores a new model/effort for the chat and applies it. Providers that cannot switch on a
     /// live process restart the session (the transcript stays, the agent starts fresh).
     fn configure_session(

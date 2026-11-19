@@ -2229,6 +2229,14 @@ impl AgentRuntime for AgentHost {
             .collect()
     }
 
+    fn has_background_work(&self) -> bool {
+        self.inner.sessions.lock().values().any(|live| {
+            live.subagents
+                .iter()
+                .any(|item| item.detached && item.status == SubagentStatus::Running)
+        })
+    }
+
     fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {
         Ok(self
             .inner
@@ -3706,6 +3714,26 @@ mod tests {
         child.parent_session_id = Some(h.session.id);
         h.store.create_session(&child).expect("child");
         child
+    }
+
+    #[test]
+    fn a_background_task_counts_as_work_until_it_ends() {
+        let h = harness();
+        h.host.start_session(&h.session).expect("start");
+        assert!(!h.host.has_background_work());
+        let event = |update| BackendEvent::Subagent {
+            id: "bmon1".into(),
+            title: "Waiting on: Wait for the test suite".into(),
+            update,
+        };
+        h.host
+            .inner
+            .handle_event(h.session.id, event(SubagentUpdate::Detached));
+        assert!(h.host.has_background_work(), "the chat is idle but waiting");
+        h.host
+            .inner
+            .handle_event(h.session.id, event(SubagentUpdate::Done { ok: true }));
+        assert!(!h.host.has_background_work());
     }
 
     #[test]

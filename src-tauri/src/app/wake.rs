@@ -1,7 +1,7 @@
 //! Keeps the machine awake while there is work the app has to see through.
 //!
 //! The operating system decides when to sleep from its own idle clock, which knows nothing about
-//! agents. Here the app says when it is not idle: an agent working, a message waiting in a queue, a schedule that will fire, a wait for a usage limit to lift.
+//! agents. Here the app says when it is not idle: an agent working, a message waiting in a queue, a schedule that will fire, a background command it waits on, a wait for a usage limit to lift.
 //! It counts every chat of every workspace, not only the one on screen.
 
 use std::sync::{Arc, Weak};
@@ -41,6 +41,11 @@ impl Engine {
         });
         if schedule_pending {
             return Some("a schedule is waiting to fire");
+        }
+        // A command or watch the agent left running: the chat is idle, but the agent will come
+        // back when it ends.
+        if self.runtime.has_background_work() {
+            return Some("an agent is waiting on a background task");
         }
         if !self.rate_waits.lock().is_empty() {
             return Some("waiting for a usage limit to lift");
