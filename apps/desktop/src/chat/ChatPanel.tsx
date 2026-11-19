@@ -838,31 +838,29 @@ export function ChatPanel({
     }
   }, [completion, draft]);
 
+  function acceptCompletion(text: string) {
+    const next = draft + text;
+    setDraft(next);
+    setCompletionCaret(next.length);
+    setDismissedCompletion(next);
+  }
+
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (picker.onKeyDown(event)) {
       return;
     }
     const plain = !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
     if (plain && event.key === "Tab") {
-      // Tab never leaves the field: it brings the next word of the suggestion, or does nothing.
+      // Tab never leaves the field: it takes the whole suggestion, or does nothing.
       event.preventDefault();
       if (completion) {
-        const word = /^\s*\S+/.exec(completion)?.[0] ?? completion;
-        const next = draft + word;
-        setDraft(next);
-        setCompletionCaret(next.length);
-        if (word.length === completion.length) {
-          setDismissedCompletion(next);
-        }
+        acceptCompletion(completion);
       }
       return;
     }
     if (completion && plain && event.key === "ArrowRight") {
       event.preventDefault();
-      const next = draft + completion;
-      setDraft(next);
-      setCompletionCaret(next.length);
-      setDismissedCompletion(next);
+      acceptCompletion(completion);
       return;
     }
     if (completion && event.key === "Escape") {
@@ -1286,7 +1284,7 @@ export function ChatPanel({
             aria-expanded={picker.open}
             aria-haspopup="listbox"
             aria-label="Message"
-            aria-description={completion ? `Suggestion: ${completion}. Press Tab for the next word, or Right Arrow for all of it.` : undefined}
+            aria-description={completion ? `Suggestion: ${completion}. Press Tab or Right Arrow to accept all of it.` : undefined}
             className="relative block max-h-40 min-h-[47px] w-full resize-none border-0 bg-transparent text-body text-cg-ink outline-none placeholder:text-cg-muted"
             disabled={!state.loaded || !canWrite}
             placeholder={
