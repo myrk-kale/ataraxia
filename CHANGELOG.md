@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-19
+
 ### Changed
 
 - Tab in the message field takes the whole suggestion, like the Right arrow, instead of one word.
