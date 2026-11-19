@@ -6,8 +6,24 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-18
+
 ### Added
 
+- Agent memory: Claude Code, Codex and OpenCode now share one memory that outlives any chat. Every
+  chat gets an `ataraxia` MCP server with `memory_search`, `memory_get`, `memory_create`,
+  `memory_update`, `memory_delete`, `memory_link`, `memory_unlink` and `memory_merge`. The agent is
+  told to search before a task and to save what is worth keeping (a preference, a decision and its
+  reason, a verified cause, a workflow) without asking. When memories disagree it asks you which is
+  right and settles it. A memory has a kind (semantic, episodic, procedural, working), a scope
+  (global, or one workspace) and a source (you said it, the agent verified it, the agent inferred
+  it); only your own words can go to the global scope. A memory that looks like a password or a key
+  is refused. It is on by default and can be switched off in Settings > Memory.
+- The memory is a graph: memories link to each other as relates to, part of, depends on, caused by,
+  supports, contradicts, supersedes or example of. The graph opens from a new icon in the header
+  (`Ctrl/Cmd+Shift+G`), with filters, search, draggable nodes, conflicts in amber, and a panel to
+  read, edit, link and delete a memory. Settings > Memory lists the same memories, and what an
+  agent writes shows up as it happens. Deleting a workspace deletes the memories of that workspace.
 - SVG in the chat: a fenced `svg` block in a reply is drawn as a picture, in the colours of the
   current theme. The agent is taught to use it for concept maps, mind maps and sketches that explain
   better than words. It is shown as an image, so nothing in it can run or load, and it has Expand,
