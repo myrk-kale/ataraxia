@@ -5,6 +5,7 @@ import {
   Loader2,
   MessageCircle,
   Moon,
+  Network,
   Plus,
   Search,
   Server,
@@ -29,6 +30,7 @@ import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsReview } from "../decisions/DecisionsReview";
 import { FlowSpace } from "../flow/FlowSpace";
 import { TasksDrawer } from "../tasks/TasksDrawer";
+import { MemoryGraph } from "../memory/MemoryGraph";
 import { btwList, codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
 import { isSearchReview, type ConversationJump, type SearchResult } from "../lib/search";
 import { useInsightEvents } from "../lib/useInsightEvents";
@@ -178,6 +180,7 @@ export function AppShell() {
   const [btwPrivate, setBtwPrivate] = useState(false);
   const [btwResume, setBtwResume] = useState<BtwTask | null>(null);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTarget, setSearchTarget] = useState<SearchResult | null>(null);
   const [decisionsOpen, setDecisionsOpen] = useState(false);
@@ -255,6 +258,7 @@ export function AppShell() {
     btwOpen ||
     artifactsOpen ||
     tasksOpen ||
+    memoryOpen ||
     searchOpen ||
     decisionsOpen ||
     legendOpen ||
@@ -288,6 +292,9 @@ export function AppShell() {
           break;
         case "tasks":
           setTasksOpen((open) => !open);
+          break;
+        case "memory":
+          setMemoryOpen((open) => !open);
           break;
         case "search":
           setSearchOpen(true);
@@ -486,6 +493,10 @@ export function AppShell() {
 
   const inWorkspace = useMemo(() => selectedWorkspace(workspace), [workspace]);
   const members = useMemo(() => inWorkspace?.members ?? [], [inWorkspace]);
+  const memoryWorkspaces = useMemo(
+    () => workspace.workspaces.map((item) => ({ id: item.id, name: item.name })),
+    [workspace.workspaces],
+  );
   // With one repository the app looks exactly as it always did; the repository selector, the
   // counts and the labels that name a repository only appear from two.
   const multi = members.length > 1;
@@ -1055,6 +1066,16 @@ export function AppShell() {
               <ListTodo aria-hidden="true" size={16} />
             </Button>
           </Tip>
+          <Tip label="Memory graph (Ctrl/⌘ Shift G)">
+            <Button
+              aria-label="Memory graph"
+              aria-pressed={memoryOpen}
+              variant="icon"
+              onClick={() => setMemoryOpen((open) => !open)}
+            >
+              <Network aria-hidden="true" size={16} />
+            </Button>
+          </Tip>
           <Tip label="Terminal (Ctrl `)">
             <Button
               aria-label="Toggle terminal"
@@ -1192,6 +1213,13 @@ export function AppShell() {
         onOpenBtw={(task) => openBtw(task)}
         onOpenDecisions={() => setDecisionsOpen(true)}
       />
+      <MemoryGraph
+        currentWorkspaceId={inWorkspace?.workspace.id ?? null}
+        isOpen={memoryOpen}
+        workspaces={memoryWorkspaces}
+        onClose={() => setMemoryOpen(false)}
+        onError={setError}
+      />
       <TasksDrawer
         isOpen={tasksOpen}
         searchNumber={searchTarget?.kind === "task" ? Number(searchTarget.itemId) : null}
@@ -1226,7 +1254,9 @@ export function AppShell() {
         provider={selectedSession?.provider ?? null}
         repository={selectedRepository ? { id: selectedRepository.id, name: selectedRepository.name } : null}
         workspace={inWorkspace ? { id: inWorkspace.workspace.id, name: inWorkspace.workspace.name } : null}
+        workspaces={memoryWorkspaces}
         onClose={() => setSettingsOpen(false)}
+        onOpenMemoryGraph={() => setMemoryOpen(true)}
       />
       <McpServersDialog
         isOpen={mcpOpen}

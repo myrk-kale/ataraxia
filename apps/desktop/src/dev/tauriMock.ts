@@ -27,6 +27,31 @@ const devTasks: { number: number; title: string; notes: string; status: string; 
   { number: 1, title: "Rename the dispatcher", notes: "", status: "draft", created_at: now, updated_at: now },
 ];
 
+// What the agents remember, kept in memory for the browser preview.
+type DevMemory = { id: string; kind: string; workspaceId: string | null; title: string; body: string; tags: string[]; source: string; author: string; expiresAt: string | null; createdAt: string; updatedAt: string };
+type DevMemoryLink = { fromId: string; toId: string; relation: string; createdAt: string };
+let memoryEnabled = true;
+const mem = (id: string, kind: string, workspaceId: string | null, title: string, body: string, tags: string[], source = "observed", author = "agent"): DevMemory =>
+  ({ id, kind, workspaceId, title, body, tags, source, author, expiresAt: kind === "working" ? "2099-01-01T00:00:00Z" : null, createdAt: now, updatedAt: now });
+const devMemories: DevMemory[] = [
+  mem("m1", "semantic", null, "Answers in Portuguese", "The developer writes in Portuguese and wants the answers, TLDRs and questions in Portuguese too. Code and identifiers stay in English.", ["language"], "user"),
+  mem("m2", "procedural", null, "Run the linter before every commit", "Run pnpm lint and pnpm typecheck before committing; CI rejects a push that fails either.", ["workflow"], "user"),
+  mem("m3", "semantic", "ws1", "Tokens are hashed with SHA-256", "Tokens are random, so there is nothing to brute-force: a fast hash is enough and a slow one only costs latency.", ["auth"]),
+  mem("m4", "episodic", "ws1", "Uploads failed after the 0.9 deploy", "The uploader gave up after one failure because the retry count came from an env var that was not set in production. Fixed by a default of 3.", ["uploads", "incident"]),
+  mem("m5", "semantic", "ws1", "Retries default to 3", "The dispatcher retries three times with backoff unless RETRY_COUNT says otherwise.", ["uploads"]),
+  mem("m6", "semantic", "ws1", "Retries default to 5", "Older note: the dispatcher retries five times.", ["uploads"], "inferred"),
+  mem("m7", "working", "ws1", "Migrating the settings screen", "Three of five panels moved to the new layout; Voice and Sound are left.", ["ui"]),
+  mem("m8", "procedural", "ws2", "Storybook is the source of truth for components", "Build a component in Storybook first; the screens only compose them.", ["ui"], "user"),
+];
+const devMemoryLinks: DevMemoryLink[] = [
+  { fromId: "m4", toId: "m5", relation: "caused_by", createdAt: now },
+  { fromId: "m5", toId: "m6", relation: "contradicts", createdAt: now },
+  { fromId: "m5", toId: "m6", relation: "supersedes", createdAt: now },
+  { fromId: "m3", toId: "m4", relation: "relates_to", createdAt: now },
+  { fromId: "m2", toId: "m1", relation: "relates_to", createdAt: now },
+  { fromId: "m7", toId: "m8", relation: "depends_on", createdAt: now },
+];
+
 // `?state=empty|permission|question|working|fresh` previews other UI states in the browser.
 const mode = new URLSearchParams(window.location.search).get("state");
 
@@ -304,6 +329,38 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "core_status": return "ready";
     case "speech_status": return { ready: false, engine: "built-in Whisper", streaming: true, needs_model: true, downloading: false, model: "fast", model_megabytes: 190, model_url: "", models: [{ id: "fast", name: "Fast (small)", megabytes: 190, downloaded: false }, { id: "accurate", name: "Accurate (large-v3-turbo)", megabytes: 574, downloaded: false }], problem: null, command: "", language: "", languages: [{ code: "", name: "Detect it" }, { code: "en", name: "English" }, { code: "pt", name: "Português" }] };
     case "speech_set": return handle("speech_status");
+    case "memory_snapshot": return { enabled: memoryEnabled, memories: devMemories.slice(), links: devMemoryLinks.slice() };
+    case "memory_set_enabled": memoryEnabled = Boolean(args?.enabled); return null;
+    case "memory_create": {
+      const input = args?.input as Partial<DevMemory>;
+      const made = mem(`m${devMemories.length + 1}-${Date.now()}`, String(input.kind), (input.workspaceId as string | null) ?? null, String(input.title), String(input.body), (input.tags as string[]) ?? [], "user", "developer");
+      devMemories.unshift(made);
+      return made;
+    }
+    case "memory_update": {
+      const found = devMemories.find((item) => item.id === args?.id);
+      if (!found) throw `error[not_found]: no memory with id ${String(args?.id)}`;
+      Object.assign(found, args?.change as object, { updatedAt: new Date().toISOString() });
+      return found;
+    }
+    case "memory_delete": {
+      const at = devMemories.findIndex((item) => item.id === args?.id);
+      if (at >= 0) devMemories.splice(at, 1);
+      for (let index = devMemoryLinks.length - 1; index >= 0; index -= 1) {
+        if (devMemoryLinks[index]!.fromId === args?.id || devMemoryLinks[index]!.toId === args?.id) devMemoryLinks.splice(index, 1);
+      }
+      return null;
+    }
+    case "memory_link": {
+      const link = { fromId: String(args?.from), toId: String(args?.to), relation: String(args?.relation), createdAt: now };
+      if (!devMemoryLinks.some((item) => item.fromId === link.fromId && item.toId === link.toId && item.relation === link.relation)) devMemoryLinks.push(link);
+      return link;
+    }
+    case "memory_unlink": {
+      const at = devMemoryLinks.findIndex((item) => item.fromId === args?.from && item.toId === args?.to && item.relation === args?.relation);
+      if (at >= 0) devMemoryLinks.splice(at, 1);
+      return null;
+    }
     case "tasks_list": return devTasks.slice();
     case "task_create": {
       const made = { number: devTasks.reduce((top, item) => Math.max(top, item.number), 0) + 1, title: String(args?.title), notes: "", status: "draft", created_at: now, updated_at: now };

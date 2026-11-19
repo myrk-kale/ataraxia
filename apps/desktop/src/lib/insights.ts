@@ -320,6 +320,7 @@ export type InsightEvent =
   | { type: "cleared"; sessionId: SessionId }
   | { type: "queue"; sessionId: SessionId; queue: MessageQueue }
   | { type: "schedules"; sessionId: SessionId; schedules: Schedule[] }
+  | { type: "memories" }
   | { type: "decisionThread"; decisionId: DecisionId }
   | { type: "btw"; taskId: BtwTaskId; parentSessionId: SessionId; status: ArtifactStatus };
 
