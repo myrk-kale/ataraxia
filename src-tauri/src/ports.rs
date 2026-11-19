@@ -495,6 +495,51 @@ pub trait Store: Send + Sync {
     fn task_delete(&self, _number: i64) -> Result<()> {
         Ok(())
     }
+
+    /// Every memory, the most recently changed first.
+    fn memories_all(&self) -> Result<Vec<crate::domain::Memory>> {
+        Ok(Vec::new())
+    }
+    fn memory_links_all(&self) -> Result<Vec<crate::domain::MemoryLink>> {
+        Ok(Vec::new())
+    }
+    fn memory_get(&self, _id: &str) -> Result<Option<crate::domain::Memory>> {
+        Ok(None)
+    }
+    /// Inserts a memory, or replaces the one with the same id. The values are already clean.
+    fn memory_put(&self, _memory: &crate::domain::Memory) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "memories are not available here",
+        ))
+    }
+    /// Deletes a memory with its links; `false` when there was none.
+    fn memory_remove(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
+    /// Adds a link; one that already exists is left as it is.
+    fn memory_link_put(&self, _link: &crate::domain::MemoryLink) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "memories are not available here",
+        ))
+    }
+    fn memory_link_remove(
+        &self,
+        _from: &str,
+        _to: &str,
+        _relation: crate::domain::Relation,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+    /// Replaces `into` with the given text, hands the links of the `absorbed` memories to it
+    /// (dropping the ones that would point at itself or repeat) and deletes them: all or nothing.
+    fn memory_merge(&self, _into: &crate::domain::Memory, _absorbed: &[String]) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "memories are not available here",
+        ))
+    }
 }
 
 /// Persistence of everything derived from an agent's work.

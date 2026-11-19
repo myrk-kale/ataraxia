@@ -9,7 +9,8 @@ chat, the developer has three places that you can fill, and that this guide expl
 - Flow holds diagrams of how the code works, every node tied to real files.
 
 You act on all three through a small HTTP API that Ataraxia serves on localhost. You call it from
-bash with curl, as `api.md` explains. There are no tools to look for and no other way in.
+bash with curl, as `api.md` explains. There are no tools to look for and no other way in. The one
+exception is memory, which has its own tools (below).
 
 ## When to read this
 
@@ -33,6 +34,10 @@ a flow.
 - `schedule.md`: how to be sent a message later (check a release again, retry in a while), the
   same for every agent. Read it when you need to come back to something, without waiting to be
   asked for decisions or a flow.
+- `memory.md`: the memory shared by every agent and chat, and its `memory_*` tools: what to
+  search for and when, what is worth saving, the kinds, the links, and how to settle a conflict.
+  Read it the first time you save a memory. Unlike the rest, memory is yours to keep: you do not
+  ask the developer before saving one.
 - `queue.md`: how to hold the developer's message queue when something you were asked to do is left
   undone. The preamble already says when; read it for the details.
 - `api.md`: the environment variables, the authentication, every endpoint with its fields, the
@@ -40,7 +45,8 @@ a flow.
 
 ## Rules that always apply
 
-1. Never generate or record any of this on your own initiative.
+1. Never generate or record decisions, flows, comments or priorities on your own initiative.
+   Memory is the exception: you keep it yourself, as `memory.md` says.
 2. After you finish reviewing code, or writing or changing code, end your reply with one short
    question, in the language the developer writes in, asking whether they want you to generate
    decisions, a flow diagram, review comments or priorities. Ask for nothing else, and do not

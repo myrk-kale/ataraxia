@@ -157,6 +157,13 @@ pub fn run() {
             tauri_api::task_create,
             tauri_api::task_update,
             tauri_api::task_delete,
+            tauri_api::memory_snapshot,
+            tauri_api::memory_set_enabled,
+            tauri_api::memory_create,
+            tauri_api::memory_update,
+            tauri_api::memory_delete,
+            tauri_api::memory_link,
+            tauri_api::memory_unlink,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

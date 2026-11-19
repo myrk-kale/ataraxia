@@ -34,6 +34,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         15,
         include_str!("../../../migrations/015_decision_turn.sql"),
     ),
+    (16, include_str!("../../../migrations/016_memory.sql")),
 ];
 
 fn io(error: rusqlite::Error) -> Error {

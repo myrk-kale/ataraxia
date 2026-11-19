@@ -154,6 +154,10 @@ impl ClaudeBackend {
                         "--strict-mcp-config".into(),
                         "--mcp-config".into(),
                         path.to_string_lossy().into_owned(),
+                        // The memory tools are Ataraxia's own and are checked on its side (a
+                        // read-only chat cannot write), so they never ask for permission.
+                        "--allowedTools".into(),
+                        format!("mcp__{}", super::config::ATARAXIA_MCP),
                     ]);
                 }
                 // Workspace and Ataraxia skill directories. The flag takes a list, so it goes

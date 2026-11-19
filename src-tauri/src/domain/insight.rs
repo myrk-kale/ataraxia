@@ -539,6 +539,8 @@ pub enum InsightEvent {
         session_id: SessionId,
         schedules: Vec<crate::domain::Schedule>,
     },
+    /// An agent changed what is remembered: an open memory view reloads.
+    Memories,
 }
 
 /// A named piece of code found by a parser: the unit a change is attributed to.

@@ -139,6 +139,11 @@ fn thread_start_params(
     params
 }
 
+#[cfg(test)]
+pub(super) fn codex_mcp_servers_for_test(servers: &Map<String, Value>) -> Map<String, Value> {
+    codex_mcp_servers(servers)
+}
+
 fn codex_mcp_servers(servers: &Map<String, Value>) -> Map<String, Value> {
     servers
         .iter()

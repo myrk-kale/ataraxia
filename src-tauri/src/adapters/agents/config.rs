@@ -122,7 +122,27 @@ pub struct AgentConfiguration {
     pub skill_roots: Vec<PathBuf>,
 }
 
+/// The name of the MCP server Ataraxia adds to every chat: its tools reach the app itself.
+pub const ATARAXIA_MCP: &str = "ataraxia";
+
 impl AgentConfiguration {
+    /// Adds the `ataraxia` MCP server (the memory tools), reached over the local API with the
+    /// chat's own token, and writes it into the chat's MCP file. It replaces a server a user
+    /// configured under the same name.
+    pub fn attach_ataraxia_server(&mut self, access: &crate::ports::ApiAccess) -> Result<()> {
+        self.mcp_servers.insert(
+            ATARAXIA_MCP.into(),
+            json!({
+                "url": format!("{}/mcp", access.url),
+                "headers": { "Authorization": format!("Bearer {}", access.token) }
+            }),
+        );
+        if let Some(path) = &self.mcp_config_path {
+            write_mcp_config(path, &self.mcp_servers)?;
+        }
+        Ok(())
+    }
+
     pub fn load(
         cwd: &Path,
         session_id: SessionId,
@@ -820,6 +840,42 @@ mod tests {
         assert!(fs::symlink_metadata(root.join("home/auth.json")).is_err());
 
         fs::remove_dir_all(root).expect("clean temporary directory");
+    }
+
+    #[test]
+    fn every_chat_gets_the_ataraxia_server_with_its_own_token_in_the_file_claude_reads() {
+        let root = temporary_directory("ataraxia-mcp");
+        let session_id = SessionId::new();
+        let cwd = root.join("repo");
+        fs::create_dir_all(&cwd).expect("repository directory");
+        let mut config =
+            AgentConfiguration::load(&cwd, session_id, Some(&root), None).expect("configuration");
+        assert!(!config.mcp_servers.contains_key(ATARAXIA_MCP));
+        let access = crate::ports::ApiAccess {
+            url: "http://127.0.0.1:4010".into(),
+            token: "tok-123".into(),
+        };
+        config.attach_ataraxia_server(&access).expect("attach");
+
+        let server = &config.mcp_servers[ATARAXIA_MCP];
+        assert_eq!(server["url"], "http://127.0.0.1:4010/mcp");
+        assert_eq!(server["headers"]["Authorization"], "Bearer tok-123");
+        // Claude reads the same server from the chat's file, with its transport spelled out.
+        let path = config.mcp_config_path.clone().expect("a config file");
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read")).expect("json");
+        assert_eq!(written["mcpServers"][ATARAXIA_MCP]["type"], "http");
+        assert_eq!(
+            written["mcpServers"][ATARAXIA_MCP]["headers"]["Authorization"],
+            "Bearer tok-123"
+        );
+        // Codex takes the headers under another name, and OpenCode reads it as a remote server.
+        let codex = super::super::codex::codex_mcp_servers_for_test(&config.mcp_servers);
+        assert_eq!(
+            codex[ATARAXIA_MCP]["http_headers"]["Authorization"],
+            "Bearer tok-123"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

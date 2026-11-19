@@ -1,6 +1,7 @@
 //! SQLite persistence adapter.
 
 mod insights;
+mod memory;
 mod migrations;
 mod search;
 
@@ -764,6 +765,43 @@ impl Store for SqliteStore {
                 .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
             Ok(())
         })
+    }
+
+    fn memories_all(&self) -> Result<Vec<crate::domain::Memory>> {
+        self.with_conn(memory::all)
+    }
+
+    fn memory_links_all(&self) -> Result<Vec<crate::domain::MemoryLink>> {
+        self.with_conn(memory::links)
+    }
+
+    fn memory_get(&self, id: &str) -> Result<Option<crate::domain::Memory>> {
+        self.with_conn(|conn| memory::get(conn, id))
+    }
+
+    fn memory_put(&self, item: &crate::domain::Memory) -> Result<()> {
+        self.with_conn(|conn| memory::put(conn, item))
+    }
+
+    fn memory_remove(&self, id: &str) -> Result<bool> {
+        self.with_conn(|conn| memory::remove(conn, id))
+    }
+
+    fn memory_link_put(&self, link: &crate::domain::MemoryLink) -> Result<()> {
+        self.with_conn(|conn| memory::link_put(conn, link))
+    }
+
+    fn memory_link_remove(
+        &self,
+        from: &str,
+        to: &str,
+        relation: crate::domain::Relation,
+    ) -> Result<bool> {
+        self.with_conn(|conn| memory::link_remove(conn, from, to, relation))
+    }
+
+    fn memory_merge(&self, into: &crate::domain::Memory, absorbed: &[String]) -> Result<()> {
+        self.with_conn(|conn| memory::merge(conn, into, absorbed))
     }
 
     fn autocomplete_load(&self, scope: &str) -> Result<Vec<GramRow>> {
