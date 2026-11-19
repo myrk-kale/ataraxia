@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-19
+
 ### Changed
 
 - Buttons and fields now follow the size and weight their classes ask for. A global `font: inherit`
