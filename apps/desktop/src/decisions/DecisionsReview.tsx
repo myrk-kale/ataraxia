@@ -1,5 +1,5 @@
-import { Check, CircleCheck, CircleDot, CircleX, FileCode, RotateCcw, Scale, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, CircleCheck, CircleDot, CircleX, FileCode, Maximize2, RotateCcw, Scale, X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   artifactsList,
   decisionSetState,
@@ -10,13 +10,13 @@ import {
 import { errorText, useInsightEvents } from "../lib/useInsightEvents";
 import type { SessionId } from "../lib/workspace";
 import { Button } from "../ui/Button";
-import { Dialog } from "../ui/Overlay";
+import { Dialog, Tip } from "../ui/Overlay";
 import { LOADING, READY, StateMessage, type LoadState } from "../ui/State";
-import { generationState, KIND_LABEL, refLabel, STATE_LABEL, type Generation } from "./model";
+import { generationState, KIND_LABEL, nextPendingDecision, orderDecisions, refLabel, STATE_LABEL, type Generation } from "./model";
 import { canReject, cardLabel, reviewOrder, tally } from "./review";
 
 /** The decisions of one chat, read and kept fresh as they change. */
-function useDecisions(sessionId: SessionId | null) {
+export function useDecisions(sessionId: SessionId | null) {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [generation, setGeneration] = useState<Generation>({ kind: "idle" });
   const [state, setState] = useState<LoadState>(LOADING);
@@ -49,34 +49,86 @@ function useDecisions(sessionId: SessionId | null) {
     }
   });
 
-  return { decisions, setDecisions, generation, state, load };
+  async function verdict(decision: Decision, next: DecisionState, comment: string | null) {
+    const updated = await decisionSetState(decision.id, next, comment);
+    setDecisions((list) => list.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  return { decisions, generation, state, load, verdict };
 }
 
-/**
- * The decisions of a chat as an artifact of the conversation: a card that appears once the agent
- * recorded some, and opens the review. Nothing shows while there are none.
- */
-export function DecisionsCard({ sessionId, onOpen }: { sessionId: SessionId; onOpen: () => void }) {
-  const { decisions, generation } = useDecisions(sessionId);
-  const counts = useMemo(() => tally(decisions), [decisions]);
-  if (counts.total === 0 && generation.kind !== "working") {
+export function DecisionsCard({
+  review,
+  decisions,
+  onOpenFile,
+  onOpenFullscreen,
+}: {
+  review: ReturnType<typeof useDecisions>;
+  decisions: readonly Decision[];
+  onOpenFullscreen?: () => void;
+  onOpenFile?: (path: string, line: number | null) => void;
+}) {
+  const { generation, state, load, verdict } = review;
+  const [error, setError] = useState<string | null>(null);
+  const counts = tally(decisions);
+  if (counts.total === 0 && generation.kind !== "working" && state.kind !== "failed") {
     return null;
   }
-  const label = counts.total === 0 ? `Recording decisions with ${generation.kind === "working" ? generation.label : "the agent"}…` : cardLabel(counts);
+  const label = counts.total > 0
+    ? cardLabel(counts)
+    : generation.kind === "working"
+      ? `Recording with ${generation.label}…`
+      : "Could not load decisions";
+
+  async function submitVerdict(decision: Decision, next: DecisionState, comment: string | null) {
+    setError(null);
+    try {
+      await verdict(decision, next, comment);
+    } catch (err) {
+      setError(errorText(err));
+      throw err;
+    }
+  }
+
   return (
-    <div className="mx-auto mb-2 flex w-full max-w-[780px] px-8">
-      <button
-        className={`flex items-center gap-2 rounded-cg-md border px-3 py-1.5 text-small hover:bg-cg-tint ${
-          counts.pending > 0 ? "border-cg-line-strong text-cg-ink" : "border-cg-line text-cg-muted-strong"
-        }`}
-        title="Open the decisions to approve or reject them"
-        type="button"
-        onClick={onOpen}
-      >
-        <Scale aria-hidden="true" size={14} />
-        <span className="font-medium">Decisions</span>
-        <span>{label}</span>
-      </button>
+    <div className="relative min-w-0">
+      <details className="group min-w-0 rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel">
+        <summary className={`flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 rounded-cg-md py-2.5 pl-3.5 [&::-webkit-details-marker]:hidden ${onOpenFullscreen ? "pr-12" : "pr-3.5"}`}>
+          <ChevronRight aria-hidden="true" className="shrink-0 text-cg-muted motion-safe:transition-transform group-open:rotate-90" size={14} />
+          <span className="font-mono font-semibold text-cg-ink">Decisions</span>
+          <span className="min-w-0 text-cg-muted-strong">{label}</span>
+        </summary>
+        <div className="space-y-3 border-t border-cg-line px-3.5 py-3">
+          {error ? <p className="text-cg-red" role="alert">{error}</p> : null}
+          {state.kind === "failed" ? (
+            <StateMessage text={`Could not load the decisions: ${state.message}`} tone="failed">
+              <Button variant="secondary" onClick={() => void load()}>Try again</Button>
+            </StateMessage>
+          ) : null}
+          {counts.total > 0 ? (
+            <ol className="divide-y divide-cg-line">
+              {reviewOrder(decisions).map((decision) => (
+                <DecisionCard
+                  key={decision.id}
+                  decision={decision}
+                  inline
+                  onOpenFile={onOpenFile}
+                  onVerdict={(next, comment) => submitVerdict(decision, next, comment)}
+                />
+              ))}
+            </ol>
+          ) : generation.kind === "working" ? (
+            <StateMessage text={`Recording decisions with ${generation.label}…`} tone="loading" />
+          ) : null}
+        </div>
+      </details>
+      {onOpenFullscreen ? (
+        <Tip className="absolute top-1.5 right-2 inline-flex" label="Open decisions full screen">
+          <Button aria-label="Open decisions full screen" variant="icon" onClick={onOpenFullscreen}>
+            <Maximize2 aria-hidden="true" size={14} />
+          </Button>
+        </Tip>
+      ) : null}
     </div>
   );
 }
@@ -98,12 +150,6 @@ function StateMark({ state }: { state: DecisionState }) {
   );
 }
 
-/**
- * The review, full screen and nothing else on it: one card per decision with what was chosen and
- * why, and two verdicts. A rejection needs a comment. When the last open decision gets its
- * verdict, Ataraxia tells the main agent how the review went: that everything was approved, or
- * what was rejected and why.
- */
 export function DecisionsReview({
   isOpen,
   sessionId,
@@ -119,25 +165,33 @@ export function DecisionsReview({
   onOpenFile: (path: string, line: number | null) => void;
   onError: (message: string) => void;
 }) {
-  const { decisions, setDecisions, generation, state, load } = useDecisions(isOpen ? sessionId : null);
-  const shown = useMemo(() => {
-    const current = reviewOrder(decisions);
-    const archived = decisions.find((decision) => decision.id === searchId && decision.state === "superseded");
-    return archived ? [...current, archived] : current;
-  }, [decisions, searchId]);
-  const counts = useMemo(() => tally(decisions), [decisions]);
-  const searchCard = useRef<HTMLLIElement>(null);
-  const found = shown.some((decision) => decision.id === searchId);
-  useEffect(() => {
-    if (isOpen && found) {
-      searchCard.current?.scrollIntoView?.({ block: "nearest" });
-    }
-  }, [isOpen, found, searchId, state.kind]);
+  const { decisions, generation, state, load, verdict } = useDecisions(isOpen ? sessionId : null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const shown = orderDecisions(decisions.filter((item) => item.state !== "superseded" || item.id === searchId));
+  const counts = tally(decisions);
+  const current = shown.find((item) => item.id === (selectedId ?? searchId))
+    ?? shown.find((item) => item.state === "pending")
+    ?? shown[0];
+  const position = current ? shown.indexOf(current) : -1;
+  const heading = useRef<HTMLHeadingElement>(null);
+  const scrollArea = useRef<HTMLDivElement>(null);
 
-  async function verdict(decision: Decision, next: DecisionState, comment: string | null) {
+  useEffect(() => {
+    setSelectedId(null);
+  }, [isOpen, sessionId, searchId]);
+
+  useEffect(() => {
+    if (isOpen && state.kind === "ready" && heading.current) {
+      if (scrollArea.current) scrollArea.current.scrollTop = 0;
+      heading.current.focus({ preventScroll: true });
+    }
+  }, [isOpen, current?.id, state.kind]);
+
+  async function submitVerdict(decision: Decision, next: DecisionState, comment: string | null) {
     try {
-      const updated = await decisionSetState(decision.id, next, comment);
-      setDecisions((list) => list.map((item) => (item.id === updated.id ? updated : item)));
+      await verdict(decision, next, comment);
+      const target = next === "pending" ? decision.id : nextPendingDecision(shown, decision.id) ?? decision.id;
+      setSelectedId((selected) => selected === null || selected === decision.id ? target : selected);
     } catch (err) {
       onError(errorText(err));
       throw err;
@@ -157,7 +211,7 @@ export function DecisionsReview({
         </StateMessage>
       );
     }
-    if (shown.length === 0) {
+    if (!current) {
       return (
         <StateMessage
           text={
@@ -170,20 +224,29 @@ export function DecisionsReview({
       );
     }
     return (
-      <ol className="flex flex-col gap-4">
-        {shown.map((decision) => (
+      <>
+        <nav aria-label="Decision navigation" className="flex items-center justify-end gap-1 text-small text-cg-muted-strong">
+          <Button aria-label="Previous decision" disabled={position <= 0} variant="icon" onClick={() => setSelectedId(shown[position - 1].id)}>
+            <ChevronLeft aria-hidden="true" size={16} />
+          </Button>
+          <span aria-live="polite" className="px-1 tabular-nums">{position + 1} / {shown.length}</span>
+          <Button aria-label="Next decision" disabled={position >= shown.length - 1} variant="icon" onClick={() => setSelectedId(shown[position + 1].id)}>
+            <ChevronRight aria-hidden="true" size={16} />
+          </Button>
+        </nav>
+        <ol>
           <DecisionCard
-            key={decision.id}
-            cardRef={decision.id === searchId ? searchCard : undefined}
-            decision={decision}
+            key={current.id}
+            headingRef={heading}
+            decision={current}
             onOpenFile={(path, line) => {
               onClose();
               onOpenFile(path, line);
             }}
-            onVerdict={(next, comment) => verdict(decision, next, comment)}
+            onVerdict={(next, comment) => submitVerdict(current, next, comment)}
           />
-        ))}
-      </ol>
+        </ol>
+      </>
     );
   }
 
@@ -192,7 +255,7 @@ export function DecisionsReview({
   return (
     <Dialog className="h-full max-h-none w-full max-w-none rounded-none border-0" isOpen={isOpen} label="Decisions" size="full" onClose={onClose}>
       <div className="flex h-full min-h-0 w-full flex-col">
-        <header className="flex flex-none items-center gap-3 border-b border-cg-line px-8 py-3.5">
+        <header className="flex flex-none items-center gap-3 border-b border-cg-line px-4 py-3.5 sm:px-8">
           <Scale aria-hidden="true" className="text-cg-muted-strong" size={16} />
           <h1 className="text-ui font-semibold text-cg-ink">Decisions</h1>
           {counts.total > 0 ? (
@@ -204,8 +267,8 @@ export function DecisionsReview({
             <X aria-hidden="true" size={16} />
           </Button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[720px] flex-col gap-5 px-8 pt-8 pb-12">
+        <div ref={scrollArea} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-[640px] flex-col gap-5 px-4 pt-8 pb-12 sm:px-8">
             {done ? (
               <p className="rounded-cg-md bg-cg-tint px-4 py-3 text-small leading-5 text-cg-ink" role="status">
                 {counts.rejected > 0
@@ -222,16 +285,19 @@ export function DecisionsReview({
 }
 
 function DecisionCard({
-  cardRef,
+  headingRef,
   decision,
+  inline = false,
   onVerdict,
   onOpenFile,
 }: {
-  cardRef?: React.Ref<HTMLLIElement>;
+  headingRef?: React.Ref<HTMLHeadingElement>;
   decision: Decision;
+  inline?: boolean;
   onVerdict: (state: DecisionState, comment: string | null) => Promise<void>;
-  onOpenFile: (path: string, line: number | null) => void;
+  onOpenFile?: (path: string, line: number | null) => void;
 }) {
+  const commentId = useId();
   const [rejecting, setRejecting] = useState(false);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
@@ -258,7 +324,11 @@ function DecisionCard({
   }
 
   return (
-    <li ref={cardRef} className={`flex flex-col gap-3 rounded-cg-lg border px-5 py-4 ${settled ? "border-cg-line" : "border-cg-line-strong"} ${cardRef ? "outline-1 outline-cg-accent" : ""}`}>
+    <li
+      className={`flex min-w-0 flex-col [overflow-wrap:anywhere] ${
+        inline ? "gap-3 py-3 first:pt-0 last:pb-0" : "gap-4 pb-6"
+      }`}
+    >
       <div className="flex items-center gap-2 text-small text-cg-muted-strong">
         <span className="font-mono">#{decision.seq}</span>
         <span>{KIND_LABEL[decision.kind]}</span>
@@ -266,7 +336,9 @@ function DecisionCard({
           <StateMark state={decision.state} />
         </span>
       </div>
-      <h2 className="text-body leading-snug font-semibold text-cg-ink">{decision.title}</h2>
+      <h2 ref={headingRef} tabIndex={inline ? undefined : -1} className={`leading-snug font-semibold text-cg-ink ${inline ? "text-body" : "text-title"}`}>
+        {decision.title}
+      </h2>
       <p className="text-ui leading-6 text-cg-ink">{decision.summary}</p>
       {decision.context ? (
         <p className="text-ui leading-6 text-cg-muted-strong">
@@ -290,18 +362,21 @@ function DecisionCard({
           ))}
         </ul>
       ) : null}
-      {decision.refs.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
+      {onOpenFile && decision.refs.length > 0 ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
           {decision.refs.map((ref) => (
             <button
               key={refLabel(ref)}
-              className="inline-flex items-center gap-1 rounded-cg-sm border border-cg-line px-2 py-0.5 font-mono text-small text-cg-muted-strong hover:border-cg-line-strong hover:text-cg-ink"
-              title="Open in Code"
+              aria-label={`Open ${refLabel(ref)} in Code`}
+              className={`inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-cg-sm font-mono text-small text-cg-muted-strong hover:text-cg-ink ${
+                inline ? "py-1 underline-offset-4 hover:underline" : "border border-cg-line px-2 py-0.5 hover:border-cg-line-strong"
+              }`}
+              title={refLabel(ref)}
               type="button"
               onClick={() => onOpenFile(ref.path, ref.start_line)}
             >
-              <FileCode aria-hidden="true" size={12} />
-              {refLabel(ref)}
+              <FileCode aria-hidden="true" className="shrink-0" size={13} />
+              <span className="min-w-0 truncate">{inline ? refLabel(ref).split("/").at(-1) : refLabel(ref)}</span>
             </button>
           ))}
         </div>
@@ -318,13 +393,13 @@ function DecisionCard({
             }
           }}
         >
-          <label className="text-small font-medium text-cg-ink" htmlFor={`reject-${decision.id}`}>
+          <label className="text-small font-medium text-cg-ink" htmlFor={commentId}>
             Why do you reject it? The agent gets this comment.
           </label>
           <textarea
             ref={field}
             className="min-h-[72px] w-full resize-y rounded-cg-md border border-cg-control bg-cg-panel px-3 py-2 text-ui leading-6 text-cg-ink placeholder:text-cg-muted focus:border-cg-ink"
-            id={`reject-${decision.id}`}
+            id={commentId}
             placeholder="What should be different"
             required
             value={comment}
@@ -340,7 +415,7 @@ function DecisionCard({
               }
             }}
           />
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button disabled={busy} variant="quiet" onClick={() => setRejecting(false)}>
               Cancel
             </Button>

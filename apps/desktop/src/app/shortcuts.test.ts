@@ -53,6 +53,15 @@ describe("shortcuts", () => {
     });
   });
 
+  it("opens the memory graph with Ctrl/Cmd+Shift+G, except inside the editor and with a dialog open", () => {
+    expect(resolveShortcut(press("g", { metaKey: true, shiftKey: true }), idle)).toEqual({ type: "memory" });
+    expect(resolveShortcut(press("G", { ctrlKey: true, shiftKey: true }, el("<textarea></textarea>")), idle)).toEqual({ type: "memory" });
+    expect(resolveShortcut(press("g", { metaKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("g", { metaKey: true, shiftKey: true }), { ...idle, overlay: true })).toBeNull();
+    const editor = el('<div class="monaco-editor"><textarea></textarea></div>');
+    expect(resolveShortcut(press("g", { metaKey: true, shiftKey: true }, editor.firstElementChild), idle)).toBeNull();
+  });
+
   it("opens the tasks panel with Ctrl/Cmd+T, leaving Control+T to the shell in the terminal", () => {
     expect(resolveShortcut(press("t", { metaKey: true }), idle)).toEqual({ type: "tasks" });
     expect(resolveShortcut(press("t", { ctrlKey: true }, el("<textarea></textarea>")), idle)).toEqual({ type: "tasks" });

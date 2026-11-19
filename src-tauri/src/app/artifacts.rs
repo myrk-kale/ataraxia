@@ -299,6 +299,7 @@ impl Engine {
                 session_id: session.id,
                 checkpoint_id: checkpoint.id,
                 artifact_id: Some(artifact.id),
+                turn_id: None,
                 seq,
                 kind: draft.kind,
                 title: draft.title.clone(),

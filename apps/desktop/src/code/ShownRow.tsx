@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Tip } from "../ui/Overlay";
@@ -13,11 +14,13 @@ export function ShownRow({
   hint,
   refreshHint,
   onRefresh,
+  children,
 }: {
   text: string;
   hint: string;
   refreshHint: string;
   onRefresh: () => void;
+  children?: ReactNode;
 }) {
   return (
     <div className="flex min-w-0 items-center gap-1">
@@ -29,6 +32,7 @@ export function ShownRow({
         <span className="sr-only">Showing: </span>
         {text}
       </p>
+      {children}
       <Tip className="inline-flex flex-none" label={refreshHint}>
         <Button aria-label="Refresh checkpoint" className="flex-none" variant="icon" onClick={onRefresh}>
           <RefreshCw aria-hidden="true" size={14} />

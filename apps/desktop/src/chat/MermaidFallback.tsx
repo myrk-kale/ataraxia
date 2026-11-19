@@ -68,7 +68,7 @@ function cachedDrawing(source: string): string | null {
 }
 
 /** Bumps when the app's theme changes, so diagrams are drawn again in its colours. */
-function useThemeSignal(): number {
+export function useThemeSignal(): number {
   const [signal, setSignal] = useState(0);
   useEffect(() => {
     const observer = new MutationObserver(() => setSignal((value) => value + 1));

@@ -87,7 +87,7 @@ fn map_artifact(row: &Row<'_>) -> rusqlite::Result<Artifact> {
 
 const DECISION_COLUMNS: &str = "id, session_id, checkpoint_id, artifact_id, seq, kind, title, \
      summary, context, rationale, alternatives_json, refs_json, state, version, superseded_by, \
-     created_at, updated_at, opened_by";
+     created_at, updated_at, opened_by, turn_id";
 
 fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
     let artifact_id = match row.get::<_, Option<String>>(3)? {
@@ -103,6 +103,12 @@ fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
         session_id: SessionId(uuid(&row.get::<_, String>(1)?)?),
         checkpoint_id: CheckpointId(uuid(&row.get::<_, String>(2)?)?),
         artifact_id,
+        turn_id: row
+            .get::<_, Option<String>>(18)?
+            .as_deref()
+            .map(uuid)
+            .transpose()?
+            .map(crate::domain::ids::TurnId),
         seq: row.get(4)?,
         kind: DecisionKind::parse_lenient(&row.get::<_, String>(5)?),
         title: row.get(6)?,
@@ -403,7 +409,7 @@ impl InsightStore for SqliteStore {
             conn.execute(
                 &format!(
                     "INSERT INTO decisions ({DECISION_COLUMNS})
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
                 ),
                 params![
                     d.id.0.to_string(),
@@ -423,7 +429,8 @@ impl InsightStore for SqliteStore {
                     d.superseded_by.map(|id| id.0.to_string()),
                     d.created_at,
                     d.updated_at,
-                    d.opened_by
+                    d.opened_by,
+                    d.turn_id.map(|id| id.0.to_string())
                 ],
             )
             .map_err(db)?;

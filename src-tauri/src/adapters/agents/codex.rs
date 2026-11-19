@@ -139,6 +139,11 @@ fn thread_start_params(
     params
 }
 
+#[cfg(test)]
+pub(super) fn codex_mcp_servers_for_test(servers: &Map<String, Value>) -> Map<String, Value> {
+    codex_mcp_servers(servers)
+}
+
 fn codex_mcp_servers(servers: &Map<String, Value>) -> Map<String, Value> {
     servers
         .iter()
@@ -170,6 +175,12 @@ impl AgentBackend for CodexBackend {
     }
 
     fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+        Ok(Arc::new(self.start_session(ctx)?))
+    }
+}
+
+impl CodexBackend {
+    fn start_session(&self, ctx: BackendContext) -> Result<CodexSession> {
         let (program, args) = self
             .command(ctx.launch.as_ref())
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
@@ -192,6 +203,7 @@ impl AgentBackend for CodexBackend {
             api_env(ctx.session_id, ctx.api.as_ref()),
             ctx.launch.as_ref(),
         );
+        let mcp_servers = codex_mcp_servers(&ctx.config.mcp_servers);
         let mut has_isolated_home = false;
         if let Some(config_path) = &ctx.config.mcp_config_path {
             if let Some(root) = config_path.parent() {
@@ -208,6 +220,7 @@ impl AgentBackend for CodexBackend {
                 let isolated = prepare_isolated_home(
                     &root.join(ctx.session_id.0.to_string()).join("codex-home"),
                     auth_file.as_deref(),
+                    &mcp_servers,
                 )?;
                 env.push(("CODEX_HOME".into(), isolated.to_string_lossy().into_owned()));
                 has_isolated_home = true;
@@ -264,7 +277,9 @@ impl AgentBackend for CodexBackend {
                 &ctx.extra_dirs,
                 ctx.api.is_some(),
             );
-            params["config"]["mcp_servers"] = json!(codex_mcp_servers(&ctx.config.mcp_servers));
+            if !has_isolated_home {
+                params["config"]["mcp_servers"] = json!(mcp_servers);
+            }
             // The thread of the last run, if Codex still has it; a thread that never got a
             // message has nothing saved, and then a new one begins.
             if let Some(wanted) = ctx.resume.as_deref() {
@@ -307,12 +322,12 @@ impl AgentBackend for CodexBackend {
             client.kill();
             return Err(Error::new(ErrorCode::Agent, message));
         }
-        Ok(Arc::new(CodexSession {
+        Ok(CodexSession {
             shared,
             cwd: ctx.cwd,
             models: OnceLock::new(),
             resumed,
-        }))
+        })
     }
 }
 
@@ -2305,6 +2320,65 @@ mod tests {
         assert_eq!(unknown[0]["text"], "/nothing-like-this at all");
         assert_eq!(unknown.as_array().map(Vec::len), Some(1));
         assert_eq!(path[0]["text"], "echo /etc/hosts please");
+    }
+
+    #[test]
+    #[ignore = "needs the codex CLI and python3"]
+    fn the_real_codex_discovers_and_calls_the_configured_mcp() {
+        use super::super::config::AgentConfiguration;
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().canonicalize().unwrap();
+        let session = CodexBackend::new()
+            .start_session(BackendContext {
+                launch: Some(Launch {
+                    env: vec![("CODEX_HOME".into(), cwd.join("account").display().to_string())],
+                    ..Launch::default()
+                }),
+                read_only: true,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: cwd.clone(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                config: AgentConfiguration {
+                    mcp_config_path: Some(cwd.join("agent-config/session.mcp.json")),
+                    mcp_servers: serde_json::from_value(json!({
+                        "ataraxia.probe": {
+                            "command": "python3",
+                            "args": [concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_probe.py")]
+                        }
+                    })).unwrap(),
+                    ..AgentConfiguration::default()
+                },
+                emit: Arc::new(|_| {}),
+            })
+            .expect("start real Codex");
+        let client = session.shared.client.get().unwrap();
+        let status = client.request(
+            "mcpServerStatus/list",
+            json!({"detail": "toolsAndAuthOnly"}),
+            Some(HANDSHAKE_TIMEOUT),
+        );
+        let result = client.request(
+            "mcpServer/tool/call",
+            json!({
+                "threadId": session.conversation().unwrap(),
+                "server": "ataraxia.probe",
+                "tool": "probe",
+                "arguments": {}
+            }),
+            Some(HANDSHAKE_TIMEOUT),
+        );
+        session.shutdown();
+        let status = status.expect("list process-wide MCP tools");
+        assert_eq!(status["data"][0]["name"], "ataraxia.probe");
+        assert!(status["data"][0]["tools"]["probe"].is_object(), "{status}");
+        let result = result.expect("call the MCP tool in the active thread");
+        assert_eq!(result["content"][0]["text"], "ataraxia-mcp-ok");
     }
 
     /// Codex's own skills show up as commands. Needs `codex` installed

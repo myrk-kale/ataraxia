@@ -116,7 +116,19 @@ so it can read what was said before.
 
 Every agent is also told what Ataraxia is. Only after you agree to decisions, flows or review comments does
 it read its guide, which explains a small HTTP API that Ataraxia serves on localhost while it runs. The
-agent calls it from bash with curl, and its token belongs to that one chat.
+agent calls it from bash with curl, and its token belongs to that one chat. Memory is the exception: it has
+tools of its own, which the agent uses as it works.
+
+## Let the agents remember
+
+Claude Code, Codex and OpenCode share one memory, and it outlives any chat. Before a task they search it, and
+they save what is worth keeping: a preference or a correction you gave, a decision and why, a cause they
+verified, a workflow that works here. Each memory is a note with a kind (semantic, episodic, procedural or
+working), a scope (yours, or one workspace's), and links to other memories (supports, contradicts, supersedes,
+caused by and more), so the notes make a graph. When two memories disagree the agent asks you which is
+right and then fixes it. The graph opens from the header (`Ctrl/Cmd+Shift+G`), and Settings > Memory lets you
+read, edit, link and delete every memory, or switch the whole thing off. A memory never holds a password or a
+key, and it stays in the local database.
 
 ## Make it yours
 

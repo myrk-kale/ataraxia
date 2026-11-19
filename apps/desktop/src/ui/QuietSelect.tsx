@@ -42,6 +42,10 @@ interface QuietSelectProps {
   /** Extra content at the bottom of the list; `close` dismisses the popover. */
   footer?: (close: () => void) => ReactNode;
   className?: string;
+  /** `chip` is a rounded pill with a border, for a row of filters; the default reads as plain text. */
+  variant?: "plain" | "chip";
+  /** A chip whose value is not the default, so the filter in force is easy to see. */
+  highlighted?: boolean;
   disabled?: boolean;
   title?: string;
   /** A tick when another option is chosen, for the pickers whose choice changes what the agent does. */
@@ -69,6 +73,8 @@ export function QuietSelect({
   searchable = false,
   footer,
   className = "",
+  variant = "plain",
+  highlighted = false,
   disabled,
   title,
   sound = false,
@@ -193,7 +199,15 @@ export function QuietSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={ariaLabel}
-        className={`inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-cg-sm py-1.5 outline-none hover:text-cg-ink focus-visible:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+        className={`inline-flex min-w-0 cursor-pointer items-center gap-1 outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+          variant === "chip"
+            ? `rounded-full border px-3 py-1.5 text-small focus-visible:outline-2 focus-visible:outline-cg-accent ${
+                highlighted
+                  ? "border-cg-accent bg-cg-accent-bg text-cg-ink"
+                  : "border-cg-line bg-transparent text-cg-muted-strong hover:border-cg-control hover:text-cg-ink"
+              }`
+            : "rounded-cg-sm py-1.5 hover:text-cg-ink focus-visible:text-cg-ink"
+        } ${className}`}
         disabled={disabled}
         title={title}
         type="button"

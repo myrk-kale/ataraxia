@@ -1,5 +1,5 @@
 //! Speech to text, on this computer: what the person says into the message field becomes text with
-//! Whisper (the `large-v3-turbo` model), which is built into the app (whisper.cpp). Nothing is
+//! Whisper, which is built into the app (whisper.cpp, on the GPU where there is one). Nothing is
 //! sent anywhere to be understood: the recording is read from memory, and the only download is the
 //! model itself, once, when the person agrees to it.
 //!
@@ -14,7 +14,9 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 use crate::adapters::agents::process::{enriched_path, resolve_program};
 use crate::domain::{Error, ErrorCode, Result, parse_command};
@@ -22,6 +24,7 @@ use crate::domain::{Error, ErrorCode, Result, parse_command};
 /// Preference keys under which the person's choices are kept.
 pub const PREF_COMMAND: &str = "speech.command";
 pub const PREF_LANGUAGE: &str = "speech.language";
+pub const PREF_MODEL: &str = "speech.model";
 
 /// A recording longer than this is refused: a message, not a lecture.
 const MAX_WAV_BYTES: usize = 40 * 1024 * 1024;
@@ -29,14 +32,57 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 /// A model kept in memory is let go of after this long without use.
 const KEEP_LOADED: Duration = Duration::from_secs(300);
 
-/// The model: Whisper large-v3-turbo, quantised to 5 bits so it is a bit over half a gigabyte.
-pub const MODEL_FILE: &str = "ggml-large-v3-turbo-q5_0.bin";
-pub const MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
-/// What the download says it weighs, for the person to read before agreeing.
-pub const MODEL_MEGABYTES: u64 = 574;
-/// Anything smaller than this is not the model (a failed download, an error page).
-const MIN_MODEL_BYTES: u64 = 400 * 1024 * 1024;
+/// A Whisper model the person can listen with.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Model {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+    /// What the download says it weighs, for the person to read before agreeing.
+    pub megabytes: u64,
+    /// Anything smaller than this is not the model (a failed download, an error page).
+    min_bytes: u64,
+}
+
+/// What can be listened with, lightest first. Both are quantised: the weights are stored in 5
+/// bits, which costs almost nothing in what is understood and a lot in size and memory.
+pub const MODELS: &[Model] = &[
+    Model {
+        id: "fast",
+        name: "Fast (small)",
+        file: "ggml-small-q5_1.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
+        megabytes: 190,
+        min_bytes: 150 * 1024 * 1024,
+    },
+    Model {
+        id: "accurate",
+        name: "Accurate (large-v3-turbo)",
+        file: "ggml-large-v3-turbo-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        megabytes: 574,
+        min_bytes: 400 * 1024 * 1024,
+    },
+];
+
+/// The model for someone who has not chosen. On an M4 the small one writes eight seconds of speech
+/// in about 0.4 s and the large-v3-turbo in about 1.5 s, with the same words on a clear recording:
+/// for dictation that is written as it goes, the quick one is the right default.
+pub const DEFAULT_MODEL: &str = "fast";
+
+/// The model named by a saved choice; anything unknown is the default.
+pub fn model_named(id: &str) -> &'static Model {
+    MODELS
+        .iter()
+        .find(|model| model.id == id.trim())
+        .unwrap_or_else(|| {
+            MODELS
+                .iter()
+                .find(|model| model.id == DEFAULT_MODEL)
+                .expect("the default model is listed")
+        })
+}
 
 /// The languages the person can pin Whisper to; empty is "work it out".
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -277,12 +323,14 @@ pub fn transcribe_with_command(program: &Path, args: &[String], wav: &[u8]) -> R
 }
 
 struct Loaded {
-    context: WhisperContext,
+    model: &'static str,
+    state: WhisperState,
     used: Instant,
 }
 
 /// The built-in engine: the model on disk, loaded when first needed and let go of when it has not
-/// been used for a while, since it takes most of a gigabyte of memory.
+/// been used for a while, since it takes a good part of a gigabyte of memory. The decoder's state
+/// is kept with it: making one costs more than listening to a short phrase.
 pub struct Recognizer {
     dir: PathBuf,
     loaded: Mutex<Option<Loaded>>,
@@ -291,7 +339,7 @@ pub struct Recognizer {
 }
 
 impl Recognizer {
-    /// `dir` is where the model is kept.
+    /// `dir` is where the models are kept.
     pub fn new(dir: PathBuf) -> Arc<Self> {
         // Whisper prints a lot to the terminal; the app does not want any of it.
         whisper_rs::install_logging_hooks();
@@ -320,13 +368,13 @@ impl Recognizer {
         this
     }
 
-    pub fn model_path(&self) -> PathBuf {
-        self.dir.join(MODEL_FILE)
+    pub fn model_path(&self, model: &Model) -> PathBuf {
+        self.dir.join(model.file)
     }
 
     /// The model is on disk, whole.
-    pub fn model_ready(&self) -> bool {
-        std::fs::metadata(self.model_path()).is_ok_and(|meta| meta.len() >= MIN_MODEL_BYTES)
+    pub fn model_ready(&self, model: &Model) -> bool {
+        std::fs::metadata(self.model_path(model)).is_ok_and(|meta| meta.len() >= model.min_bytes)
     }
 
     pub fn downloading(&self) -> bool {
@@ -340,8 +388,12 @@ impl Recognizer {
 
     /// Fetches the model into the folder, resuming a download that was interrupted. `progress` is
     /// told how much has arrived and how much there is, when the server says.
-    pub fn download(&self, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
-        if self.model_ready() {
+    pub fn download(
+        &self,
+        model: &Model,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<()> {
+        if self.model_ready(model) {
             return Ok(());
         }
         if self.downloading.swap(true, Ordering::SeqCst) {
@@ -351,22 +403,22 @@ impl Recognizer {
             ));
         }
         self.cancel.store(false, Ordering::SeqCst);
-        let outcome = self.fetch(&mut progress);
+        let outcome = self.fetch(model, &mut progress);
         self.downloading.store(false, Ordering::SeqCst);
         outcome
     }
 
-    fn fetch(&self, progress: &mut impl FnMut(u64, Option<u64>)) -> Result<()> {
+    fn fetch(&self, model: &Model, progress: &mut impl FnMut(u64, Option<u64>)) -> Result<()> {
         let io = |error: std::io::Error| Error::new(ErrorCode::Io, error.to_string());
         std::fs::create_dir_all(&self.dir).map_err(io)?;
-        let part = self.dir.join(format!("{MODEL_FILE}.part"));
+        let part = self.dir.join(format!("{}.part", model.file));
         let have = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(20)))
             .user_agent("ataraxia")
             .build()
             .into();
-        let mut request = agent.get(MODEL_URL);
+        let mut request = agent.get(model.url);
         if have > 0 {
             request = request.header("Range", format!("bytes={have}-"));
         }
@@ -419,81 +471,150 @@ impl Recognizer {
         file.flush().map_err(io)?;
         drop(file);
         progress(received, total);
-        check_model(&part)?;
-        std::fs::rename(&part, self.model_path()).map_err(io)?;
+        check_model(&part, model)?;
+        std::fs::rename(&part, self.model_path(model)).map_err(io)?;
         Ok(())
     }
 
-    /// Turns a recording (16 kHz mono WAV) into text. `language` is an ISO code, or empty to let
-    /// Whisper work it out.
-    pub fn transcribe(&self, wav: &[u8], language: &str) -> Result<String> {
-        let samples = wav_samples(wav)?;
-        if !self.model_ready() {
+    /// Runs `work` on the decoder for `model`, loading the model first if it is not the one held.
+    fn with_decoder<T>(
+        &self,
+        model: &Model,
+        work: impl FnOnce(&mut WhisperState) -> Result<T>,
+    ) -> Result<T> {
+        if !self.model_ready(model) {
             return Err(Error::new(
                 ErrorCode::NotFound,
                 "the speech model is not downloaded yet",
             ));
         }
         let mut loaded = self.loaded.lock();
-        if loaded.is_none() {
-            let path = self.model_path();
-            let context =
-                WhisperContext::new_with_params(&path, WhisperContextParameters::default())
-                    .map_err(|error| {
-                        Error::new(
-                            ErrorCode::Io,
-                            format!("could not load the speech model: {error}"),
-                        )
-                    })?;
+        if loaded.as_ref().is_none_or(|held| held.model != model.id) {
+            // The other model's memory goes back before this one is taken.
+            *loaded = None;
+            let mut params = WhisperContextParameters::default();
+            // Flash attention is what makes the GPU quick at this; on the CPU it is no gain.
+            params.flash_attn(cfg!(target_os = "macos"));
+            let context = WhisperContext::new_with_params(self.model_path(model), params).map_err(
+                |error| {
+                    Error::new(
+                        ErrorCode::Io,
+                        format!("could not load the speech model: {error}"),
+                    )
+                },
+            )?;
+            let state = context.create_state().map_err(|error| {
+                Error::new(ErrorCode::Io, format!("could not start listening: {error}"))
+            })?;
             *loaded = Some(Loaded {
-                context,
+                model: model.id,
+                state,
                 used: Instant::now(),
             });
         }
         let held = loaded.as_mut().expect("loaded above");
-        let mut state = held.context.create_state().map_err(|error| {
-            Error::new(ErrorCode::Io, format!("could not start listening: {error}"))
-        })?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        let language = language.trim();
-        // "auto" makes Whisper work the language out. (`set_detect_language` would make it do only
-        // that, and stop without transcribing.)
-        params.set_language(Some(if language.is_empty() {
-            "auto"
-        } else {
-            language
-        }));
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        let threads = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(4)
-            .min(8);
-        params.set_n_threads(threads as i32);
-        state.full(params, &samples).map_err(|error| {
-            Error::new(
-                ErrorCode::Io,
-                format!("could not make out the recording: {error}"),
-            )
-        })?;
-        let mut text = String::new();
-        for segment in state.as_iter() {
-            if let Ok(piece) = segment.to_str_lossy() {
-                text.push_str(&piece);
-                text.push(' ');
-            }
-        }
+        let outcome = work(&mut held.state);
         held.used = Instant::now();
-        Ok(clean_transcript(&text))
+        outcome
+    }
+
+    /// Loads the model and runs it once on a moment of silence, so the first words that are said
+    /// are not met with the wait for it (loading it, and the GPU preparing its programs).
+    pub fn warm_up(&self, model: &Model) -> Result<()> {
+        self.with_decoder(model, |state| {
+            decode(state, &vec![0.0; SAMPLE_RATE], "", true).map(|_| ())
+        })
+    }
+
+    /// Turns a recording (16 kHz mono WAV) into text. `language` is an ISO code, or empty to let
+    /// Whisper work it out. `quick` is for a preview of something still being said: it answers
+    /// sooner and is less careful than the text that is kept.
+    pub fn transcribe(
+        &self,
+        model: &Model,
+        wav: &[u8],
+        language: &str,
+        quick: bool,
+    ) -> Result<String> {
+        let samples = wav_samples(wav)?;
+        self.with_decoder(model, |state| decode(state, &samples, language, quick))
     }
 }
 
+/// What Whisper listens at, in samples a second.
+const SAMPLE_RATE: usize = 16_000;
+
+/// The threads to listen with. The efficiency cores of Apple silicon slow a parallel run down more
+/// than they help it, and most of the work is on the GPU there anyway.
+fn threads() -> i32 {
+    let cores = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4);
+    cores.min(if cfg!(target_os = "macos") { 4 } else { 8 }) as i32
+}
+
+fn decode(
+    state: &mut WhisperState,
+    samples: &[f32],
+    language: &str,
+    quick: bool,
+) -> Result<String> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let language = language.trim();
+    // "auto" makes Whisper work the language out. (`set_detect_language` would make it do only
+    // that, and stop without transcribing.)
+    params.set_language(Some(if language.is_empty() {
+        "auto"
+    } else {
+        language
+    }));
+    params.set_translate(false);
+    params.set_no_context(true);
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_n_threads(threads());
+    // Whisper looks at 30 s at a time. What is said into a message field is a phrase or two, which
+    // it can write as one piece without working out where each word falls.
+    if samples.len() <= 29 * SAMPLE_RATE {
+        params.set_single_segment(true);
+        params.set_no_timestamps(true);
+    }
+    if quick {
+        // No second tries at other temperatures when the first is unsure: that doubles the wait.
+        // (Shortening the window the encoder looks at would be quicker still, but the big model
+        // answers that with nonsense.)
+        params.set_temperature_inc(0.0);
+    }
+    // Less than a second is too little for it; the quiet that follows is what it wants.
+    let padded;
+    let samples = if samples.len() < SAMPLE_RATE {
+        let mut longer = samples.to_vec();
+        longer.resize(SAMPLE_RATE, 0.0);
+        padded = longer;
+        &padded[..]
+    } else {
+        samples
+    };
+    state.full(params, samples).map_err(|error| {
+        Error::new(
+            ErrorCode::Io,
+            format!("could not make out the recording: {error}"),
+        )
+    })?;
+    let mut text = String::new();
+    for segment in state.as_iter() {
+        if let Ok(piece) = segment.to_str_lossy() {
+            text.push_str(&piece);
+            text.push(' ');
+        }
+    }
+    Ok(clean_transcript(&text))
+}
+
 /// A file that is a Whisper model: big enough, and starting with the `ggml` magic.
-fn check_model(path: &Path) -> Result<()> {
+fn check_model(path: &Path, model: &Model) -> Result<()> {
     let io = |error: std::io::Error| Error::new(ErrorCode::Io, error.to_string());
     let size = std::fs::metadata(path).map_err(io)?.len();
     let mut magic = [0u8; 4];
@@ -501,7 +622,7 @@ fn check_model(path: &Path) -> Result<()> {
         .and_then(|mut file| file.read_exact(&mut magic))
         .map_err(io)?;
     // `ggml` written as a little-endian number, which is how the file starts.
-    if size < MIN_MODEL_BYTES || &magic != b"lmgg" {
+    if size < model.min_bytes || &magic != b"lmgg" {
         let _ = std::fs::remove_file(path);
         return Err(Error::new(
             ErrorCode::Io,
@@ -663,41 +784,54 @@ mod tests {
 
     #[test]
     fn a_file_is_the_model_only_when_it_is_big_and_starts_with_the_magic() {
+        let model = model_named("fast");
         let dir = tempfile::tempdir().unwrap();
         let small = dir.path().join("small.bin");
         std::fs::write(&small, b"lmgg and then not much").unwrap();
-        assert!(check_model(&small).is_err());
+        assert!(check_model(&small, model).is_err());
         assert!(!small.exists(), "a file that is not the model is deleted");
         // A sparse file stands in for the real size.
         let big = dir.path().join("big.bin");
         let mut file = std::fs::File::create(&big).unwrap();
         file.write_all(b"lmgg").unwrap();
-        file.set_len(MIN_MODEL_BYTES + 1).unwrap();
+        file.set_len(model.min_bytes + 1).unwrap();
         drop(file);
-        assert!(check_model(&big).is_ok());
+        assert!(check_model(&big, model).is_ok());
         let wrong = dir.path().join("wrong.bin");
         let mut file = std::fs::File::create(&wrong).unwrap();
         file.write_all(b"<htm").unwrap();
-        file.set_len(MIN_MODEL_BYTES + 1).unwrap();
+        file.set_len(model.min_bytes + 1).unwrap();
         drop(file);
-        assert!(check_model(&wrong).is_err());
+        assert!(check_model(&wrong, model).is_err());
     }
 
     #[test]
     fn the_model_counts_as_ready_only_when_it_is_whole_and_listening_without_it_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let recognizer = Recognizer::new(dir.path().to_path_buf());
-        assert!(!recognizer.model_ready());
-        std::fs::write(recognizer.model_path(), b"truncated").unwrap();
-        assert!(!recognizer.model_ready());
-        let error = recognizer.transcribe(&wav_of(&[0; 4000]), "").unwrap_err();
+        let model = model_named("fast");
+        assert!(!recognizer.model_ready(model));
+        std::fs::write(recognizer.model_path(model), b"truncated").unwrap();
+        assert!(!recognizer.model_ready(model));
+        let error = recognizer
+            .transcribe(model, &wav_of(&[0; 4000]), "", false)
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
         assert!(!recognizer.downloading());
     }
 
-    /// Downloads the real model and listens to a real recording. It is a gigabyte of network and a
-    /// few seconds of CPU, so it only runs when asked for:
-    /// `ATARAXIA_SPEECH_WAV=/path/16k-mono.wav cargo test --lib real_model -- --ignored --nocapture`
+    #[test]
+    fn the_model_is_the_one_chosen_and_the_quick_one_when_nothing_was() {
+        assert_eq!(model_named("").id, "fast");
+        assert_eq!(model_named("nonsense").id, "fast");
+        assert_eq!(model_named("accurate").id, "accurate");
+        assert_eq!(model_named(" fast ").id, "fast");
+    }
+
+    /// Downloads a real model and listens to a real recording, the way dictation does: once as a
+    /// preview, and once for the text that is kept. It is network and CPU, so it only runs when
+    /// asked for (`ATARAXIA_SPEECH_MODEL` is `fast` or `accurate`):
+    /// `ATARAXIA_SPEECH_WAV=/path/16k-mono.wav cargo test --release --lib real_model -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn real_model_downloads_and_listens() {
@@ -706,20 +840,29 @@ mod tests {
         let dir = std::env::var_os("ATARAXIA_SPEECH_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("ataraxia-speech-test"));
+        let model = model_named(&std::env::var("ATARAXIA_SPEECH_MODEL").unwrap_or_default());
+        let language = std::env::var("ATARAXIA_SPEECH_LANGUAGE").unwrap_or_default();
         let recognizer = Recognizer::new(dir);
         let mut last = 0;
         recognizer
-            .download(|received, total| {
+            .download(model, |received, total| {
                 if received / 50_000_000 != last / 50_000_000 {
                     println!("downloaded {received} of {total:?}");
                 }
                 last = received;
             })
             .unwrap();
-        assert!(recognizer.model_ready());
+        assert!(recognizer.model_ready(model));
         let started = Instant::now();
-        let text = recognizer.transcribe(&wav, "").unwrap();
-        println!("heard {text:?} in {:?}", started.elapsed());
-        assert!(!text.is_empty());
+        recognizer.warm_up(model).unwrap();
+        println!("[{}] warm-up {:?}", model.id, started.elapsed());
+        for (what, quick) in [("kept", false), ("preview", true), ("kept", false)] {
+            let started = Instant::now();
+            let text = recognizer
+                .transcribe(model, &wav, &language, quick)
+                .unwrap();
+            println!("[{}] {what}: {text:?} in {:?}", model.id, started.elapsed());
+            assert!(!text.is_empty());
+        }
     }
 }

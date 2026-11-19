@@ -4,9 +4,11 @@
 use std::sync::Arc;
 
 use serde_json::Value;
+use tauri_plugin_opener::OpenerExt;
 
 use super::{AppState, map_error};
 use crate::adapters::agents::resources::{Context, Kind, ResourceList, ResourceManager, SkillText};
+use crate::domain::{Error, ErrorCode};
 
 type Res<T> = std::result::Result<T, String>;
 
@@ -78,6 +80,27 @@ pub fn resources_read_mcp(
     name: String,
 ) -> Res<Value> {
     manager(&state)?.read_mcp(context, &name).map_err(map_error)
+}
+
+#[tauri::command]
+pub async fn resources_sign_in_mcp(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    context: Context,
+    name: String,
+) -> Res<()> {
+    let manager = manager(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        manager
+            .sign_in_mcp(context, &name, |url| {
+                app.opener()
+                    .open_url(url, None::<&str>)
+                    .map_err(|_| Error::new(ErrorCode::Io, "Could not open the MCP sign-in page"))
+            })
+            .map_err(map_error)
+    })
+    .await
+    .map_err(|_| "MCP sign-in was interrupted".to_string())?
 }
 
 #[tauri::command(async)]

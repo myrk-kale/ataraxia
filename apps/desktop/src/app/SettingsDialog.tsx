@@ -8,12 +8,15 @@ import { ProfileSettings } from "./ProfileSettings";
 import { AutocompletePanel } from "./AutocompleteSettings";
 import { VoicePanel } from "./VoiceSettings";
 import { ResourcesSettings } from "./ResourcesSettings";
+import { MemoryPanel } from "../memory/MemoryPanel";
+import type { WorkspaceName } from "../memory/MemoryEditor";
 import type { RepositoryId, WorkspaceId } from "../lib/workspace";
 
 const TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "profiles", label: "Agent profiles" },
   { id: "resources", label: "Skills & MCP" },
+  { id: "memory", label: "Memory" },
   { id: "autocomplete", label: "Autocomplete" },
   { id: "voice", label: "Voice" },
   { id: "sound", label: "Sound" },
@@ -27,6 +30,8 @@ export function SettingsDialog({
   provider,
   workspace = null,
   repository = null,
+  workspaces = [],
+  onOpenMemoryGraph,
   onClose,
 }: {
   isOpen: boolean;
@@ -34,6 +39,10 @@ export function SettingsDialog({
   /** The workspace and repository the app is looking at: the scopes the skills manager can edit besides global. */
   workspace?: { id: WorkspaceId; name: string } | null;
   repository?: { id: RepositoryId; name: string } | null;
+  /** Every workspace, so a memory can be put in one and its scope read by name. */
+  workspaces?: readonly WorkspaceName[];
+  /** Closes Settings and opens the graph of memories. */
+  onOpenMemoryGraph?: () => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
@@ -101,6 +110,17 @@ export function SettingsDialog({
             {tab === "profiles" ? <ProfileSettings /> : null}
 
             {tab === "resources" ? <ResourcesSettings repository={repository} workspace={workspace} /> : null}
+
+            {tab === "memory" ? (
+              <MemoryPanel
+                currentWorkspaceId={workspace?.id ?? null}
+                workspaces={workspaces}
+                onOpenGraph={() => {
+                  onClose();
+                  onOpenMemoryGraph?.();
+                }}
+              />
+            ) : null}
 
             {tab === "autocomplete" ? <AutocompletePanel /> : null}
 

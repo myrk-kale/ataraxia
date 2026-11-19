@@ -11,6 +11,7 @@ pub mod fake;
 pub mod guide;
 pub mod handoff;
 pub mod host;
+mod mcp_oauth;
 pub mod opencode;
 pub mod process;
 pub mod process_tree;

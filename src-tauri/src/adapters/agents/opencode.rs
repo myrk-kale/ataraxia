@@ -402,12 +402,13 @@ fn acp_mcp_servers(
             entry.insert("name".into(), Value::String(name.clone()));
             if let Some(command) = config.get("command").and_then(Value::as_str) {
                 entry.insert("command".into(), Value::String(command.to_string()));
-                if let Some(args) = config.get("args").and_then(Value::as_array) {
-                    entry.insert("args".into(), Value::Array(args.clone()));
-                }
-                if let Some(env) = config.get("env") {
-                    entry.insert("env".into(), acp_pairs(env, "env", name)?);
-                }
+                let args = config.get("args").cloned().unwrap_or_else(|| json!([]));
+                entry.insert("args".into(), args);
+                let env = match config.get("env") {
+                    Some(env) => acp_pairs(env, "env", name)?,
+                    None => json!([]),
+                };
+                entry.insert("env".into(), env);
             } else if let Some(url) = config.get("url").and_then(Value::as_str) {
                 let transport = config
                     .get("type")
@@ -1559,7 +1560,7 @@ mod tests {
                 "cwd": "tools/mcp",
                 "env": { "TOKEN": "secret" }
             },
-            "default-cwd": { "command": "python", "args": ["server.py"] }
+            "default-cwd": { "command": "mcp-server" }
         });
         let servers = servers.as_object().expect("MCP server map");
 
@@ -1578,6 +1579,8 @@ mod tests {
         let acp = acp_mcp_servers(servers, true, true).expect("ACP config");
         assert_eq!(acp.len(), 1);
         assert_eq!(acp[0]["name"], "default-cwd");
+        assert_eq!(acp[0]["args"], json!([]));
+        assert_eq!(acp[0]["env"], json!([]));
     }
 
     #[test]
@@ -1597,6 +1600,72 @@ mod tests {
         // Never over ACP: an agent without the HTTP transport would refuse the whole session.
         let acp = acp_mcp_servers(servers, false, false).expect("ACP config");
         assert!(acp.is_empty());
+    }
+
+    #[test]
+    #[ignore = "needs the opencode CLI and python3"]
+    fn the_real_opencode_discovers_stdio_mcp_without_optional_env() {
+        use super::super::config::AgentConfiguration;
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().canonicalize().unwrap();
+        let report = cwd.join("mcp-probe.log");
+        let session = OpenCodeBackend::new()
+            .start(BackendContext {
+                launch: Some(Launch {
+                    env: vec![
+                        (
+                            "XDG_DATA_HOME".into(),
+                            cwd.join("data").display().to_string(),
+                        ),
+                        (
+                            "XDG_CACHE_HOME".into(),
+                            cwd.join("cache").display().to_string(),
+                        ),
+                        (
+                            "XDG_STATE_HOME".into(),
+                            cwd.join("state").display().to_string(),
+                        ),
+                    ],
+                    ..Launch::default()
+                }),
+                read_only: false,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: cwd.clone(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                config: AgentConfiguration {
+                    mcp_config_path: Some(cwd.join("agent-config/session.mcp.json")),
+                    mcp_servers: serde_json::from_value(json!({
+                        "ataraxia-probe": {
+                            "command": "python3",
+                            "args": [
+                                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_probe.py"),
+                                report
+                            ]
+                        }
+                    }))
+                    .unwrap(),
+                    ..AgentConfiguration::default()
+                },
+                emit: Arc::new(|_| {}),
+            })
+            .expect("start real OpenCode");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut discovered = false;
+        while std::time::Instant::now() < deadline {
+            if std::fs::read_to_string(&report).as_deref().ok() == Some("tools/list") {
+                discovered = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        session.shutdown();
+        assert!(discovered, "OpenCode did not request tools/list");
     }
 
     fn mock_backend() -> OpenCodeBackend {

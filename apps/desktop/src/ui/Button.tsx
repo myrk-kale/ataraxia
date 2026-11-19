@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
 
 type Variant = "primary" | "secondary" | "quiet" | "danger" | "icon";
 type Size = "md" | "sm";
@@ -30,7 +30,7 @@ export function Button({
   className = "",
   type = "button",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }) {
+}: ComponentPropsWithRef<"button"> & { variant?: Variant; size?: Size }) {
   // A quiet button is a secondary action next to content, so it defaults to the compact size.
   const resolved: Size = size ?? (variant === "quiet" ? "sm" : "md");
   const padding = variant === "icon" ? "" : SIZES[resolved];

@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "ataraxia-ide"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -200,6 +200,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "time",
+ "toml 0.9.12+spec-1.1.0",
  "tree-sitter",
  "tree-sitter-go",
  "tree-sitter-java",
@@ -208,6 +209,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "ureq",
+ "url",
  "uuid",
  "whisper-rs",
 ]

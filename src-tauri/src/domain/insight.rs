@@ -301,6 +301,8 @@ pub struct Decision {
     pub session_id: SessionId,
     pub checkpoint_id: CheckpointId,
     pub artifact_id: Option<ArtifactId>,
+    #[serde(default)]
+    pub turn_id: Option<super::ids::TurnId>,
     pub seq: u32,
     pub kind: DecisionKind,
     pub title: String,
@@ -537,6 +539,8 @@ pub enum InsightEvent {
         session_id: SessionId,
         schedules: Vec<crate::domain::Schedule>,
     },
+    /// An agent changed what is remembered: an open memory view reloads.
+    Memories,
 }
 
 /// A named piece of code found by a parser: the unit a change is attributed to.

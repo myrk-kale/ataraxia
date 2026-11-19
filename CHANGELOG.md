@@ -6,6 +6,41 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-18
+
+### Added
+
+- Agent memory: Claude Code, Codex and OpenCode now share one memory that outlives any chat. Every
+  chat gets an `ataraxia` MCP server with `memory_search`, `memory_get`, `memory_create`,
+  `memory_update`, `memory_delete`, `memory_link`, `memory_unlink` and `memory_merge`. The agent is
+  told to search before a task and to save what is worth keeping (a preference, a decision and its
+  reason, a verified cause, a workflow) without asking. When memories disagree it asks you which is
+  right and settles it. A memory has a kind (semantic, episodic, procedural, working), a scope
+  (global, or one workspace) and a source (you said it, the agent verified it, the agent inferred
+  it); only your own words can go to the global scope. A memory that looks like a password or a key
+  is refused. It is on by default and can be switched off in Settings > Memory.
+- The memory is a graph: memories link to each other as relates to, part of, depends on, caused by,
+  supports, contradicts, supersedes or example of. The graph opens from a new icon in the header
+  (`Ctrl/Cmd+Shift+G`), with filters, search, draggable nodes, conflicts in amber, and a panel to
+  read, edit, link and delete a memory. Settings > Memory lists the same memories, and what an
+  agent writes shows up as it happens. Deleting a workspace deletes the memories of that workspace.
+- SVG in the chat: a fenced `svg` block in a reply is drawn as a picture, in the colours of the
+  current theme. The agent is taught to use it for concept maps, mind maps and sketches that explain
+  better than words. It is shown as an image, so nothing in it can run or load, and it has Expand,
+  Code and Copy buttons.
+- Dictation writes as you speak: each phrase lands in the field when you pause, what you are still
+  saying shows live, and the recording ends by itself after about 0.75 s of silence. A new recording
+  indicator shows the sound, the time and how close the pause is to ending it.
+
+### Changed
+
+- Dictation is several times faster on Apple silicon (the speech engine now uses the GPU) and
+  uses the small Whisper model (190 MB) by default. The large-v3-turbo model stays available in
+  Settings > Voice.
+- A diagram asked for with no kind is a Mermaid diagram; a Flow diagram only when you say Flow.
+- The search palette is redone: filter chips instead of select boxes, an icon per result type, the
+  searched words highlighted, and arrow keys that move a highlight while you keep typing.
+
 ## [0.13.0] - 2026-11-18
 
 ### Added

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "../lib/agent";
-import { estimateRow, GROUP_GAP, toRows, TURN_GAP } from "./rows";
+import type { Decision } from "../lib/insights";
+import { estimateRow, GROUP_GAP, toRows, TURN_GAP, withDecisionRows } from "./rows";
 
 const user = (id: string, text = id): ChatItem => ({ kind: "message", id, role: "user", text, turnId: null });
 const agent = (id: string, text = id): ChatItem => ({ kind: "message", id, role: "assistant", text, turnId: "t" });
@@ -48,6 +49,30 @@ describe("toRows", () => {
     const first = agent("a1");
     const rows = toRows([user("u1"), first], -1);
     expect(rows[1].item).toBe(first);
+  });
+});
+
+describe("decision rows", () => {
+  const decision = (seq: number, turn_id?: string): Decision => ({
+    id: `d${seq}`, session_id: "s", checkpoint_id: "cp", artifact_id: null, turn_id, seq, kind: "ux",
+    title: "Decision", summary: "Summary", context: "", rationale: "", alternatives: [], refs: [],
+    state: "approved", version: 1, superseded_by: null, opened_by: "agent", created_at: "", updated_at: "",
+  });
+  const report = user("report", "[Decision review, sent by Ataraxia when the developer finished reviewing the decisions.]\n- Approved #2: Earlier decision");
+
+  it("keeps the request and places the decisions after the creating turn and before later messages", () => {
+    const request = { ...user("request", "Generate decisions"), turnId: "t" };
+    const transcript = toRows([request, tool("create"), agent("answer"), report], -1);
+    const result = withDecisionRows(transcript, [decision(2, "t"), decision(3, "t")], false);
+    expect(result.map(({ key }) => key)).toEqual(["request", "create", "answer", "decisions:t", "report"]);
+    expect(result[0]).toMatchObject({ item: request });
+    expect(result[3]).toMatchObject({ decisions: [{ seq: 2 }, { seq: 3 }] });
+  });
+
+  it("places older decisions before their first review report", () => {
+    const transcript = toRows([user("request"), agent("answer"), report, agent("later")], -1);
+    expect(withDecisionRows(transcript, [decision(2)], false).map(({ key }) => key))
+      .toEqual(["request", "answer", "decisions:d2", "report", "later"]);
   });
 });
 

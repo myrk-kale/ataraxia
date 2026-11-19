@@ -1084,7 +1084,10 @@ impl AgentHost {
         let mut sent = String::new();
         if guide_intro {
             if let Some(index) = &guide_index {
-                sent.push_str(&guide::preamble(index));
+                sent.push_str(&guide::preamble(
+                    index,
+                    crate::app::memory::enabled(self.inner.store.as_ref()),
+                ));
                 sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
             }
         }
@@ -1658,12 +1661,12 @@ impl AgentRuntime for AgentHost {
             }
             None => AgentConfiguration::default(),
         };
+        let mut agent_config = agent_config;
         let agent_config_preamble = if session.provider == ProviderKind::Claude {
             agent_config.instructions_preamble.clone()
         } else {
             agent_config.preamble.clone()
         };
-        let mcp_servers = agent_config.mcp_servers.clone();
         let skills = agent_config.skills.clone();
 
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
@@ -1697,6 +1700,15 @@ impl AgentRuntime for AgentHost {
             .as_ref()
             .map(|gateway| gateway.issue(session_id, !session.kind.read_only()));
         let api_token = api.as_ref().map(|access| access.token.clone());
+        // The memory tools are an MCP server of the app itself, reached with this chat's token.
+        if let Some(access) = &api
+            && crate::app::memory::enabled(self.inner.store.as_ref())
+            && let Err(error) = agent_config.attach_ataraxia_server(access)
+        {
+            self.inner.revoke(api_token.as_deref());
+            return Err(error);
+        }
+        let mcp_servers = agent_config.mcp_servers.clone();
         // Every other repository of the chat's workspace, as the worktree the chat was made with.
         let extra_dirs: Vec<PathBuf> = self
             .inner

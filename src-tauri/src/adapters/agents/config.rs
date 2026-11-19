@@ -122,7 +122,27 @@ pub struct AgentConfiguration {
     pub skill_roots: Vec<PathBuf>,
 }
 
+/// The name of the MCP server Ataraxia adds to every chat: its tools reach the app itself.
+pub const ATARAXIA_MCP: &str = "ataraxia";
+
 impl AgentConfiguration {
+    /// Adds the `ataraxia` MCP server (the memory tools), reached over the local API with the
+    /// chat's own token, and writes it into the chat's MCP file. It replaces a server a user
+    /// configured under the same name.
+    pub fn attach_ataraxia_server(&mut self, access: &crate::ports::ApiAccess) -> Result<()> {
+        self.mcp_servers.insert(
+            ATARAXIA_MCP.into(),
+            json!({
+                "url": format!("{}/mcp", access.url),
+                "headers": { "Authorization": format!("Bearer {}", access.token) }
+            }),
+        );
+        if let Some(path) = &self.mcp_config_path {
+            write_mcp_config(path, &self.mcp_servers)?;
+        }
+        Ok(())
+    }
+
     pub fn load(
         cwd: &Path,
         session_id: SessionId,
@@ -237,7 +257,10 @@ impl AgentConfiguration {
             root.join("agent-config")
                 .join(format!("{}.mcp.json", session_id.0))
         });
-        if let Some(path) = &mcp_config_path {
+        if let (Some(root), Some(path)) = (data_dir, &mcp_config_path) {
+            for server in servers.values_mut() {
+                super::mcp_oauth::apply(root, server);
+            }
             write_mcp_config(path, &servers)?;
         }
 
@@ -252,27 +275,27 @@ impl AgentConfiguration {
     }
 }
 
-/// Creates a clean Codex home while carrying over only its authentication file.
-pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<PathBuf> {
+/// Writes the session's Codex config while carrying over the selected account's credentials.
+pub fn prepare_isolated_home(
+    root: &Path,
+    auth_source: Option<&Path>,
+    mcp_servers: &Map<String, Value>,
+) -> Result<PathBuf> {
     prepare_private_dir(root)?;
     let codex_config = root.join("config.toml");
-    match fs::symlink_metadata(&codex_config) {
-        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {
-            return Err(Error::new(
-                ErrorCode::Io,
-                format!("{} is not a Codex config file", codex_config.display()),
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(Error::new(
-                ErrorCode::Io,
-                format!("could not inspect {}: {error}", codex_config.display()),
-            ));
-        }
-    }
-    fs::write(&codex_config, "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n").map_err(|error| {
+    let config = toml::to_string(&json!({
+        "project_doc_max_bytes": 0,
+        "features": { "apps": false, "plugins": false, "remote_plugin": false },
+        "mcp_servers": mcp_servers
+    }))
+    .map_err(|_| Error::new(ErrorCode::Invalid, "could not encode Codex configuration"))?;
+    let write_config = || -> std::io::Result<()> {
+        let mut file = tempfile::NamedTempFile::new_in(root)?;
+        file.write_all(config.as_bytes())?;
+        file.persist(&codex_config)?;
+        Ok(())
+    };
+    write_config().map_err(|error| {
         Error::new(
             ErrorCode::Io,
             format!("could not configure {}: {error}", codex_config.display()),
@@ -302,29 +325,32 @@ pub fn prepare_isolated_home(root: &Path, auth_source: Option<&Path>) -> Result<
     }
     if let Some(source) = auth_source.filter(|source| source.is_file()) {
         link_credentials(source, &destination)?;
-        // Remote MCP servers the developer signed in to keep their OAuth tokens here when Codex
-        // stores them in a file instead of the keychain; without it they would need signing in
-        // again for every chat.
-        if let Some(store) = source
-            .parent()
-            .map(|home| home.join(".credentials.json"))
-            .filter(|store| store.is_file())
-        {
-            let target = root.join(".credentials.json");
-            match fs::symlink_metadata(&target) {
-                Ok(metadata) if !metadata.is_dir() => {
-                    let _ = fs::remove_file(&target);
-                }
-                _ => {}
-            }
-            if let Err(error) = link_credentials(&store, &target) {
-                eprintln!(
-                    "ataraxia: Codex MCP sign-ins not carried over: {}",
-                    error.message
-                );
+    }
+    // Codex refreshes file-backed MCP credentials in place and refuses to write through symlinks.
+    let oauth_target = root.join(".credentials.json");
+    let oauth_store = auth_source
+        .and_then(Path::parent)
+        .map(|home| home.join(".credentials.json"));
+    let sync_oauth = || -> std::io::Result<()> {
+        if let Some(source) = oauth_store.filter(|store| store.is_file()) {
+            let mut file = tempfile::NamedTempFile::new_in(root)?;
+            std::io::copy(&mut fs::File::open(source)?, &mut file)?;
+            file.persist(&oauth_target)?;
+        } else {
+            match fs::remove_file(&oauth_target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
         }
-    }
+        Ok(())
+    };
+    sync_oauth().map_err(|error| {
+        Error::new(
+            ErrorCode::Io,
+            format!("could not prepare Codex MCP credentials: {error}"),
+        )
+    })?;
     Ok(root.to_path_buf())
 }
 
@@ -785,24 +811,71 @@ mod tests {
         fs::write(&profile_a, "account-a").expect("write profile A");
         fs::write(&profile_b, "account-b").expect("write profile B");
 
-        prepare_isolated_home(&root.join("home"), Some(&profile_a)).expect("select profile A");
-        assert_eq!(
-            fs::read_to_string(root.join("home/config.toml")).expect("read private config"),
-            "project_doc_max_bytes = 0\n\n[features]\napps = false\nplugins = false\nremote_plugin = false\n"
-        );
+        let servers = Map::new();
+        let oauth = profiles.join(".credentials.json");
+        fs::write(&oauth, "{}").expect("write profile MCP credentials");
+        prepare_isolated_home(&root.join("home"), Some(&profile_a), &servers)
+            .expect("select profile A");
+        let config =
+            fs::read_to_string(root.join("home/config.toml")).expect("read private config");
+        let config: toml::Table = toml::from_str(&config).expect("parse private config");
+        assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
+        assert_eq!(config["features"]["plugins"].as_bool(), Some(false));
+        let oauth_target = root.join("home/.credentials.json");
+        assert!(fs::symlink_metadata(&oauth_target).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&oauth_target).unwrap(), "{}");
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile A"),
             "account-a"
         );
-        prepare_isolated_home(&root.join("home"), Some(&profile_b)).expect("switch to profile B");
+        fs::remove_file(oauth).expect("clear profile MCP credentials");
+        prepare_isolated_home(&root.join("home"), Some(&profile_b), &servers)
+            .expect("switch to profile B");
+        assert!(!oauth_target.exists());
         assert_eq!(
             fs::read_to_string(root.join("home/auth.json")).expect("read profile B"),
             "account-b"
         );
-        prepare_isolated_home(&root.join("home"), None).expect("clear profile auth");
+        prepare_isolated_home(&root.join("home"), None, &servers).expect("clear profile auth");
         assert!(fs::symlink_metadata(root.join("home/auth.json")).is_err());
 
         fs::remove_dir_all(root).expect("clean temporary directory");
+    }
+
+    #[test]
+    fn every_chat_gets_the_ataraxia_server_with_its_own_token_in_the_file_claude_reads() {
+        let root = temporary_directory("ataraxia-mcp");
+        let session_id = SessionId::new();
+        let cwd = root.join("repo");
+        fs::create_dir_all(&cwd).expect("repository directory");
+        let mut config =
+            AgentConfiguration::load(&cwd, session_id, Some(&root), None).expect("configuration");
+        assert!(!config.mcp_servers.contains_key(ATARAXIA_MCP));
+        let access = crate::ports::ApiAccess {
+            url: "http://127.0.0.1:4010".into(),
+            token: "tok-123".into(),
+        };
+        config.attach_ataraxia_server(&access).expect("attach");
+
+        let server = &config.mcp_servers[ATARAXIA_MCP];
+        assert_eq!(server["url"], "http://127.0.0.1:4010/mcp");
+        assert_eq!(server["headers"]["Authorization"], "Bearer tok-123");
+        // Claude reads the same server from the chat's file, with its transport spelled out.
+        let path = config.mcp_config_path.clone().expect("a config file");
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read")).expect("json");
+        assert_eq!(written["mcpServers"][ATARAXIA_MCP]["type"], "http");
+        assert_eq!(
+            written["mcpServers"][ATARAXIA_MCP]["headers"]["Authorization"],
+            "Bearer tok-123"
+        );
+        // Codex takes the headers under another name, and OpenCode reads it as a remote server.
+        let codex = super::super::codex::codex_mcp_servers_for_test(&config.mcp_servers);
+        assert_eq!(
+            codex[ATARAXIA_MCP]["http_headers"]["Authorization"],
+            "Bearer tok-123"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

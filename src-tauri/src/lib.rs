@@ -97,6 +97,7 @@ pub fn run() {
             tauri_api::resources_save_skill,
             tauri_api::resources_delete_skill,
             tauri_api::resources_read_mcp,
+            tauri_api::resources_sign_in_mcp,
             tauri_api::resources_save_mcp,
             tauri_api::resources_delete_mcp,
             tauri_api::lsp_sync,
@@ -151,10 +152,18 @@ pub fn run() {
             tauri_api::speech_download,
             tauri_api::speech_download_cancel,
             tauri_api::speech_transcribe,
+            tauri_api::speech_warmup,
             tauri_api::tasks_list,
             tauri_api::task_create,
             tauri_api::task_update,
             tauri_api::task_delete,
+            tauri_api::memory_snapshot,
+            tauri_api::memory_set_enabled,
+            tauri_api::memory_create,
+            tauri_api::memory_update,
+            tauri_api::memory_delete,
+            tauri_api::memory_link,
+            tauri_api::memory_unlink,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

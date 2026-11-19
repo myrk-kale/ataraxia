@@ -447,3 +447,23 @@ select:focus-visible {
     opacity: 0.8;
   }
 }
+/* The dot that says the microphone is open. */
+.cg-rec-dot {
+  animation: cg-rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cg-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cg-rec-dot {
+    animation: none;
+  }
+}

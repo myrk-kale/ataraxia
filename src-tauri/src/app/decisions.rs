@@ -239,6 +239,7 @@ impl Engine {
             session_id,
             checkpoint_id: checkpoint.id,
             artifact_id: None,
+            turn_id: None,
             seq,
             kind,
             title: title.to_string(),

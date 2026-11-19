@@ -1100,6 +1100,24 @@ export function CodeSpace({
   }
 
   const state = marks.get(doc?.path ?? "");
+  const canTriage = mode === "components" && session && checkpoint && priority && files.length > 0;
+  const triageAction = canTriage ? (
+    <div className="flex flex-none items-center gap-1">
+      <span className="sr-only" role="status">{triaging ? "Triaging with a subagent" : ""}</span>
+      <Tip label="Triage with a subagent. Orders the queue and skips changes that need no review, while keeping your priorities.">
+        <Button aria-label="Triage with a subagent" disabled={triaging} variant="icon" onClick={() => void triage()}>
+          {triaging ? <Loader2 aria-hidden="true" className="motion-safe:animate-spin" size={14} /> : <ListFilter aria-hidden="true" size={14} />}
+        </Button>
+      </Tip>
+      {skippedCount > 0 && !triaging ? (
+        <Tip label="Put back the order the code gives, with nothing left out">
+          <Button aria-label="Undo the triage" variant="icon" onClick={() => void untriage()}>
+            <Undo2 aria-hidden="true" size={14} />
+          </Button>
+        </Tip>
+      ) : null}
+    </div>
+  ) : null;
 
   return (
     <div className="flex h-full min-h-0">
@@ -1119,6 +1137,7 @@ export function CodeSpace({
             <div className="flex items-center justify-between gap-2 px-1.5 text-small text-cg-muted-strong">
               <span>{checkpoint ? `Checkpoint #${checkpoint.seq}` : "Checkpoint from search"}</span>
               <Button variant="quiet" onClick={onCloseSearchCheckpoint}>Back to comparison</Button>
+              {triageAction}
             </div>
           ) : mode !== "tree" && session && onReferenceChange ? (
             <ReferenceSelect
@@ -1140,18 +1159,17 @@ export function CodeSpace({
               refreshHint={reference ? "Compare again with the working tree as it is now" : "Record the working tree as a new checkpoint"}
               text={shownLabel(checkpoint, reference, worktree?.branch ?? null)}
               onRefresh={() => void refreshCheckpoint()}
-            />
+            >
+              {triageAction}
+            </ShownRow>
           ) : null}
         </div>
-        {mode === "components" && session && checkpoint && priority && files.length > 0 ? (
-          <TriageRow
+        {canTriage && (triageNote || skippedCount > 0) ? (
+          <TriageResult
             note={triageNote}
             showSkipped={showSkipped}
             skipped={skippedCount}
-            triaging={triaging}
             onShowSkipped={setShowSkipped}
-            onTriage={() => void triage()}
-            onUndo={() => void untriage()}
           />
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody()}</div>
@@ -1474,44 +1492,19 @@ export function CodeSpace({
   );
 }
 
-/**
- * The button that hands the queue to a subagent to order and to trim, and what it did: how many
- * it left out, a way to see them, and a way to take it all back.
- */
-function TriageRow({
-  triaging,
+function TriageResult({
   skipped,
   showSkipped,
   note,
-  onTriage,
-  onUndo,
   onShowSkipped,
 }: {
-  triaging: boolean;
   skipped: number;
   showSkipped: boolean;
   note: string | null;
-  onTriage: () => void;
-  onUndo: () => void;
   onShowSkipped: (show: boolean) => void;
 }) {
   return (
     <div className="flex flex-col gap-1.5 px-3 pb-2">
-      <div className="flex items-center gap-1.5">
-        <Tip label="A subagent reads the changes, orders the queue and leaves out what needs no review (formatting, renames, generated code). Your own priorities stay.">
-          <Button disabled={triaging} variant="quiet" onClick={onTriage}>
-            {triaging ? <Loader2 aria-hidden="true" className="animate-spin" size={13} /> : <ListFilter aria-hidden="true" size={13} />}
-            {triaging ? "Triaging…" : "Triage with a subagent"}
-          </Button>
-        </Tip>
-        {skipped > 0 && !triaging ? (
-          <Tip label="Put back the order the code gives, with nothing left out">
-            <Button aria-label="Undo the triage" variant="icon" onClick={onUndo}>
-              <Undo2 aria-hidden="true" size={14} />
-            </Button>
-          </Tip>
-        ) : null}
-      </div>
       {note ? (
         <p aria-live="polite" className="px-1 text-small text-cg-muted-strong">
           {note}

@@ -6,6 +6,7 @@ pub mod error;
 pub mod ids;
 pub mod image;
 pub mod insight;
+pub mod memory;
 pub mod profile;
 pub mod queue;
 pub mod repo;
@@ -28,6 +29,7 @@ pub use insight::{
     FlowPreset, FlowPresetId, GitRefs, Hunk, InsightEvent, RefInfo, ReturnPolicy, ReviewComment,
     ReviewMark, ReviewState, RiskMarker, Symbol, UnitPriority,
 };
+pub use memory::{Memory, MemoryAuthor, MemoryKind, MemoryLink, MemorySource, Relation};
 pub use profile::{HarnessProfile, LaunchCommand, PROFILES_KEY, Profiles, parse_command};
 pub use queue::{MessageQueue, QueuedMessage};
 pub use repo::{BranchInfo, RepoInfo, Repository, Workspace, Worktree, WorktreeInfo};

@@ -195,6 +195,7 @@ export type Decision = {
   session_id: SessionId;
   checkpoint_id: CheckpointId;
   artifact_id: ArtifactId | null;
+  turn_id?: string | null;
   seq: number;
   kind: DecisionKind;
   title: string;
@@ -319,6 +320,7 @@ export type InsightEvent =
   | { type: "cleared"; sessionId: SessionId }
   | { type: "queue"; sessionId: SessionId; queue: MessageQueue }
   | { type: "schedules"; sessionId: SessionId; schedules: Schedule[] }
+  | { type: "memories" }
   | { type: "decisionThread"; decisionId: DecisionId }
   | { type: "btw"; taskId: BtwTaskId; parentSessionId: SessionId; status: ArtifactStatus };
 

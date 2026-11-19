@@ -25,6 +25,7 @@ export type ResourceItem = {
   /** What it comes to when this scope says nothing, and the scope that decides it. */
   inherited: boolean;
   inheritedFrom: ResourceScope | null;
+  mcpAuth?: "signIn" | "authorized";
 };
 
 export type ResourceList = { skills: ResourceItem[]; mcps: ResourceItem[]; problems: string[] };
@@ -53,6 +54,8 @@ export const resourcesDeleteSkill = (context: ResourceContext, id: string) =>
   invoke<void>("resources_delete_skill", { context, id });
 export const resourcesReadMcp = (context: ResourceContext, name: string) =>
   invoke<McpConfig>("resources_read_mcp", { context, name });
+export const resourcesSignInMcp = (context: ResourceContext, name: string): Promise<void> =>
+  invoke<void>("resources_sign_in_mcp", { context, name });
 export const resourcesSaveMcp = (context: ResourceContext, name: string, config: McpConfig, replace: boolean) =>
   invoke<void>("resources_save_mcp", { context, name, config, replace });
 export const resourcesDeleteMcp = (context: ResourceContext, name: string) =>

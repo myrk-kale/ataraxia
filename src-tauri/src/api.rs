@@ -8,6 +8,8 @@
 //!
 //! The server speaks only what `curl` needs: HTTP/1.1, one request per connection, JSON in and out.
 
+mod mcp;
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -797,11 +799,25 @@ impl ApiService {
                     .collect()
             })
             .unwrap_or_default();
+        let turn_id = self
+            .db
+            .list_chat_items(checkpoint.session_id)?
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                crate::domain::ChatItem::Message(message)
+                    if message.role == crate::domain::ChatRole::User =>
+                {
+                    message.turn_id
+                }
+                _ => None,
+            });
         let decision = Decision {
             id: DecisionId::new(),
             session_id: checkpoint.session_id,
             checkpoint_id: checkpoint.id,
             artifact_id: None,
+            turn_id,
             seq,
             kind: DecisionKind::parse_lenient(&arg_str(args, "type")),
             title,
@@ -1261,6 +1277,7 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         201 => "Created",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -1273,7 +1290,12 @@ fn reason(status: u16) -> &'static str {
 }
 
 fn write_reply(stream: &mut TcpStream, reply: &Reply) -> std::io::Result<()> {
-    let body = reply.body.to_string();
+    // A null body is no body: what the MCP endpoint answers to a notification.
+    let body = if reply.body.is_null() {
+        String::new()
+    } else {
+        reply.body.to_string()
+    };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n",
         reply.status,
@@ -1532,6 +1554,9 @@ fn respond(
         .with_sink(inner.sink.get().cloned());
     let target = head.target.clone();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    if path.trim_end_matches('/') == "/mcp" {
+        return Ok(respond_mcp(&service, &mut head, stream, deadline));
+    }
     let (route, params) = match find_route(&head.method, path) {
         Ok(found) => found,
         Err(error) => {
@@ -1565,6 +1590,47 @@ fn respond(
         Ok(value) => Reply::ok(route.status, value),
         Err(error) => Reply::from_error(&error),
     })
+}
+
+/// The MCP endpoint: one JSON-RPC message in the body of a POST, answered with JSON.
+fn respond_mcp(
+    service: &ApiService,
+    head: &mut Head,
+    stream: &mut TcpStream,
+    deadline: Instant,
+) -> Reply {
+    if head.method != "POST" {
+        let mut reply = Reply::from_error(&ApiError::new(
+            ApiCode::MethodNotAllowed,
+            "the memory MCP server takes JSON-RPC messages by POST",
+        ));
+        reply.headers.retain(|(name, _)| *name != "Allow");
+        reply.headers.push(("Allow", "POST"));
+        return reply;
+    }
+    let message = (|| {
+        if head.chunked {
+            return Err(ApiError::invalid(
+                "chunked request bodies are not supported, send a Content-Length",
+            ));
+        }
+        if head.content_length > MAX_BODY {
+            return Err(ApiError::new(
+                ApiCode::TooLarge,
+                format!("the body may be at most {MAX_BODY} bytes"),
+            ));
+        }
+        let body = read_body(stream, head, deadline)?;
+        serde_json::from_slice::<Value>(&body)
+            .map_err(|error| ApiError::invalid(format!("the body is not valid JSON: {error}")))
+    })();
+    match message {
+        Ok(message) => match service.mcp(&message) {
+            Some(answer) => Reply::ok(200, answer),
+            None => Reply::ok(202, Value::Null),
+        },
+        Err(error) => Reply::from_error(&error),
+    }
 }
 
 fn serve(inner: &ServerInner, mut stream: TcpStream) {
@@ -2293,6 +2359,314 @@ mod tests {
         assert_eq!(db.audit_count(), 1);
     }
 
+    // ---------------------------------------------------------------- memory over MCP
+
+    /// A chat in a workspace of its own, next to the seeded ones.
+    fn chat_in_workspace(
+        db: &Arc<SqliteStore>,
+        from: SessionId,
+        kind: SessionKind,
+        workspace: Option<crate::domain::ids::WorkspaceId>,
+    ) -> (SessionId, crate::domain::ids::WorkspaceId) {
+        let base = db.get_session(from).unwrap().unwrap();
+        let workspace = workspace.unwrap_or_else(|| {
+            let workspace = crate::domain::Workspace {
+                id: crate::domain::ids::WorkspaceId::new(),
+                name: "w".into(),
+                repository_ids: vec![base.repository_id],
+                created_at: base.created_at.clone(),
+                updated_at: base.updated_at.clone(),
+            };
+            db.upsert_workspace(&workspace).unwrap();
+            workspace.id
+        });
+        let chat = ChatSession {
+            id: SessionId::new(),
+            workspace_id: Some(workspace),
+            kind,
+            ..base
+        };
+        db.create_session(&chat).unwrap();
+        (chat.id, workspace)
+    }
+
+    fn rpc(server: &ApiServer, token: &str, id: u64, method: &str, params: Value) -> Answer {
+        req("POST", "/mcp", Some(token))
+            .with(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .go(server)
+    }
+
+    /// Calls a tool and returns what it said, parsed when it was JSON, and whether it failed.
+    fn tool_call(server: &ApiServer, token: &str, name: &str, arguments: Value) -> (Value, bool) {
+        let answer = rpc(
+            server,
+            token,
+            7,
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.head);
+        let result = &answer.body["result"];
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        (
+            serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into())),
+            result["isError"] == true,
+        )
+    }
+
+    #[test]
+    fn the_mcp_endpoint_speaks_the_handshake_and_lists_the_memory_tools() {
+        let (db, a, ..) = seeded();
+        let server = start(&db);
+        let token = server.issue_token(a, true).token;
+        let hello = rpc(
+            &server,
+            &token,
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "1" }
+            }),
+        );
+        assert_eq!(hello.status, 200);
+        assert_eq!(hello.body["id"], 1);
+        assert_eq!(hello.body["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(hello.body["result"]["serverInfo"]["name"], "ataraxia");
+        assert!(
+            hello.body["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("memory_search")
+        );
+        // A notification gets no body at all.
+        let note = req("POST", "/mcp", Some(&token))
+            .with(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .go(&server);
+        assert_eq!(note.status, 202);
+        let listed = rpc(&server, &token, 2, "tools/list", json!({}));
+        let names: Vec<&str> = listed.body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        for wanted in [
+            "memory_search",
+            "memory_get",
+            "memory_create",
+            "memory_update",
+            "memory_delete",
+            "memory_link",
+            "memory_unlink",
+            "memory_merge",
+        ] {
+            assert!(names.contains(&wanted), "{wanted}");
+        }
+        let unknown = rpc(&server, &token, 3, "nope/nothing", json!({}));
+        assert_eq!(unknown.body["error"]["code"], -32601);
+        assert_eq!(
+            rpc(&server, &token, 4, "ping", json!({})).body["result"],
+            json!({})
+        );
+        // It needs the token like every other route, takes only POST, and says so.
+        assert_eq!(
+            req("POST", "/mcp", None).with(json!({})).go(&server).status,
+            401
+        );
+        let get = req("GET", "/mcp", Some(&token)).go(&server);
+        assert_eq!(get.status, 405);
+        assert!(get.head.contains("Allow: POST"));
+        let junk = req("POST", "/mcp", Some(&token))
+            .with(json!("text"))
+            .go(&server);
+        assert_eq!(junk.body["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn an_agent_remembers_finds_links_and_settles_a_conflict_through_the_tools() {
+        let (db, a, ..) = seeded();
+        let (chat, workspace) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let server = start(&db);
+        let token = server.issue_token(chat, true).token;
+
+        let (first, failed) = tool_call(
+            &server,
+            &token,
+            "memory_create",
+            json!({
+                "kind": "semantic",
+                "title": "Tokens are hashed with SHA-256",
+                "body": "Not a slow hash: they are random, so there is nothing to brute force.",
+                "source": "observed",
+                "tags": ["auth"]
+            }),
+        );
+        assert!(!failed, "{first}");
+        let first_id = first["id"].as_str().unwrap().to_string();
+        let stored = db.memory_get(&first_id).unwrap().unwrap();
+        assert_eq!(stored.workspace_id, Some(workspace));
+        assert_eq!(stored.author, crate::domain::MemoryAuthor::Agent);
+
+        // A second one that says nearly the same comes back with a warning, and a link.
+        let (second, _) = tool_call(
+            &server,
+            &token,
+            "memory_create",
+            json!({
+                "kind": "semantic",
+                "title": "Hash tokens with SHA-256, not bcrypt",
+                "body": "Slow hashes are for passwords.",
+                "source": "inferred",
+                "links": [{ "id": first_id, "relation": "contradicts" }]
+            }),
+        );
+        assert_eq!(second["similar"][0]["id"], first_id.as_str());
+        let second_id = second["id"].as_str().unwrap().to_string();
+
+        let (found, _) = tool_call(
+            &server,
+            &token,
+            "memory_search",
+            json!({ "query": "sha-256 tokens" }),
+        );
+        assert_eq!(found["count"], 2);
+        let top = &found["memories"][0];
+        assert_eq!(top["links"][0]["relation"], "contradicts");
+        assert_eq!(top["scope"], "workspace");
+
+        // The developer said which is right; the agent folds one into the other.
+        let (merged, failed) = tool_call(
+            &server,
+            &token,
+            "memory_merge",
+            json!({
+                "into": first_id,
+                "absorb": [second_id],
+                "body": "Tokens are random, so a fast hash is enough; slow hashes are for passwords."
+            }),
+        );
+        assert!(!failed, "{merged}");
+        let (after, _) = tool_call(
+            &server,
+            &token,
+            "memory_search",
+            json!({ "query": "tokens" }),
+        );
+        assert_eq!(after["count"], 1);
+        assert!(
+            after["memories"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("slow hashes are for passwords")
+        );
+        let (gone, failed) = tool_call(&server, &token, "memory_get", json!({ "id": second_id }));
+        assert!(failed);
+        assert!(gone.as_str().unwrap().contains("no memory"));
+
+        let (_, failed) = tool_call(&server, &token, "memory_delete", json!({ "id": first_id }));
+        assert!(!failed);
+        assert!(db.memories_all().unwrap().is_empty());
+        // Each call is in the audit trail.
+        assert!(db.audit_count() >= 6);
+    }
+
+    #[test]
+    fn the_tools_keep_to_the_workspace_the_global_rule_and_the_read_only_sessions() {
+        let (db, a, ..) = seeded();
+        let (chat, workspace) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let (other_chat, _) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let (btw, _) = chat_in_workspace(&db, a, SessionKind::Btw, Some(workspace));
+        let server = start(&db);
+        let writer = server.issue_token(chat, true).token;
+        let stranger = server.issue_token(other_chat, true).token;
+        let reader = server.issue_token(btw, false).token;
+
+        let (made, _) = tool_call(
+            &server,
+            &writer,
+            "memory_create",
+            json!({
+                "kind": "procedural", "title": "Run the linter first", "body": "pnpm lint before commit", "source": "observed"
+            }),
+        );
+        let id = made["id"].as_str().unwrap();
+        // Another workspace does not see it, and cannot touch it.
+        let (none, _) = tool_call(
+            &server,
+            &stranger,
+            "memory_search",
+            json!({ "query": "linter" }),
+        );
+        assert_eq!(none["count"], 0);
+        let (_, denied) = tool_call(&server, &stranger, "memory_delete", json!({ "id": id }));
+        assert!(denied);
+        // Global is for the developer's own words only.
+        let (message, denied) = tool_call(
+            &server,
+            &writer,
+            "memory_create",
+            json!({
+                "kind": "semantic", "title": "Likes tabs", "body": "guess", "source": "inferred", "scope": "global"
+            }),
+        );
+        assert!(denied, "{message}");
+        let (_, ok) = tool_call(
+            &server,
+            &writer,
+            "memory_create",
+            json!({
+                "kind": "semantic", "title": "Answers in Portuguese", "body": "said so", "source": "user", "scope": "global"
+            }),
+        );
+        assert!(!ok);
+        let (everywhere, _) = tool_call(
+            &server,
+            &stranger,
+            "memory_search",
+            json!({ "query": "portuguese" }),
+        );
+        assert_eq!(
+            everywhere["count"], 1,
+            "a global memory is seen from every workspace"
+        );
+        // A read-only session reads and cannot write.
+        let (seen, _) = tool_call(
+            &server,
+            &reader,
+            "memory_search",
+            json!({ "query": "linter" }),
+        );
+        assert_eq!(seen["count"], 1);
+        let (message, denied) = tool_call(&server, &reader, "memory_delete", json!({ "id": id }));
+        assert!(denied);
+        assert!(message.as_str().unwrap().contains("read-only"));
+        // A credential is refused with a reason the model can act on.
+        let (message, denied) = tool_call(
+            &server,
+            &writer,
+            "memory_create",
+            json!({
+                "kind": "semantic", "title": "Deploy key", "body": "use ghp_abcdefghijklmnopqrstuvwxyz0123456789", "source": "observed"
+            }),
+        );
+        assert!(denied);
+        assert!(message.as_str().unwrap().contains("never hold secrets"));
+        // Switched off, nothing is offered and nothing is written.
+        crate::app::memory::set_enabled(db.as_ref(), false).unwrap();
+        let listed = rpc(&server, &writer, 9, "tools/list", json!({}));
+        assert!(
+            listed.body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let (message, denied) = tool_call(&server, &writer, "memory_search", json!({}));
+        assert!(denied);
+        assert!(message.as_str().unwrap().contains("switched off"));
+    }
+
     #[test]
     fn the_host_header_must_be_ours() {
         let (db, a, ..) = seeded();
@@ -2717,6 +3091,20 @@ mod tests {
     fn decisions_flow_through_the_api_from_the_first_call_to_the_last() {
         let repo = repo_with_a_file();
         let (db, a, _, cp) = seeded_at(repo.clone());
+        let turn = crate::domain::ids::TurnId::new();
+        db.replace_chat_items(
+            a,
+            &[crate::domain::ChatItem::Message(
+                crate::domain::ChatMessage {
+                    id: "request".into(),
+                    role: crate::domain::ChatRole::User,
+                    text: "Generate decisions".into(),
+                    turn_id: Some(turn),
+                    images: Vec::new(),
+                },
+            )],
+        )
+        .unwrap();
         let server = start(&db);
         let token = server.issue_token(a, true).token;
         let token = Some(token.as_str());
@@ -2735,6 +3123,7 @@ mod tests {
         let listed = req("GET", "/v1/decisions", token).go(&server);
         assert_eq!(listed.status, 200);
         assert_eq!(listed.body.as_array().unwrap().len(), 1);
+        assert_eq!(listed.body[0]["turn_id"], turn.0.to_string());
 
         let message = req("POST", &format!("/v1/decisions/{id}/messages"), token)
             .with(json!({"text":"noted"}))
