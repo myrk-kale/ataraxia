@@ -321,6 +321,7 @@ export type InsightEvent =
   | { type: "queue"; sessionId: SessionId; queue: MessageQueue }
   | { type: "schedules"; sessionId: SessionId; schedules: Schedule[] }
   | { type: "memories" }
+  | { type: "sessionTitle"; sessionId: SessionId; title: string }
   | { type: "decisionThread"; decisionId: DecisionId }
   | { type: "btw"; taskId: BtwTaskId; parentSessionId: SessionId; status: ArtifactStatus };
 
@@ -330,6 +331,14 @@ export function listenInsightEvents(handler: (event: InsightEvent) => void): Pro
 
 // code
 export const codeTree = (worktreeId: WorktreeId) => invoke<string[]>("code_tree", { worktreeId });
+
+export type ProjectFileAction =
+  | { kind: "create-file" | "create-folder" | "trash"; path: string }
+  | { kind: "move"; path: string; to: string };
+
+export function codeChangeFile(worktreeId: WorktreeId, action: ProjectFileAction): Promise<void> {
+  return invoke("code_change_file", { worktreeId, action });
+}
 export const codeRead = (worktreeId: WorktreeId, path: string) =>
   invoke<FileContent>("code_read", { worktreeId, path });
 export type DefinitionHit = { path: string; line: number; kind: string; container: string | null };

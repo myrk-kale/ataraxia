@@ -8,6 +8,7 @@
 //!
 //! The server speaks only what `curl` needs: HTTP/1.1, one request per connection, JSON in and out.
 
+mod chats;
 mod mcp;
 
 use std::io::{ErrorKind, Read, Write};
@@ -2653,18 +2654,67 @@ mod tests {
         );
         assert!(denied);
         assert!(message.as_str().unwrap().contains("never hold secrets"));
-        // Switched off, nothing is offered and nothing is written.
+        // Switched off, no memory tool is offered and nothing is written. The chat is in a
+        // workspace, so it still has the tools to read the workspace's other chats.
         crate::app::memory::set_enabled(db.as_ref(), false).unwrap();
         let listed = rpc(&server, &writer, 9, "tools/list", json!({}));
+        let names: Vec<&str> = listed.body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
         assert!(
-            listed.body["result"]["tools"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+            names.iter().all(|name| name.starts_with("chats_")),
+            "{names:?}"
         );
+        assert_eq!(names.len(), 3);
         let (message, denied) = tool_call(&server, &writer, "memory_search", json!({}));
         assert!(denied);
         assert!(message.as_str().unwrap().contains("switched off"));
+    }
+
+    #[test]
+    fn a_chat_in_a_workspace_is_offered_the_tools_to_read_the_other_chats() {
+        let (db, a, ..) = seeded();
+        let (chat, workspace) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let (sibling, _) = chat_in_workspace(&db, a, SessionKind::Chat, Some(workspace));
+        let (stranger, _) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let server = start(&db);
+        let reader = server.issue_token(chat, false).token;
+        let outside = server.issue_token(stranger, false).token;
+        let names = |token: &str| -> Vec<String> {
+            rpc(&server, token, 1, "tools/list", json!({})).body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        for wanted in ["chats_list", "chats_search", "chats_read"] {
+            assert!(names(&reader).iter().any(|name| name == wanted), "{wanted}");
+        }
+        // Reading is read-only, so a read-only token has them too, and they appear in the
+        // instructions given when the connection opens.
+        let hello = rpc(&server, &reader, 2, "initialize", json!({}));
+        assert!(
+            hello.body["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("chats_search")
+        );
+        let (listed, failed) = tool_call(&server, &reader, "chats_list", json!({}));
+        assert!(!failed, "{listed}");
+        assert_eq!(listed["chats"][0]["id"], sibling.0.to_string());
+        // The other workspace's chat is not in it, and sees only its own workspace.
+        assert_eq!(listed["total"], 1);
+        let (_, failed) = tool_call(
+            &server,
+            &outside,
+            "chats_read",
+            json!({ "chat": sibling.0.to_string() }),
+        );
+        assert!(failed);
     }
 
     #[test]

@@ -15,10 +15,10 @@ export function buildTree(paths: readonly string[]): TreeNode[] {
     let node = root;
     parts.forEach((part, index) => {
       const path = parts.slice(0, index + 1).join("/");
-      const last = index === parts.length - 1;
-      let child = node.children.find((item) => item.name === part && item.kind === (last ? "file" : "dir"));
+      const kind = index === parts.length - 1 && !full.endsWith("/") ? "file" : "dir";
+      let child = node.children.find((item) => item.name === part && item.kind === kind);
       if (!child) {
-        child = { name: part, path, kind: last ? "file" : "dir", children: [] };
+        child = { name: part, path, kind, children: [] };
         node.children.push(child);
       }
       node = child;

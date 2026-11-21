@@ -7,10 +7,11 @@ import { useComposerPicker } from "./useComposerPicker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const api = vi.hoisted(() => ({ commands: vi.fn(), paths: vi.fn() }));
+const api = vi.hoisted(() => ({ commands: vi.fn(), paths: vi.fn(), chats: vi.fn() }));
 vi.mock("../lib/agent", () => ({
   agentListComposerResources: api.commands,
   sessionPaths: api.paths,
+  sessionChats: api.chats,
 }));
 
 function Harness({ commands = true, onKey }: { commands?: boolean; onKey?: () => void }) {
@@ -95,6 +96,10 @@ beforeEach(() => {
     { path: "src/", dir: true, repository: null },
     { path: "src/main.rs", dir: false, repository: null },
     { path: "README.md", dir: false, repository: null },
+  ]);
+  api.chats.mockResolvedValue([
+    { id: "aaaaaaaa-1111-4000-8000-000000000001", title: "Fix login redirect", updated_at: "" },
+    { id: "bbbbbbbb-2222-4000-8000-000000000002", title: "Release notes", updated_at: "" },
   ]);
   host = document.createElement("div");
   document.body.append(host);
@@ -183,6 +188,20 @@ describe("the / and @ pickers of the message field", () => {
     expect(rows()).toHaveLength(1);
     press("Enter");
     expect(field().value).toBe("look at @src/main.rs ");
+  });
+
+  it("offers the other conversations of the workspace on an at sign and points at one by its title", async () => {
+    act(() => root.render(<Harness />));
+    await type("@login");
+    expect(api.chats).toHaveBeenCalledTimes(1);
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toContain("Fix login redirect");
+    press("Enter");
+    expect(field().value).toBe('@"chat:Fix login redirect" ');
+    // Typing chat: shows the conversations and not the files.
+    await type("@chat:");
+    expect(rows().map((row) => row.includes("Conversation"))).toEqual([true, true]);
+    expect(rows().some((row) => row.includes("src/main.rs"))).toBe(false);
   });
 
   it("selects a matching file directly instead of navigating into a folder", async () => {

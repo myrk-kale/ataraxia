@@ -5,14 +5,14 @@ use crate::app::artifacts::{DefinitionHit, ReviewView, Side};
 use crate::app::btw::BtwContext;
 use crate::app::decisions::DecisionDetail;
 use crate::app::lint::{Diagnostic, LintStatus};
-use crate::domain::agent::MentionPath;
+use crate::domain::agent::{MentionChat, MentionPath};
 use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, TurnId, WorktreeId};
 use crate::domain::{
     Artifact, ArtifactId, BtwMode, BtwTask, BtwTaskId, ChatSession, Checkpoint, CodeRef, Decision,
     DecisionId, DecisionKind, DecisionMessage, DecisionState, FlowPreset, FlowPresetId,
     ReturnPolicy, ReviewComment, ReviewMark, ReviewState,
 };
-use crate::ports::FileContent;
+use crate::ports::{FileContent, ProjectFileAction};
 
 type Res<T> = std::result::Result<T, String>;
 
@@ -32,6 +32,18 @@ pub fn code_tree(state: tauri::State<'_, AppState>, worktree_id: WorktreeId) -> 
     state.engine.code_tree(worktree_id).map_err(map_error)
 }
 
+#[tauri::command(async)]
+pub fn code_change_file(
+    state: tauri::State<'_, AppState>,
+    worktree_id: WorktreeId,
+    action: ProjectFileAction,
+) -> Res<()> {
+    state
+        .engine
+        .code_change_file(worktree_id, action)
+        .map_err(map_error)
+}
+
 /// What `@` offers in a chat: its files and folders.
 #[tauri::command(async)]
 pub fn session_paths(
@@ -39,6 +51,15 @@ pub fn session_paths(
     session_id: SessionId,
 ) -> Res<Vec<MentionPath>> {
     state.engine.session_paths(session_id).map_err(map_error)
+}
+
+/// What `@` offers besides files: the other conversations of the chat's workspace.
+#[tauri::command(async)]
+pub fn session_chats(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+) -> Res<Vec<MentionChat>> {
+    state.engine.session_chats(session_id).map_err(map_error)
 }
 
 #[tauri::command(async)]

@@ -1,4 +1,4 @@
-import { BookOpen, File, Server, Slash } from "lucide-react";
+import { BookOpen, File, MessageSquare, Server, Slash } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { PickerItem } from "./pickerChoices";
 
@@ -7,6 +7,7 @@ const ICONS = {
   skill: BookOpen,
   mcp: Server,
   file: File,
+  chat: MessageSquare,
 } as const;
 
 const KIND_LABELS = {
@@ -14,6 +15,7 @@ const KIND_LABELS = {
   skill: "Skill",
   mcp: "MCP server",
   file: "File",
+  chat: "Conversation",
 } as const;
 
 /** The id of one row, which the message field names as its active descendant. */

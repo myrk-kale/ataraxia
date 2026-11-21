@@ -16,7 +16,7 @@ export function tail(text: string, max = 140): string {
   return flat.length <= max ? flat : `…${flat.slice(flat.length - max).replace(/^\S*\s/, "")}`;
 }
 
-function label(state: DictationState, listening: Listening): string {
+function label(state: DictationState, listening: Listening, autoStop: boolean): string {
   if (state === "starting") {
     return "Opening the microphone…";
   }
@@ -27,9 +27,9 @@ function label(state: DictationState, listening: Listening): string {
     return "Hearing you";
   }
   if (listening === "pausing") {
-    return "Paused. It stops if you stay quiet";
+    return autoStop ? "Paused. It stops if you stay quiet" : "Paused. Press stop when you are done";
   }
-  return "Listening. Say something";
+  return autoStop ? "Listening. Say something" : "Recording. Press stop when you are done";
 }
 
 /**
@@ -43,6 +43,7 @@ export function RecordingBar({
   listening,
   silence,
   partial,
+  autoStop = true,
 }: {
   state: DictationState;
   loudness: number;
@@ -50,6 +51,8 @@ export function RecordingBar({
   /** 0 to 1: how far the quiet after speech is towards ending the recording. */
   silence: number;
   partial: string;
+  /** It ends by itself in a quiet moment; off, only the button ends it. */
+  autoStop?: boolean;
 }) {
   const recording = state === "recording";
   const [sound, setSound] = useState<number[]>(() => Array.from({ length: BARS }, () => 0));
@@ -104,7 +107,7 @@ export function RecordingBar({
           ))}
         </div>
         <span className="flex-none text-small text-cg-muted-strong" role="status">
-          {label(state, listening)}
+          {label(state, listening, autoStop)}
         </span>
       </div>
       {words ? (
@@ -112,7 +115,7 @@ export function RecordingBar({
           {words}
         </p>
       ) : null}
-      {recording ? (
+      {recording && autoStop ? (
         <div aria-hidden="true" className="h-0.5 bg-cg-line">
           <div className="h-full bg-cg-del-fg transition-[width] duration-100" style={{ width: `${Math.round(silence * 100)}%` }} />
         </div>

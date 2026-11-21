@@ -524,6 +524,15 @@ export function AppShell() {
     if (event.type === "checkpoint" && event.sessionId === selectedSession?.id) {
       refreshChanges();
     }
+    // A new chat is named once its first exchange is over.
+    if (event.type === "sessionTitle") {
+      setWorkspace((current) => ({
+        ...current,
+        sessions: current.sessions.map((item) =>
+          item.id === event.sessionId ? { ...item, title: event.title } : item,
+        ),
+      }));
+    }
   });
 
   // Every local branch, read from git when the selector opens and when the worktree changes.

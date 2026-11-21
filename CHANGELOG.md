@@ -6,6 +6,32 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- A chat in a workspace knows about the workspace's other conversations and can look into them,
+  read-only, through three new tools of the `ataraxia` MCP server: `chats_list`, `chats_search`
+  (a grep, regular expressions optional, filterable by who said it) and `chats_read` (a window at
+  a time, never a whole chat). Every message says whether the developer (`user`) or an assistant
+  (`agent`) wrote it. The first message of a chat lists the latest other conversations.
+- New chats are named once their first exchange is over: the chat's own harness is asked for a title
+  of a few words, in the language you wrote in, and the chat is renamed to it. Chats that already
+  exist, and chats created with a title, keep theirs.
+- `@` in the message field also offers the workspace's other conversations by title. Choosing one
+  writes `@"chat:Title"`, and the agent reads that conversation piece by piece.
+- The file tree in Code can create files and folders, rename, move and send to the Trash (right-click a
+  file or folder, or use the buttons for the project root), and has a refresh button. Empty folders
+  and files that are in the working tree but not yet in git show up in the tree too.
+- Settings > Voice: "Stop when I go quiet" and "Wait before stopping". Turn the first off and dictation
+  works like a voice recorder: it still writes as you speak, but only ends when you press the
+  microphone button again. The second sets how long the quiet lasts (0.5 to 5 s) before it stops.
+
+### Changed
+
+- Enter while dictating stops the recording and writes the rest of what was said, instead of sending
+  the message; it does nothing until that text has landed in the field.
+- Dictation now waits 1.5 s of quiet before stopping by itself (it was 0.75 s, which cut people off
+  between sentences).
+
 ## [0.14.2] - 2026-11-19
 
 ### Changed

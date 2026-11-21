@@ -61,8 +61,10 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 base64 = "0.23.1"
 command-group = "5.0.1"
+ignore = "0.4"
 parking_lot = "0.12.5"
 portable-pty = "0.9.0"
+regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -75,6 +77,7 @@ tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 toml = "0.9"
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
 tree-sitter = "0.26.13"
 tree-sitter-go = "0.25.0"
 tree-sitter-java = "0.23.5"
@@ -91,6 +94,12 @@ whisper-rs = "0.16"
 # several times slower on Apple silicon, which has a GPU made for it.
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

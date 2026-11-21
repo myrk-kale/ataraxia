@@ -1,14 +1,17 @@
 import { type KeyboardEvent, useId, useLayoutEffect, useMemo, useState } from "react";
 import {
   type ComposerResource,
+  type MentionChat,
   type MentionPath,
   agentListComposerResources,
+  sessionChats,
   sessionPaths,
 } from "../lib/agent";
 import type { SessionId } from "../lib/workspace";
 import {
   type PickerItem,
   applyChoice,
+  chatItems,
   commandItems,
   findTrigger,
   mentionItems,
@@ -37,6 +40,7 @@ export function useComposerPicker({
   const [caret, setCaret] = useState(0);
   const [resources, setResources] = useState<ComposerResource[]>([]);
   const [paths, setPaths] = useState<MentionPath[]>([]);
+  const [chats, setChats] = useState<MentionChat[]>([]);
   const [cursor, setCursor] = useState({ for: "", index: 0 });
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [restore, setRestore] = useState<number | null>(null);
@@ -51,10 +55,13 @@ export function useComposerPicker({
     }
     return trigger.kind === "command"
       ? commandItems(resources, trigger.query)
-      : mentionItems(paths, trigger.query);
+      : [
+          ...chatItems(chats, trigger.query),
+          ...(/^chat:/i.test(trigger.query) ? [] : mentionItems(paths, trigger.query)),
+        ];
     // `trigger` is rebuilt each render; what it holds is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trigger?.kind, trigger?.query, resources, paths]);
+  }, [trigger?.kind, trigger?.query, resources, paths, chats]);
 
   const active = cursor.for === query ? Math.min(cursor.index, Math.max(items.length - 1, 0)) : 0;
   const open = trigger !== null && items.length > 0;
@@ -81,6 +88,9 @@ export function useComposerPicker({
       void sessionPaths(sessionId)
         .then(setPaths)
         .catch(() => setPaths([]));
+      void sessionChats(sessionId)
+        .then(setChats)
+        .catch(() => setChats([]));
     }
   }
 
@@ -141,7 +151,7 @@ export function useComposerPicker({
     items,
     active,
     activeId: open ? pickerOptionId(listId, items[active]) : undefined,
-    label: trigger?.kind === "command" ? "Commands, skills, and MCP servers" : "Files",
+    label: trigger?.kind === "command" ? "Commands, skills, and MCP servers" : "Files and conversations",
     pick,
     hover: (index: number) => setCursor({ for: query, index }),
     onKeyDown,

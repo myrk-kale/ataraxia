@@ -1,4 +1,4 @@
-import { BookOpen, Braces, Check, CircleAlert, GitCompareArrows, ListFilter, Loader2, Lock, Undo2, WrapText } from "lucide-react";
+import { BookOpen, Braces, Check, CircleAlert, FilePlus, FolderPlus, GitCompareArrows, ListFilter, Loader2, Lock, RefreshCw, Undo2, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -14,6 +14,7 @@ import { RepositorySelect } from "../app/RepositorySelect";
 import type { SpaceBridge } from "../app/spaceCommands";
 import {
   codeAddComment,
+  codeChangeFile,
   codeFileAt,
   codeRead,
   codeCompare,
@@ -37,6 +38,7 @@ import {
   codeTree,
   codeWrite,
   type FileContent,
+  type ProjectFileAction,
   type RepoChanges,
   type ReviewState,
   type ReviewView,
@@ -51,6 +53,7 @@ import { Loading, LOADING, READY, type LoadState } from "../ui/State";
 import { CommentComposer } from "./CommentComposer";
 import { ChangedList, ComponentQueue, ProjectTree } from "./FileLists";
 import type { EditorHandle, EditorSelection, LineMarks } from "./MonacoEditor";
+import { ProjectFileDialog, type FileRequest } from "./ProjectFileDialog";
 import { SelectionMenu } from "./SelectionMenu";
 import {
   ancestors,
@@ -121,6 +124,10 @@ type Doc = {
   gone?: boolean;
 };
 
+function withinPath(path: string, parent: string): boolean {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
 export function CodeSpace({
   session,
   worktree,
@@ -173,6 +180,11 @@ export function CodeSpace({
   }, []);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [tree, setTree] = useState<string[]>([]);
+  const [fileRequest, setFileRequest] = useState<(FileRequest & { context: string }) | null>(null);
+  const treeRead = useRef(0);
+  const openingFile = useRef(0);
+  const changingFile = useRef(false);
+  const savingFile = useRef(false);
   const [reviewState, setReviewState] = useState<LoadState>(LOADING);
   const [treeState, setTreeState] = useState<LoadState>(LOADING);
   const reviewShown = useRef(false);
@@ -181,7 +193,6 @@ export function CodeSpace({
   const [version, setVersion] = useState<Version>("current");
   const [conflict, setConflict] = useState(false);
   const [commenting, setCommenting] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [lintStatus, setLintStatus] = useState<LintStatus | null>(null);
   const [lintAsked, setLintAsked] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
@@ -204,6 +215,10 @@ export function CodeSpace({
 
   const sessionId = session?.id ?? null;
   const worktreeId = worktree?.id ?? null;
+  const branch = worktree?.branch ?? null;
+  const treeContext = JSON.stringify([worktreeId, branch]);
+  const latestTreeContext = useRef(treeContext);
+  latestTreeContext.current = treeContext;
   // The repository shown: the review, the comparison and the checkpoints are all of this one.
   const repositoryId = worktree?.repository_id ?? null;
   const checkpoint = review?.checkpoint ?? null;
@@ -212,6 +227,7 @@ export function CodeSpace({
   latestReviewContext.current = reviewContext;
 
   function setMode(next: Mode) {
+    setFileRequest(null);
     setModeState(next);
     try {
       window.localStorage.setItem(MODE_KEY, next);
@@ -323,7 +339,8 @@ export function CodeSpace({
   // `quiet`: the files changed under the app, so the list is read again without a spinner and the
   // screen is left alone when it came back the same.
   const loadTree = useCallback(
-    (quiet = false) => {
+    (quiet = false, reportError = false) => {
+      const read = ++treeRead.current;
       if (!worktreeId) {
         setTree([]);
         setTreeState(READY);
@@ -334,16 +351,23 @@ export function CodeSpace({
       }
       codeTree(worktreeId)
         .then((paths) => {
+          if (read !== treeRead.current || latestTreeContext.current !== treeContext) {
+            return;
+          }
           setTree((current) => (unchanged(current, paths) ? current : paths));
           setTreeState(READY);
         })
         .catch((err: unknown) => {
-          if (!quiet) {
-            setTreeState({ kind: "failed", message: errorText(err) });
+          if (read === treeRead.current && latestTreeContext.current === treeContext) {
+            if (!quiet) {
+              setTreeState({ kind: "failed", message: errorText(err) });
+            } else if (reportError) {
+              onError(`Could not refresh project files. ${errorText(err)}`);
+            }
           }
         });
     },
-    [worktreeId],
+    [onError, treeContext, worktreeId],
   );
 
   useEffect(() => {
@@ -351,7 +375,6 @@ export function CodeSpace({
   }, [loadTree]);
 
   // A checkout (here or in a terminal) changes the files and what the branch differs by: start over.
-  const branch = worktree?.branch ?? null;
   const shownBranch = useRef(branch);
   useEffect(() => {
     if (shownBranch.current === branch) {
@@ -360,9 +383,8 @@ export function CodeSpace({
     shownBranch.current = branch;
     setDoc(null);
     setActiveUnit(null);
-    loadTree();
     void openTarget();
-  }, [branch, loadTree, openTarget]);
+  }, [branch, openTarget]);
 
   useInsightEvents((event) => {
     if (event.type === "cleared" && event.sessionId === sessionId) {
@@ -385,7 +407,7 @@ export function CodeSpace({
   const changeByPath = useMemo(() => new Map(files.map((file) => [file.path, file.change])), [files]);
   const queue = useMemo(() => {
     if (mode === "tree") {
-      return tree;
+      return tree.filter((path) => !path.endsWith("/"));
     }
     return [...files.map((file) => file.path)].sort();
   }, [mode, tree, files]);
@@ -429,12 +451,13 @@ export function CodeSpace({
 
   const openFile = useCallback(
     async (path: string) => {
-      if (!worktreeId) {
+      if (!worktreeId || changingFile.current) {
         return;
       }
       if (docRef.current?.path === path) {
         return;
       }
+      const read = ++openingFile.current;
       try {
         const inCheckpoint = checkpoint?.files.some((file) => file.path === path) ?? false;
         // A branch or commit as the head is a fixed revision: read it from git, not from disk.
@@ -455,6 +478,9 @@ export function CodeSpace({
           head = checkpoint && inCheckpoint ? await codeFileAt(checkpoint.id, path, "head") : null;
         }
         const base = checkpoint && inCheckpoint ? await codeFileAt(checkpoint.id, path, "base") : null;
+        if (read !== openingFile.current || latestTreeContext.current !== treeContext) {
+          return;
+        }
         setDoc({ path, disk, base, buffer: disk?.text ?? "", head, fixed });
         setConflict(false);
         setVersion(disk ? "current" : "previous");
@@ -468,10 +494,12 @@ export function CodeSpace({
           );
         }
       } catch (err) {
-        onError(errorText(err));
+        if (read === openingFile.current && latestTreeContext.current === treeContext) {
+          onError(errorText(err));
+        }
       }
     },
-    [worktreeId, checkpoint, headLive, mode, marks, onError],
+    [worktreeId, checkpoint, headLive, mode, marks, onError, treeContext],
   );
 
   const goToDefinition = useCallback(
@@ -673,7 +701,7 @@ export function CodeSpace({
   const save = useCallback(
     async (overwrite = false) => {
       const current = docRef.current;
-      if (!current?.disk || current.fixed || !worktreeId || saving) {
+      if (!current?.disk || current.fixed || !worktreeId || savingFile.current || changingFile.current) {
         return;
       }
       const text = editor.current?.value() ?? current.buffer;
@@ -681,7 +709,7 @@ export function CodeSpace({
       if (text === current.disk.text && !overwrite && !current.gone) {
         return;
       }
-      setSaving(true);
+      savingFile.current = true;
       try {
         const mtimeMs = await codeWrite(worktreeId, current.path, text, overwrite || current.gone ? null : current.disk.mtimeMs);
         setDoc((state) =>
@@ -698,11 +726,72 @@ export function CodeSpace({
           onError(errorText(err));
         }
       } finally {
-        setSaving(false);
+        savingFile.current = false;
       }
     },
-    [worktreeId, saving, onError],
+    [worktreeId, onError],
   );
+
+  function requestFileAction(request: FileRequest) {
+    if (latestTreeContext.current === treeContext) {
+      setFileRequest({ ...request, context: treeContext });
+    }
+  }
+
+  async function changeProjectFile(action: ProjectFileAction) {
+    if (!worktreeId || latestTreeContext.current !== treeContext) {
+      throw new Error("The project changed. Open the file action again.");
+    }
+    if (savingFile.current || changingFile.current) {
+      throw new Error("Wait for the current file operation to finish.");
+    }
+    const current = docRef.current;
+    const relocating = action.kind === "move" || action.kind === "trash";
+    const affected = relocating && current && !current.fixed && withinPath(current.path, action.path) ? current : null;
+    if (affected?.disk && affected.buffer !== affected.disk.text) {
+      throw new Error("Save your edits before moving this item.");
+    }
+
+    changingFile.current = true;
+    openingFile.current += 1;
+    try {
+      await codeChangeFile(worktreeId, action);
+      if (latestTreeContext.current !== treeContext) {
+        return;
+      }
+      const destination = action.kind === "move" ? action.to : action.kind === "trash" ? null : action.path;
+      setOpenFolders((open) => {
+        const next = new Set<string>(destination ? ancestors(destination) : []);
+        for (const path of open) {
+          if (!relocating || !withinPath(path, action.path)) {
+            next.add(path);
+          } else if (action.kind === "move") {
+            next.add(action.to + path.slice(action.path.length));
+          }
+        }
+        return next;
+      });
+      if (affected && docRef.current?.path === affected.path) {
+        const path = action.kind === "move" ? action.to + affected.path.slice(action.path.length) : null;
+        const disk = path ? await codeRead(worktreeId, path).catch(() => null) : null;
+        if (latestTreeContext.current !== treeContext) {
+          return;
+        }
+        if (path && disk) {
+          setDoc({ path, disk, buffer: disk.text, base: null, head: null, fixed: false });
+          setVersion("current");
+        } else {
+          setDoc(null);
+        }
+        setActiveUnit(null);
+        setConflict(false);
+        setCommenting(false);
+      }
+      loadTree(true, true);
+    } finally {
+      changingFile.current = false;
+    }
+  }
 
   // Ctrl or Cmd S saves the open file from anywhere in the Code space (the editor already does when
   // it has the focus, and then this never sees the key).
@@ -742,7 +831,7 @@ export function CodeSpace({
   // change is a conflict, a removal keeps the text on screen and says so).
   const syncOpenDoc = useCallback(async () => {
     const current = docRef.current;
-    if (!current || current.fixed || !worktreeId) {
+    if (!current || current.fixed || !worktreeId || changingFile.current) {
       return;
     }
     let disk: FileContent;
@@ -1037,12 +1126,18 @@ export function CodeSpace({
       if (treeState.kind === "failed") {
         return <Empty action={{ label: "Try again", onClick: () => loadTree() }} text={`Could not read the project files: ${treeState.message}`} />;
       }
+      if (tree.length === 0) {
+        return <Empty text="This project has no files or folders to show." />;
+      }
       return (
         <ProjectTree
+          key={treeContext}
           changed={changeByPath}
           open={openFolders}
           openPath={doc?.path ?? null}
           paths={tree}
+          onAction={requestFileAction}
+          onError={onError}
           onOpen={(path) => void openFile(path)}
           onToggle={(path) =>
             setOpenFolders((current) => {
@@ -1133,6 +1228,26 @@ export function CodeSpace({
             />
           ) : null}
           <Segmented<Mode> fill label="Navigator" options={MODES} value={mode} onChange={setMode} />
+          {mode === "tree" && worktree ? (
+            <div className="flex items-center gap-1 px-1.5">
+              <span className="flex-1 truncate text-small font-medium text-cg-muted-strong" title="Project root">Project root</span>
+              <Tip label="New file in the project root">
+                <Button aria-label="New file in the project root" variant="icon" onClick={() => requestFileAction({ kind: "create-file", path: "" })}>
+                  <FilePlus aria-hidden="true" size={15} />
+                </Button>
+              </Tip>
+              <Tip label="New folder in the project root">
+                <Button aria-label="New folder in the project root" variant="icon" onClick={() => requestFileAction({ kind: "create-folder", path: "" })}>
+                  <FolderPlus aria-hidden="true" size={15} />
+                </Button>
+              </Tip>
+              <Tip label="Refresh project files">
+                <Button aria-label="Refresh project files" variant="icon" onClick={() => loadTree()}>
+                  <RefreshCw aria-hidden="true" size={14} />
+                </Button>
+              </Tip>
+            </div>
+          ) : null}
           {searchCheckpointId ? (
             <div className="flex items-center justify-between gap-2 px-1.5 text-small text-cg-muted-strong">
               <span>{checkpoint ? `Checkpoint #${checkpoint.seq}` : "Checkpoint from search"}</span>
@@ -1174,6 +1289,14 @@ export function CodeSpace({
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody()}</div>
       </aside>
+      {mode === "tree" && fileRequest?.context === treeContext ? (
+        <ProjectFileDialog
+          key={treeContext}
+          request={fileRequest}
+          onClose={() => setFileRequest((current) => current === fileRequest ? null : current)}
+          onSubmit={changeProjectFile}
+        />
+      ) : null}
 
       <section ref={fileSection} aria-label="File" className="flex min-w-0 flex-1 flex-col">
         {doc ? (

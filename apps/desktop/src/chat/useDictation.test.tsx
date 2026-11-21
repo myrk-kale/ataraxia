@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetDictationPrefs, setDictationPrefs } from "./dictationPrefs";
 import { useDictation } from "./useDictation";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,6 +79,10 @@ async function begin() {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
+  resetDictationPrefs();
+  // 750 ms is three of the stretches fed below, so the tests can count them.
+  setDictationPrefs({ autoStop: true, silenceMs: 750 });
   processors.length = 0;
   texts = [];
   problems = [];
@@ -125,6 +130,43 @@ describe("dictating into the message field", () => {
     expect(texts).toEqual(["olá mundo"]);
     expect(problems).toEqual([]);
     expect(speech.transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits as long as the settings say before ending by itself", async () => {
+    setDictationPrefs({ silenceMs: 2000 });
+    await begin();
+    await hear(0.1, 4);
+    await hear(0.002, 7);
+    await flush();
+    expect(api.current?.state).toBe("recording");
+    await hear(0.002, 1);
+    await flush();
+    expect(api.current?.state).toBe("idle");
+    expect(texts).toEqual(["olá mundo"]);
+  });
+
+  it("with stopping by silence off, records through any quiet until it is stopped", async () => {
+    setDictationPrefs({ autoStop: false });
+    await begin();
+    expect(api.current?.autoStop).toBe(false);
+    // Nothing said for far longer than it would normally give up after.
+    await hear(0.002, 60);
+    expect(api.current?.state).toBe("recording");
+    await hear(0.1, 4);
+    await hear(0.002, 2);
+    await flush();
+    expect(texts).toEqual(["olá mundo"]);
+    // A long quiet after speech does not end it either, and the stop bar stays empty.
+    await hear(0.002, 60);
+    await flush();
+    expect(api.current?.state).toBe("recording");
+    expect(api.current?.silence).toBe(0);
+    await hear(0.1, 3);
+    await act(async () => api.current?.toggle());
+    await flush();
+    expect(api.current?.state).toBe("idle");
+    expect(texts).toEqual(["olá mundo", "olá mundo"]);
+    expect(problems).toEqual([]);
   });
 
   it("writes each phrase as it is closed, in order, and the last one when it stops", async () => {

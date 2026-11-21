@@ -871,6 +871,16 @@ export function ChatPanel({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
+      // While dictating, Enter ends the recording (whatever the settings say) and the words still
+      // being written land in the field. It does not send: a message sent before they arrive would
+      // go without them, so Enter does nothing until the writing is done.
+      if (dictation.state === "recording") {
+        dictation.toggle();
+        return;
+      }
+      if (dictation.state === "transcribing") {
+        return;
+      }
       // Ctrl or Cmd with Enter sends at once instead of joining the queue.
       void send((event.metaKey || event.ctrlKey) && queues);
     }
@@ -1268,6 +1278,7 @@ export function ChatPanel({
             </p>
           ) : null}
           <RecordingBar
+            autoStop={dictation.autoStop}
             listening={dictation.listening}
             loudness={dictation.loudness}
             partial={dictation.partial}

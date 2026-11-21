@@ -339,6 +339,16 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    fn update_session_title(&self, id: SessionId, title: &str) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let session = sessions
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        session.title = title.to_string();
+        Ok(())
+    }
+
     fn update_session_settings(
         &self,
         id: SessionId,

@@ -455,6 +455,11 @@ impl Store for SqliteStore {
             )
             .map_err(io)?;
             conn.execute(
+                "DELETE FROM app_state WHERE key = ?1",
+                params![format!("auto_title:{id}")],
+            )
+            .map_err(io)?;
+            conn.execute(
                 "DELETE FROM autocomplete_grams WHERE scope = ?1",
                 params![id],
             )
@@ -463,6 +468,21 @@ impl Store for SqliteStore {
                 .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])
                 .map_err(io)?;
             if deleted == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
+    fn update_session_title(&self, id: SessionId, title: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions SET title = ?2 WHERE id = ?1",
+                    params![id.0.to_string(), title],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
                 return Err(Error::new(ErrorCode::NotFound, "session not found"));
             }
             Ok(())

@@ -104,6 +104,28 @@ pub fn workspace_note(members: &[(String, PathBuf)]) -> String {
     out
 }
 
+/// How many titles of the workspace's other chats the first message names.
+pub const CHATS_NOTE_TITLES: usize = 8;
+
+/// What the agent is told when its workspace has other conversations: that they exist, which are
+/// the latest, and that it can look into them. Empty when there are none.
+pub fn chats_note((titles, total): &(Vec<String>, usize)) -> String {
+    if *total == 0 {
+        return String::new();
+    }
+    let mut out = format!(
+        "[Other chats] This workspace has {total} other conversation{} you can look into, read-only, with the `chats_list`, `chats_search` (a grep: each hit says whether the developer or an agent said it) and `chats_read` (a window at a time) tools of the `ataraxia` MCP server. The most recent:\n",
+        if *total == 1 { "" } else { "s" }
+    );
+    for title in titles {
+        out.push_str(&format!("- {title}\n"));
+    }
+    out.push_str(
+        "When the developer writes @\"chat:Title\", it points at one of them: search it, then read the part you need, not all of it.\n\n",
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +255,15 @@ mod tests {
             "{} words",
             text.split_whitespace().count()
         );
+    }
+
+    #[test]
+    fn the_chats_note_names_the_other_conversations_and_is_silent_when_there_are_none() {
+        assert_eq!(chats_note(&(Vec::new(), 0)), "");
+        let note = chats_note(&(vec!["Fix login".into(), "Release".into()], 5));
+        assert!(note.contains("5 other conversations"));
+        assert!(note.contains("- Fix login\n- Release\n"));
+        assert!(note.contains("chats_search") && note.contains("chat:Title"));
+        assert!(chats_note(&(vec!["One".into()], 1)).contains("1 other conversation "));
     }
 }

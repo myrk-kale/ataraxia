@@ -1,3 +1,4 @@
+import type { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Menu } from "@tauri-apps/api/menu";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type MenuEntry, type MenuTools, menuFor } from "./contextMenu";
@@ -42,6 +43,17 @@ function items(entries: MenuEntry[]) {
 
 let open: Menu | null = null;
 
+export async function showContextMenu(entries: MenuEntry[], at?: LogicalPosition): Promise<void> {
+  const next = await Menu.new({ items: items(entries) });
+  const previous = open;
+  open = next;
+  try {
+    await next.popup(at);
+  } finally {
+    void previous?.close().catch(() => undefined);
+  }
+}
+
 /**
  * Answers right-clicks with the app's menu instead of the webview's. Outside the desktop app
  * (the browser preview) the browser's own menu is left alone. Returns what undoes it.
@@ -68,10 +80,7 @@ export function installContextMenu(): () => void {
       return;
     }
     try {
-      const previous = open;
-      open = await Menu.new({ items: items(entries) });
-      await open.popup();
-      void previous?.close();
+      await showContextMenu(entries);
     } catch {
       // No menu is better than a broken one.
     }

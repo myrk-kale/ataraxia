@@ -52,4 +52,18 @@ describe("knowing when the person has finished speaking", () => {
     expect(feed(hearing, 0.15, 600).speaking).toBe(true);
     expect(feed(hearing, 0.02, 600).speaking).toBe(false);
   });
+
+  it("stops after the quiet it was told to wait for", () => {
+    const hearing = createHearing({ stopAfterMs: 3000 });
+    feed(hearing, 0.1, 800);
+    expect(feed(hearing, 0.002, 2500).verdict).toBe("listening");
+    expect(feed(hearing, 0.002, 800).verdict).toBe("end-of-speech");
+  });
+
+  it("never ends by itself when it is told not to", () => {
+    const hearing = createHearing({ stopAfterMs: Infinity, giveUpAfterMs: Infinity });
+    expect(feed(hearing, 0.002, GIVE_UP_AFTER_MS * 3).verdict).toBe("listening");
+    feed(hearing, 0.1, 800);
+    expect(feed(hearing, 0.002, 60_000).verdict).toBe("listening");
+  });
 });
