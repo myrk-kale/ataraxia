@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 
 use super::btw::{BtwContext, ContextItem};
 use super::engine::{Engine, TeeEventSink};
+use crate::adapters::agents::backend::AgentBackend;
 use crate::adapters::agents::{AgentHost, FakeBackend};
 use crate::adapters::fs::StdFs;
 use crate::adapters::git::GitCli;
@@ -61,6 +62,14 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn world() -> World {
+    world_on(
+        ProviderKind::Fake,
+        Arc::new(FakeBackend::new(Duration::from_millis(5))),
+    )
+}
+
+/// The same world, with the chat on another harness (a real one, for the tests that need a login).
+fn world_on(provider: ProviderKind, backend: Arc<dyn AgentBackend>) -> World {
     let repo = std::env::temp_dir().join(format!("ataraxia-engine-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -97,7 +106,7 @@ fn world() -> World {
         workspace_id: None,
         repository_id: repository.id,
         worktree_id: worktree.id,
-        provider: ProviderKind::Fake,
+        provider,
         title: "Chat 1".into(),
         status: SessionStatus::Idle,
         model: None,
@@ -117,10 +126,7 @@ fn world() -> World {
         AgentHost::new(store, tee.clone())
             .with_attachment_dir(repo.join(".attachments"))
             .with_insights(db.clone())
-            .with_backend(
-                ProviderKind::Fake,
-                Arc::new(FakeBackend::new(Duration::from_millis(5))),
-            ),
+            .with_backend(provider, backend),
     );
     let events = Arc::new(Recorder::default());
     let database: Arc<dyn Database> = db.clone();
@@ -1291,6 +1297,86 @@ fn review_marks_comments_and_file_versions_work_against_a_checkpoint() {
             .unwrap()
             .contains(&"README.md".to_string())
     );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn project_file_actions_update_the_tree_without_overwriting_or_staging_files() {
+    use crate::domain::ErrorCode;
+    use crate::ports::ProjectFileAction::{CreateFile, CreateFolder, Move, Trash};
+
+    let w = world();
+    let worktree = w.session.worktree_id;
+    let change = |action| w.engine.code_change_file(worktree, action);
+    let paths = || w.engine.code_tree(worktree).unwrap();
+    change(CreateFolder {
+        path: "drafts".into(),
+    })
+    .unwrap();
+    change(CreateFolder {
+        path: "drafts/empty".into(),
+    })
+    .unwrap();
+    std::fs::write(w.repo.join(".gitignore"), "ignored/\n").unwrap();
+    std::fs::create_dir(w.repo.join("ignored")).unwrap();
+    let listed = paths();
+    assert!(listed.contains(&"drafts/empty/".to_string()));
+    assert!(!listed.contains(&"ignored/".to_string()));
+
+    assert_eq!(
+        change(CreateFile {
+            path: "README.md".into()
+        })
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict,
+    );
+    assert_eq!(
+        change(Move {
+            path: "README.md".into(),
+            to: ".env".into()
+        })
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict,
+    );
+    assert!(
+        change(Trash {
+            path: ".git".into()
+        })
+        .is_err()
+    );
+    assert!(
+        change(CreateFile {
+            path: "drafts/../outside".into()
+        })
+        .is_err()
+    );
+
+    change(Move {
+        path: "README.md".into(),
+        to: "readme.md".into(),
+    })
+    .unwrap();
+    let listed = paths();
+    assert!(listed.contains(&"readme.md".to_string()));
+    assert!(!listed.contains(&"README.md".to_string()));
+    change(Move {
+        path: "readme.md".into(),
+        to: "drafts/notes.md".into(),
+    })
+    .unwrap();
+    let listed = paths();
+    assert!(!listed.contains(&"README.md".to_string()));
+    assert!(listed.contains(&"drafts/notes.md".to_string()));
+    assert_eq!(
+        w.engine
+            .code_read(worktree, "drafts/notes.md")
+            .unwrap()
+            .text,
+        "# demo\nline two\nline three\n",
+    );
+    git(&w.repo, &["diff", "--cached", "--quiet"]);
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 
@@ -2483,4 +2569,151 @@ fn a_schedule_can_be_cancelled_and_bad_ones_are_refused() {
     assert!(refused("x", 120, Some(10)), "an interval under a minute");
     assert_eq!(w.engine.schedules(w.session.id).len(), 1);
     let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+fn first_exchange(w: &World) {
+    w.host.start_session(&w.session).unwrap();
+    w.host
+        .prompt(&w.session.id, "the login redirect loops, can you look?")
+        .unwrap();
+    wait_for("the agent to answer", || {
+        let items = w.host.snapshot(&w.session.id).unwrap().items;
+        items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Message(m) if m.role == ChatRole::Assistant && !m.text.is_empty()))
+            .then_some(())
+    });
+    // The scripted agent waits for a permission before it ends its turn: the turn is ended here.
+    w.engine.on_agent_event(&AgentEvent::TurnDone {
+        session_id: w.session.id,
+        turn_id: TurnId::new(),
+        ok: true,
+    });
+}
+
+fn title_of(w: &World) -> String {
+    w.db.get_session(w.session.id).unwrap().unwrap().title
+}
+
+#[test]
+fn a_new_chat_is_named_once_its_first_exchange_is_over_and_only_once() {
+    let w = world();
+    crate::app::titles::mark_for_title(w.db.as_ref(), w.session.id).unwrap();
+    first_exchange(&w);
+    wait_for("the title", || (title_of(&w) != "Chat 1").then_some(()));
+    assert_eq!(title_of(&w), "Fix the login redirect");
+    assert!(w.events.0.lock().iter().any(|event| matches!(
+        event,
+        InsightEvent::SessionTitle { session_id, title }
+            if *session_id == w.session.id && title == "Fix the login redirect"
+    )));
+    // The helper that asked for it is gone, and the chat is not asked again.
+    assert!(w.db.list_child_sessions(w.session.id).unwrap().is_empty());
+    assert_eq!(
+        w.db.get_preference(&format!("auto_title:{}", w.session.id.0))
+            .unwrap()
+            .as_deref(),
+        Some("done")
+    );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_chat_that_was_already_there_keeps_its_title() {
+    let w = world();
+    // No mark: this is a chat from before titles were made.
+    first_exchange(&w);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(title_of(&w), "Chat 1");
+    assert!(w.db.list_child_sessions(w.session.id).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn a_title_somebody_chose_is_never_replaced() {
+    let w = world();
+    crate::app::titles::mark_for_title(w.db.as_ref(), w.session.id).unwrap();
+    w.db.update_session_title(w.session.id, "Login investigation")
+        .unwrap();
+    first_exchange(&w);
+    wait_for("the mark to be settled", || {
+        (w.db
+            .get_preference(&format!("auto_title:{}", w.session.id.0))
+            .unwrap()
+            .as_deref()
+            == Some("done"))
+        .then_some(())
+    });
+    assert_eq!(title_of(&w), "Login investigation");
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+/// Names a chat with a real harness: its first exchange is in the transcript, and the harness is
+/// asked for the title as it is in the app. Needs the harness's CLI and a login.
+fn a_chat_is_titled_by(provider: ProviderKind, backend: Arc<dyn AgentBackend>) {
+    let w = world_on(provider, backend);
+    let message = |role: ChatRole, text: &str| {
+        ChatItem::Message(crate::domain::ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role,
+            text: text.into(),
+            turn_id: None,
+            images: Vec::new(),
+        })
+    };
+    w.db.replace_chat_items(
+        w.session.id,
+        &[
+            message(
+                ChatRole::User,
+                "Depois de entrar com a conta Google o login redireciona para a mesma tela em loop. Pode investigar?",
+            ),
+            message(
+                ChatRole::Assistant,
+                "O callback do OAuth grava a sessão depois do redirect, então a primeira leitura do cookie falha e o guard manda de volta para /login. Mover a gravação para antes do redirect resolve.",
+            ),
+        ],
+    )
+    .unwrap();
+    crate::app::titles::mark_for_title(w.db.as_ref(), w.session.id).unwrap();
+    w.engine.run_title(&w.session);
+    let title = title_of(&w);
+    eprintln!("title from {}: {title}", provider.as_str());
+    assert_ne!(title, "Chat 1", "no title was made");
+    assert!(title.chars().count() <= 60 && !title.contains('\n'));
+    assert_eq!(
+        w.db.get_preference(&format!("auto_title:{}", w.session.id.0))
+            .unwrap()
+            .as_deref(),
+        Some("done")
+    );
+    assert!(w.db.list_child_sessions(w.session.id).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+#[ignore = "needs the claude CLI and a login"]
+fn a_chat_is_titled_by_claude() {
+    a_chat_is_titled_by(
+        ProviderKind::Claude,
+        Arc::new(crate::adapters::agents::ClaudeBackend::new()),
+    );
+}
+
+#[test]
+#[ignore = "needs the codex CLI and a login"]
+fn a_chat_is_titled_by_codex() {
+    a_chat_is_titled_by(
+        ProviderKind::Codex,
+        Arc::new(crate::adapters::agents::CodexBackend::new()),
+    );
+}
+
+#[test]
+#[ignore = "needs the opencode CLI and a login"]
+fn a_chat_is_titled_by_opencode() {
+    a_chat_is_titled_by(
+        ProviderKind::OpenCode,
+        Arc::new(crate::adapters::agents::OpenCodeBackend::new()),
+    );
 }

@@ -224,6 +224,14 @@ pub struct MentionPath {
     pub repository: Option<String>,
 }
 
+/// Another conversation of the chat's workspace that `@` can point at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionChat {
+    pub id: String,
+    pub title: String,
+    pub updated_at: String,
+}
+
 /// What a live session offers right now (discovered from the provider, not hard-coded).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionOptions {

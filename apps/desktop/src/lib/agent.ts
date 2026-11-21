@@ -198,6 +198,13 @@ export type MentionPath = {
   repository: string | null;
 };
 
+/** Another conversation of the chat's workspace that `@` can point at. */
+export type MentionChat = {
+  id: string;
+  title: string;
+  updated_at: string;
+};
+
 export type ProviderSettings = {
   /** False when Ataraxia cannot change model or effort for this provider. */
   configurable: boolean;
@@ -306,6 +313,11 @@ export function autocompleteForget() {
 
 export function sessionPaths(sessionId: SessionId) {
   return invoke<MentionPath[]>("session_paths", { sessionId });
+}
+
+/** The other conversations of the chat's workspace, most recently used first. */
+export function sessionChats(sessionId: SessionId) {
+  return invoke<MentionChat[]>("session_chats", { sessionId });
 }
 
 export function agentListProviders() {

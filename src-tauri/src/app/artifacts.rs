@@ -9,14 +9,14 @@ use uuid::Uuid;
 use super::analysis::{decisions_prompt, parse_decisions};
 use super::engine::Engine;
 use super::review::{ReviewPriority, prioritize};
-use crate::domain::agent::{MentionPath, ProviderKind};
+use crate::domain::agent::{MentionChat, MentionPath, ProviderKind};
 use crate::domain::ids::{CheckpointId, RepositoryId, SessionId, WorktreeId};
 use crate::domain::{
     Artifact, ArtifactId, ArtifactKind, ArtifactStatus, Checkpoint, CheckpointSource, Decision,
     DecisionId, DecisionMessage, DecisionState, Error, ErrorCode, InsightEvent, Result,
     ReviewComment, ReviewMark, ReviewState, SessionKind,
 };
-use crate::ports::FileContent;
+use crate::ports::{FileContent, ProjectFileAction};
 
 /// More declarations than this under one name are noise, not a place to jump to.
 const MAX_DEFINITIONS: usize = 30;
@@ -395,7 +395,43 @@ impl Engine {
             .db
             .get_worktree(worktree_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
-        self.git.list_files(&worktree.path)
+        let files = self.git.list_files(&worktree.path)?;
+        self.fs.project_paths(&worktree.path, files)
+    }
+
+    pub fn code_change_file(
+        &self,
+        worktree_id: WorktreeId,
+        action: ProjectFileAction,
+    ) -> Result<()> {
+        let worktree = self
+            .db
+            .get_worktree(worktree_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "worktree not found"))?;
+        self.fs.change_project_file(&worktree.path, action)
+    }
+
+    /// The other conversations of the chat's workspace, most recently used first: what `@` offers
+    /// besides files. Empty for a chat that is in no workspace.
+    pub fn session_chats(&self, session_id: SessionId) -> Result<Vec<MentionChat>> {
+        let session = self
+            .db
+            .get_session(session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let Some(workspace) = session.workspace_id else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .db
+            .list_workspace_sessions(workspace)?
+            .into_iter()
+            .filter(|other| other.id != session_id)
+            .map(|other| MentionChat {
+                id: other.id.0.to_string(),
+                title: other.title,
+                updated_at: other.updated_at,
+            })
+            .collect())
     }
 
     /// The files and folders `@` offers in a chat: those of the folder its agent works in, by

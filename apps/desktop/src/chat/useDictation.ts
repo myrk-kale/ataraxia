@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { speechStatus, speechTranscribe, speechWarmup } from "../lib/speech";
-import { createHearing, PHRASE_PAUSE_MS, STOP_AFTER_SILENCE_MS } from "./vad";
+import { readDictationPrefs } from "./dictationPrefs";
+import { createHearing, PHRASE_PAUSE_MS } from "./vad";
 import { encodeWav, isSilent, level, mergeChunks, resample, SPEECH_RATE, toBase64 } from "./wav";
 
 export type DictationState = "idle" | "starting" | "recording" | "transcribing";
@@ -9,6 +10,8 @@ export type Listening = "waiting" | "hearing" | "pausing";
 
 /** A dictation longer than this stops by itself: it is a message, and the engine has a limit too. */
 const MAX_SECONDS = 150;
+/** Recording until the button is pressed again is not cut at that, only at this: phrases are written as they close. */
+const MAX_MANUAL_SECONDS = 30 * 60;
 /** How often the words not yet written are tried, to show them while the person goes on. */
 const PREVIEW_EVERY_MS = 1000;
 /** A phrase this long is written even with no pause in it: the engine listens to 30 s at a time. */
@@ -37,6 +40,8 @@ type Session = {
   source: MediaStreamAudioSourceNode;
   rate: number;
   hearing: ReturnType<typeof createHearing>;
+  /** The quiet that ends the recording, in ms; `Infinity` when only the button ends it. */
+  stopAfterMs: number;
   /** The engine can write while the person speaks (a command of their own cannot). */
   streaming: boolean;
   /** What was recorded since the last phrase was closed. */
@@ -66,7 +71,8 @@ async function listen(chunks: readonly Float32Array[], rate: number, quick: bool
  *
  * It follows the person: each phrase is written as soon as they pause after it (`onText` receives
  * it then, and it stays), what is still being said is shown as `partial` while they go on, and the
- * recording ends by itself once they have been quiet for a moment. `toggle` starts and stops, and
+ * recording ends by itself once they have been quiet for as long as the settings say, or, when
+ * that is turned off, only when they press the button again. `toggle` starts and stops, and
  * `cancel` stops and drops what has not been written yet.
  */
 export function useDictation({
@@ -85,6 +91,8 @@ export function useDictation({
   /** 0 to 1: how far the quiet after speech is towards ending the recording. */
   const [silence, setSilence] = useState(0);
   const [partial, setPartial] = useState("");
+  /** The recording on screen ends by itself in a quiet moment (what the settings said when it began). */
+  const [autoStop, setAutoStop] = useState(true);
   const session = useRef<Session | null>(null);
   /** Changes whenever a dictation is over or thrown away, so what is still in flight is let go. */
   const generation = useRef(0);
@@ -273,6 +281,8 @@ export function useDictation({
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      const prefs = readDictationPrefs();
+      const stopAfterMs = prefs.autoStop ? prefs.silenceMs : Infinity;
       const context = new AudioContext();
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
@@ -282,7 +292,8 @@ export function useDictation({
         processor,
         source,
         rate: context.sampleRate,
-        hearing: createHearing(),
+        hearing: createHearing({ stopAfterMs, giveUpAfterMs: stopAfterMs === Infinity ? Infinity : undefined }),
+        stopAfterMs,
         streaming: status.streaming,
         pending: [],
         pendingSamples: 0,
@@ -314,7 +325,7 @@ export function useDictation({
         }
         setLoudness(loud);
         setListening(heard.speaking ? "hearing" : heard.spoke ? "pausing" : "waiting");
-        setSilence(heard.spoke ? Math.min(1, heard.silentMs / STOP_AFTER_SILENCE_MS) : 0);
+        setSilence(heard.spoke && Number.isFinite(current.stopAfterMs) ? Math.min(1, heard.silentMs / current.stopAfterMs) : 0);
         if (heard.verdict !== "listening") {
           void stop();
           return;
@@ -337,10 +348,14 @@ export function useDictation({
       // A script processor only runs while it is connected on; it writes no sound.
       processor.connect(context.destination);
       current.timers.push(
-        window.setTimeout(() => void stop(), MAX_SECONDS * 1000),
+        window.setTimeout(
+          () => void stop(),
+          (prefs.autoStop || !status.streaming ? MAX_SECONDS : MAX_MANUAL_SECONDS) * 1000,
+        ),
         window.setInterval(() => preview(current), PREVIEW_EVERY_MS),
       );
       session.current = current;
+      setAutoStop(prefs.autoStop);
       setPartial("");
       setState("recording");
     } catch (err) {
@@ -367,5 +382,5 @@ export function useDictation({
     };
   }, [release]);
 
-  return { state, loudness, listening, silence, partial, supported, toggle, cancel };
+  return { state, loudness, listening, silence, partial, autoStop, supported, toggle, cancel };
 }

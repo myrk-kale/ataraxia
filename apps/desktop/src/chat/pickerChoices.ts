@@ -1,10 +1,11 @@
-import type { ComposerResource, MentionPath } from "../lib/agent";
+import type { ComposerResource, MentionChat, MentionPath } from "../lib/agent";
 
 /**
  * The two pickers of the message field:
  * - `/` offers commands, skills and MCP servers at the very start of the message.
- * - `@` points at a file in one of the repositories. What goes into the message is plain text,
- *   which every agent reads with its own tools.
+ * - `@` points at a file in one of the repositories, or at another conversation of the workspace
+ *   (`@"chat:Title"`). What goes into the message is plain text: files are read by the agent with
+ *   its own tools, conversations with the chat tools of Ataraxia's MCP server, a piece at a time.
  */
 export type Trigger = {
   kind: "command" | "mention";
@@ -17,7 +18,7 @@ export type Trigger = {
 
 export type PickerItem = {
   id: string;
-  kind: ComposerResource["kind"] | "file";
+  kind: ComposerResource["kind"] | "file" | "chat";
   /** The name shown. */
   label: string;
   /** A second line, muted: what it does or where it is. */
@@ -185,6 +186,41 @@ export function mentionItems(
     }),
   );
   return found;
+}
+
+/** The most conversations the list shows ahead of the files. */
+const MAX_CHATS_SHOWN = 4;
+/** With nothing typed yet, only the latest few: the files are what `@` is mostly for. */
+const MAX_CHATS_UNTYPED = 3;
+
+/** What goes into the message to point at a conversation; `id` tells apart two with the same title. */
+export function chatMentionText(title: string, id: string | null): string {
+  const named = id ? `${title} #${id.slice(0, 8)}` : title;
+  return `@"chat:${named.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * The conversations of the workspace that fit what was typed after `@`, most recent first among
+ * equals. Typing `chat:` narrows the list to them. Two with the same title are written with the
+ * start of their id so the agent can tell which is meant.
+ */
+export function chatItems(chats: MentionChat[], query: string): PickerItem[] {
+  const only = /^chat:/i.test(query);
+  const typed = only ? query.slice(5).replace(/^"/, "") : query;
+  const limit = only ? MAX_SHOWN : typed === "" ? MAX_CHATS_UNTYPED : MAX_CHATS_SHOWN;
+  const titles = new Map<string, number>();
+  chats.forEach((chat) => titles.set(chat.title.toLowerCase(), (titles.get(chat.title.toLowerCase()) ?? 0) + 1));
+  return ranked(chats, (chat) => score(chat.title, typed), limit).map(
+    (chat): PickerItem => ({
+      id: `chat:${chat.id}`,
+      kind: "chat",
+      label: chat.title || "Untitled chat",
+      detail: "Conversation in this workspace",
+      aside: "",
+      insert: `${chatMentionText(chat.title, (titles.get(chat.title.toLowerCase()) ?? 0) > 1 ? chat.id : null)} `,
+      continues: false,
+    }),
+  );
 }
 
 function matchingGlobFiles(pattern: string, files: string[]): string[] {

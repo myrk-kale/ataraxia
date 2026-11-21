@@ -1,7 +1,13 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Eye, File as FileIcon, Folder } from "lucide-react";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { Check, ChevronDown, ChevronRight, CircleAlert, Ellipsis, Eye, File as FileIcon, Folder } from "lucide-react";
 import { useMemo } from "react";
+import type { MenuEntry } from "../app/contextMenu";
+import { showContextMenu } from "../app/contextMenuTauri";
 import type { ChangedFile, Level, ReviewMark, ReviewPriority, Unit } from "../lib/insights";
-import { buildTree, CHANGE_LETTER, visibleRows } from "./model";
+import { errorText } from "../lib/useInsightEvents";
+import { Button } from "../ui/Button";
+import { buildTree, CHANGE_LETTER, visibleRows, type TreeNode } from "./model";
+import type { FileRequest } from "./ProjectFileDialog";
 
 const LEVEL_LABEL: Record<Level, string> = { high: "High", medium: "Medium", low: "Low" };
 
@@ -306,6 +312,8 @@ export function ProjectTree({
   changed,
   onToggle,
   onOpen,
+  onAction,
+  onError,
 }: {
   paths: readonly string[];
   open: ReadonlySet<string>;
@@ -313,21 +321,47 @@ export function ProjectTree({
   changed: ReadonlyMap<string, ChangedFile["change"]>;
   onToggle: (path: string) => void;
   onOpen: (path: string) => void;
+  onAction: (request: FileRequest) => void;
+  onError: (message: string) => void;
 }) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const rows = useMemo(() => visibleRows(tree, open), [tree, open]);
+
+  function showActions(node: TreeNode, x: number, y: number) {
+    const action = (text: string, kind: FileRequest["kind"]): MenuEntry => ({
+      type: "action",
+      text,
+      run: () => onAction({ kind, path: node.path }),
+    });
+    const entries: MenuEntry[] = [];
+    if (node.kind === "dir") {
+      entries.push(action("New file", "create-file"), action("New folder", "create-folder"), { type: "separator" });
+    }
+    entries.push(action("Rename", "rename"), action("Move…", "move"), action("Move to Trash…", "trash"));
+    void showContextMenu(entries, new LogicalPosition(x, y)).catch((err: unknown) => onError(errorText(err)));
+  }
+
   return (
-    <ul aria-label="Project files" className="flex flex-col px-2 pb-4" role="tree">
+    <ul aria-label="Project files" className="flex flex-col px-2 pb-4">
       {rows.map(({ node, depth }) => {
         const isDir = node.kind === "dir";
         const expanded = open.has(node.path);
         return (
-          <li key={node.path} role="none">
+          <li
+            key={node.path}
+            className="group flex items-center rounded-cg-sm hover:bg-cg-tint"
+            onContextMenu={(event) => {
+              if (import.meta.env.DEV && event.shiftKey) {
+                return;
+              }
+              event.preventDefault();
+              showActions(node, event.clientX, event.clientY);
+            }}
+          >
             <button
+              aria-current={!isDir && openPath === node.path ? "true" : undefined}
               aria-expanded={isDir ? expanded : undefined}
-              aria-selected={!isDir && openPath === node.path}
-              className={ROW}
-              role="treeitem"
+              className={`${ROW} min-w-0 flex-1 aria-current:bg-cg-tint aria-current:text-cg-ink`}
               style={{ paddingLeft: 8 + depth * 14 }}
               title={node.path}
               type="button"
@@ -358,6 +392,18 @@ export function ProjectTree({
                 </span>
               ) : null}
             </button>
+            <Button
+              aria-haspopup="menu"
+              aria-label={`Actions for ${node.path}`}
+              className="flex-none opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+              variant="icon"
+              onClick={(event) => {
+                const anchor = event.currentTarget.getBoundingClientRect();
+                showActions(node, anchor.left, anchor.bottom);
+              }}
+            >
+              <Ellipsis aria-hidden="true" size={14} />
+            </Button>
           </li>
         );
       })}

@@ -541,6 +541,12 @@ pub enum InsightEvent {
     },
     /// An agent changed what is remembered: an open memory view reloads.
     Memories,
+    /// A chat was given a title once its first exchange was over.
+    #[serde(rename_all = "camelCase")]
+    SessionTitle {
+        session_id: SessionId,
+        title: String,
+    },
 }
 
 /// A named piece of code found by a parser: the unit a change is attributed to.

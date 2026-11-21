@@ -360,6 +360,9 @@ fn scripted_answer(text: &str, read_only: bool) -> Option<String> {
                 .to_string(),
         );
     }
+    if text.contains("ATARAXIA_TASK:title") {
+        return Some("Title: \"Fix the login redirect.\"".to_string());
+    }
     if text.contains("ATARAXIA_TASK:flow") {
         return Some(
             "{\"summary\":\"Request enters, is validated, then stored.\",\"nodes\":[\

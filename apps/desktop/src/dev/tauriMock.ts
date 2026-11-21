@@ -460,6 +460,11 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
         { path: "src-tauri/src/lib.rs", dir: false, repository: null },
         { path: "README.md", dir: false, repository: null },
       ];
+    case "session_chats":
+      return [
+        { id: "7d1f0c2e-1111-4a5b-8c3d-000000000001", title: "Fix login redirect", updated_at: "2026-11-20T10:00:00Z" },
+        { id: "7d1f0c2e-2222-4a5b-8c3d-000000000002", title: "Release 0.14", updated_at: "2026-11-19T10:00:00Z" },
+      ];
     case "agent_get_options": {
       const target = snapshot.sessions.find((item) => item.id === args?.sessionId) ?? session;
       return optionsByProvider[target.provider];

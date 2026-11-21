@@ -1089,6 +1089,7 @@ impl AgentHost {
                     crate::app::memory::enabled(self.inner.store.as_ref()),
                 ));
                 sent.push_str(&guide::workspace_note(&self.workspace_members(session_id)));
+                sent.push_str(&guide::chats_note(&self.other_chat_titles(session_id)));
             }
         }
         if config_intro && !config_preamble.is_empty() {
@@ -1228,6 +1229,32 @@ impl AgentHost {
     /// Restarts a provider process that exited since the last turn.
     /// The repositories of a chat's workspace as the chat sees them: its own first, then the
     /// others, each with the folder of the worktree the chat was made with.
+    /// The titles of the other chats of this chat's workspace, most recently used first, and how
+    /// many there are in all. Empty when the chat is in no workspace or is alone in it.
+    fn other_chat_titles(&self, session_id: &SessionId) -> (Vec<String>, usize) {
+        let store = &self.inner.store;
+        let Some(workspace) = store
+            .get_session(*session_id)
+            .ok()
+            .flatten()
+            .and_then(|session| session.workspace_id)
+        else {
+            return (Vec::new(), 0);
+        };
+        let others: Vec<String> = store
+            .list_workspace_sessions(workspace)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|session| session.id != *session_id)
+            .map(|session| session.title)
+            .collect();
+        let total = others.len();
+        (
+            others.into_iter().take(guide::CHATS_NOTE_TITLES).collect(),
+            total,
+        )
+    }
+
     fn workspace_members(&self, session_id: &SessionId) -> Vec<(String, PathBuf)> {
         let store = &self.inner.store;
         let Ok(Some(session)) = store.get_session(*session_id) else {
@@ -1700,9 +1727,11 @@ impl AgentRuntime for AgentHost {
             .as_ref()
             .map(|gateway| gateway.issue(session_id, !session.kind.read_only()));
         let api_token = api.as_ref().map(|access| access.token.clone());
-        // The memory tools are an MCP server of the app itself, reached with this chat's token.
+        // The memory tools and the tools to read the workspace's other chats are an MCP server of
+        // the app itself, reached with this chat's token.
         if let Some(access) = &api
-            && crate::app::memory::enabled(self.inner.store.as_ref())
+            && (crate::app::memory::enabled(self.inner.store.as_ref())
+                || session.workspace_id.is_some())
             && let Err(error) = agent_config.attach_ataraxia_server(access)
         {
             self.inner.revoke(api_token.as_deref());

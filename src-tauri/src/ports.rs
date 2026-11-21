@@ -363,8 +363,25 @@ pub struct FileContent {
     pub mtime_ms: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ProjectFileAction {
+    CreateFile { path: String },
+    CreateFolder { path: String },
+    Move { path: String, to: String },
+    Trash { path: String },
+}
+
 pub trait Fs: Send + Sync {
     fn exists(&self, path: &Path) -> Result<bool>;
+
+    fn project_paths(&self, _root: &Path, _files: Vec<String>) -> Result<Vec<String>> {
+        unsupported("project_paths")
+    }
+
+    fn change_project_file(&self, _root: &Path, _action: ProjectFileAction) -> Result<()> {
+        unsupported("change_project_file")
+    }
 
     /// Reads a file inside `root`; paths that escape it are refused.
     fn read_text(&self, _root: &Path, _relative: &str) -> Result<FileContent> {
@@ -418,6 +435,8 @@ pub trait Store: Send + Sync {
     fn list_sessions(&self, repository_id: RepositoryId) -> Result<Vec<ChatSession>>;
     fn get_session(&self, id: SessionId) -> Result<Option<ChatSession>>;
     fn touch_session(&self, id: SessionId, opened_at: &str) -> Result<()>;
+    /// Renames a chat.
+    fn update_session_title(&self, id: SessionId, title: &str) -> Result<()>;
     /// Removes a chat with its messages, subagents, checkpoints, decisions, diagrams and the
     /// helper sessions under it. The code and git are untouched.
     fn delete_session(&self, id: SessionId) -> Result<()>;

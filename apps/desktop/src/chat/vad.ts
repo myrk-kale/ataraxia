@@ -1,5 +1,5 @@
-/** How long the person is quiet, after having spoken, before the recording ends by itself. */
-export const STOP_AFTER_SILENCE_MS = 750;
+/** How long the person is quiet, after having spoken, before the recording ends by itself (the default; it is a setting). */
+export const STOP_AFTER_SILENCE_MS = 1500;
 /** A shorter pause than that already closes a phrase: its text is written while they go on. */
 export const PHRASE_PAUSE_MS = 450;
 /** Nothing said for this long since the microphone opened: they changed their mind. */
@@ -26,6 +26,7 @@ export type Hearing = {
  * Tells speech from the quiet between words, one stretch of the microphone at a time. The bar for
  * "speech" follows the room: it is a few times the noise the room makes when nobody talks, so a
  * fan or a noisy street does not keep the recording open, and a quiet voice is not missed.
+ * `Infinity` for `stopAfterMs` and `giveUpAfterMs` never ends the recording: only the person does.
  */
 export function createHearing({
   stopAfterMs = STOP_AFTER_SILENCE_MS,

@@ -297,6 +297,9 @@ impl Engine {
                 }
                 // The next message waits behind a continuation when a limit stopped this turn.
                 self.queue_advance(session_id, ok);
+                if ok {
+                    self.title_chat(&session);
+                }
                 if !ok {
                     let mut waits = self.rate_waits.lock();
                     if let Some(wait) = waits.get_mut(&session_id) {

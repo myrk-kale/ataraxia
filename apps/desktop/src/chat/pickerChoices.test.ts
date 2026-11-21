@@ -7,6 +7,8 @@ import {
   expandSkillMention,
   findTrigger,
   mentionItems,
+  chatItems,
+  chatMentionText,
   mentionText,
   score,
 } from "./pickerChoices";
@@ -249,5 +251,36 @@ describe("expandGlobMentions", () => {
     expect(expandGlobMentions("Use @src/*.ts, then @src/*.tsx.", paths)).toBe(
       "Use @src/a.ts @src/b.ts, then @src/*.tsx.",
     );
+  });
+});
+
+describe("chatItems", () => {
+  const chats = [
+    { id: "aaaaaaaa-1111-4000-8000-000000000001", title: "Fix login redirect", updated_at: "" },
+    { id: "bbbbbbbb-2222-4000-8000-000000000002", title: "Release 0.14", updated_at: "" },
+    { id: "cccccccc-3333-4000-8000-000000000003", title: "Release 0.14", updated_at: "" },
+    { id: "dddddddd-4444-4000-8000-000000000004", title: 'Say "hi"', updated_at: "" },
+  ];
+
+  it("finds a conversation by what is typed of its title and writes a quoted reference", () => {
+    const [item] = chatItems(chats, "login");
+    expect(item.kind).toBe("chat");
+    expect(item.label).toBe("Fix login redirect");
+    expect(item.insert).toBe('@"chat:Fix login redirect" ');
+  });
+
+  it("tells apart two conversations with the same title by the start of their id", () => {
+    const found = chatItems(chats, "release");
+    expect(found.map((item) => item.insert)).toEqual(['@"chat:Release 0.14 #bbbbbbbb" ', '@"chat:Release 0.14 #cccccccc" ']);
+  });
+
+  it("escapes quotes in a title, and shows only the latest few when nothing is typed", () => {
+    expect(chatMentionText('Say "hi"', null)).toBe('@"chat:Say \\"hi\\""');
+    expect(chatItems(chats, "")).toHaveLength(3);
+  });
+
+  it("is all there is once chat: is typed", () => {
+    expect(chatItems(chats, "chat:").length).toBe(4);
+    expect(chatItems(chats, "chat:fix").map((item) => item.label)).toEqual(["Fix login redirect"]);
   });
 });

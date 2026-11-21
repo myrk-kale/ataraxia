@@ -1,8 +1,10 @@
 import { Download } from "lucide-react";
 import { useEffect, useState } from "react";
+import { MAX_SILENCE_MS, MIN_SILENCE_MS, SILENCE_STEP_MS, useDictationPrefs } from "../chat/dictationPrefs";
 import { SpeechModelDialog } from "../chat/SpeechModelDialog";
 import { speechSet, speechStatus, type SpeechStatus } from "../lib/speech";
 import { Button } from "../ui/Button";
+import { Toggle } from "../ui/Overlay";
 import { QuietSelect } from "../ui/QuietSelect";
 import { SettingRow } from "./appearance/AppearanceSettings";
 
@@ -23,6 +25,7 @@ export function VoicePanel() {
   const [saved, setSaved] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const prefs = useDictationPrefs();
 
   useEffect(() => {
     speechStatus().then(
@@ -56,7 +59,7 @@ export function VoicePanel() {
   return (
     <>
       <SettingRow
-        hint="The microphone button in the message field (Ctrl/⌘ Shift M) records and writes what you say into the field as you go, and stops by itself when you are quiet for a moment. Whisper is built in and runs on this computer; the recording is never sent anywhere."
+        hint="The microphone button in the message field (Ctrl/⌘ Shift M) records and writes what you say into the field as you go. Whisper is built in and runs on this computer; the recording is never sent anywhere."
         title="Dictation"
       >
         <span className={`text-small ${status.ready ? "text-cg-green" : "text-cg-amber-text"}`} role="status">
@@ -103,6 +106,32 @@ export function VoicePanel() {
           </div>
         </SettingRow>
       )}
+      <SettingRow
+        hint="On: the recording ends by itself once you have been quiet for a while. Off: it works like a voice recorder, writing as you speak and stopping only when you press the button again or Enter (Esc discards). Enter stops the recording in either mode."
+        title="Stop when I go quiet"
+      >
+        <Toggle
+          hideLabel
+          isSelected={prefs.autoStop}
+          label="Stop when I go quiet"
+          onChange={(autoStop) => prefs.set({ autoStop })}
+        />
+      </SettingRow>
+      <SettingRow hint="How long the quiet lasts before the recording stops. A longer wait lets you think between sentences." title="Wait before stopping">
+        <input
+          aria-label="Silence before stopping"
+          aria-valuetext={`${(prefs.silenceMs / 1000).toFixed(2).replace(/\.?0+$/, "")} seconds`}
+          className="h-1.5 w-40 cursor-pointer accent-[var(--cg-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!prefs.autoStop}
+          max={MAX_SILENCE_MS}
+          min={MIN_SILENCE_MS}
+          step={SILENCE_STEP_MS}
+          type="range"
+          value={prefs.silenceMs}
+          onChange={(event) => prefs.set({ silenceMs: Number(event.target.value) })}
+        />
+        <span className="w-12 text-right text-small text-cg-muted-strong tabular-nums">{(prefs.silenceMs / 1000).toFixed(2).replace(/\.?0+$/, "")} s</span>
+      </SettingRow>
       <SettingRow hint="What you dictate in. Detecting it works for most speech; pick one if short phrases are misheard." title="Language">
         <div className="rounded-cg-md border border-cg-control bg-cg-panel px-1">
           <QuietSelect

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession, Worktree } from "../lib/workspace";
 import { newBridge } from "../app/spaceCommands";
+import { showContextMenu } from "../app/contextMenuTauri";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -11,6 +12,7 @@ const calls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 let answers: Record<string, (args: Record<string, unknown> | undefined) => unknown> = {};
 const listeners = new Map<string, (event: { payload: unknown }) => void>();
 
+vi.mock("../app/contextMenuTauri", () => ({ showContextMenu: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ cmd, args });
@@ -109,6 +111,7 @@ async function space(props: { reference?: string | null; branch?: string | null;
 const count = (cmd: string) => calls.filter((call) => call.cmd === cmd).length;
 
 beforeEach(() => {
+  vi.mocked(showContextMenu).mockClear();
   calls.length = 0;
   answers = {};
   listeners.clear();
@@ -128,6 +131,83 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   window.localStorage.clear();
+});
+
+describe("project file actions", () => {
+  it("creates a folder, moves an open file, and confirms trashing the file", async () => {
+    let paths = ["a.ts"];
+    answers.code_tree = () => paths;
+    answers.code_review = () => emptyReview;
+    answers.code_read = () => ({ path: "a.ts", text: "sample", mtimeMs: 1 });
+    answers.code_change_file = (args) => {
+      const action = args?.action;
+      if (action && typeof action === "object" && "kind" in action) {
+        switch (action.kind) {
+          case "create-folder": paths = ["a.ts", "drafts/"]; break;
+          case "move": paths = ["drafts/", "drafts/a.ts"]; break;
+          case "trash": paths = ["drafts/"]; break;
+        }
+      }
+    };
+    await space({ mode: "tree" });
+
+    function click(selector: string) {
+      const button = document.querySelector<HTMLButtonElement>(selector);
+      expect(button).not.toBeNull();
+      act(() => button?.click());
+    }
+
+    async function submit(name: string) {
+      const input = document.querySelector<HTMLInputElement>("[role=dialog] input");
+      expect(input).not.toBeNull();
+      act(() => {
+        const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setValue?.call(input, name);
+        input?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      click("[role=dialog] button[type=submit]");
+      await flush();
+    }
+
+    click("button[aria-label='New folder in the project root']");
+    await submit("drafts");
+    expect(host.querySelector("button[title='drafts']")?.getAttribute("aria-expanded")).toBe("false");
+
+    click("button[title='a.ts']");
+    await flush();
+    click("button[aria-label='Actions for a.ts']");
+    const entries = vi.mocked(showContextMenu).mock.lastCall?.[0];
+    const move = entries?.find((item) => item.type === "action" && item.text === "Move…");
+    expect(move?.type).toBe("action");
+    if (move?.type === "action") {
+      act(() => void move.run());
+    }
+    await submit("drafts/a.ts");
+    expect(calls.filter((call) => call.cmd === "code_change_file").map((call) => call.args)).toEqual([
+      { worktreeId: "w1", action: { kind: "create-folder", path: "drafts" } },
+      { worktreeId: "w1", action: { kind: "move", path: "a.ts", to: "drafts/a.ts" } },
+    ]);
+    expect(host.querySelector("button[title='drafts/a.ts']")?.getAttribute("aria-current")).toBe("true");
+    expect(host.querySelector("section header")?.textContent).toContain("drafts/a.ts");
+
+    click("button[aria-label='Actions for drafts/a.ts']");
+    const trash = vi.mocked(showContextMenu).mock.lastCall?.[0].find(
+      (item) => item.type === "action" && item.text === "Move to Trash…",
+    );
+    expect(trash?.type).toBe("action");
+    if (trash?.type === "action") {
+      act(() => void trash.run());
+    }
+    expect(count("code_change_file")).toBe(2);
+    click("[role=dialog] button[type=submit]");
+    await flush();
+    expect(calls.filter((call) => call.cmd === "code_change_file").at(-1)?.args).toEqual({
+      worktreeId: "w1",
+      action: { kind: "trash", path: "drafts/a.ts" },
+    });
+    expect(host.querySelector("button[title='drafts/a.ts']")).toBeNull();
+    expect(host.querySelector("section header")).toBeNull();
+  });
 });
 
 describe("what the Code space compares", () => {
@@ -228,15 +308,16 @@ describe("the views follow the files", () => {
     answers.code_review = () => emptyReview;
     await space({ mode: "tree" });
     // The tabs animate on their own; what must not move is the list and the file pane.
-    const shown = () => `${host.querySelector("[role=tree]")?.outerHTML}${host.querySelector("section")?.outerHTML}`;
+    const tree = "ul[aria-label='Project files']";
+    const shown = () => `${host.querySelector(tree)?.outerHTML}${host.querySelector("section")?.outerHTML}`;
     const before = shown();
-    const list = host.querySelector("[role=tree]");
+    const list = host.querySelector(tree);
     act(() => emit());
     await wait(800);
     await flush();
     expect(count("code_tree")).toBe(2);
     expect(shown()).toBe(before);
-    expect(host.querySelector("[role=tree]")).toBe(list);
+    expect(host.querySelector(tree)).toBe(list);
     expect(host.querySelector("[role=status], [role=alert]")).toBeNull();
   });
 

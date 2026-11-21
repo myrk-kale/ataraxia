@@ -1130,6 +1130,10 @@ impl<'a> WorkspaceService<'a> {
                 self.remembered_setting(&provider.effort_preference_key()),
             ),
         };
+        // A chat that was given a title keeps it; the others are named once they have begun.
+        let named = title
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
         let session = ChatSession {
             id: SessionId::new(),
             workspace_id: Some(workspace.id),
@@ -1150,6 +1154,9 @@ impl<'a> WorkspaceService<'a> {
             last_opened_at: Some(now.clone()),
         };
         self.store.create_session(&session)?;
+        if !named {
+            super::titles::mark_for_title(self.store, session.id)?;
+        }
         self.store.set_session_worktrees(session.id, &others)?;
         self.show_workspace(workspace.id)?;
         self.focus(workspace.id, repository.id)?;
