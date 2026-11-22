@@ -201,6 +201,25 @@ pub trait Syntax: Send + Sync {
     fn language_of(&self, path: &str) -> Option<&'static str>;
     /// Symbols of a file, outermost first; `None` for languages without a grammar.
     fn symbols(&self, path: &str, text: &str) -> Option<Vec<crate::domain::Symbol>>;
+
+    fn code_structure(&self, path: &str, text: &str) -> Option<CodeStructure> {
+        Some(CodeStructure {
+            symbols: self.symbols(path, text)?,
+            references: Vec::new(),
+        })
+    }
+}
+
+pub struct CodeStructure {
+    pub symbols: Vec<crate::domain::Symbol>,
+    pub references: Vec<CodeReference>,
+}
+
+pub struct CodeReference {
+    pub kind: &'static str,
+    pub target: String,
+    pub line: u32,
+    pub owner: Option<usize>,
 }
 
 /// See [`Git::files_probe`].

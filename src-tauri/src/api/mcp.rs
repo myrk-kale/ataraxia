@@ -7,11 +7,30 @@
 use serde_json::{Map, Value, json};
 
 use super::{ApiError, ApiResult, ApiService};
+use crate::app::code_graph::GraphQuery;
 use crate::app::memory::{self, Detail, Neighbor, NewMemory, Patch, Query, Viewer};
 use crate::domain::ids::WorkspaceId;
 use crate::domain::{InsightEvent, Memory, MemoryKind, MemorySource, Relation};
 
 const SUPPORTED: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+pub(crate) const CODE_GRAPH_INSTRUCTIONS: &str = "Explore code with Ataraxia's `code_graph` MCP tool before grep. Use grep or rg for exact text and gaps in the graph.";
+
+fn code_graph_tool() -> Value {
+    tool(
+        "code_graph",
+        "Navigate the current workspace's Tree-sitter graph. Search for a symbol or path, list a file or directory's declarations, or follow calls by searching for their target or enclosing symbol. Imports and calls are syntactic references. Rust, TypeScript/TSX, JavaScript/JSX, Python, Go and Java are supported.",
+        json!({
+            "query": { "type": "string", "description": "Symbol, call target, import, or file path to look up. Use query or path." },
+            "path": { "type": "string", "description": "Restrict to an exact file or directory. Prefix paths in secondary repositories with the repository name. Use . for the full workspace." },
+            "kind": { "type": "string", "enum": ["symbol", "call", "import"] },
+            "offset": { "type": "integer", "minimum": 0, "description": "Use next_offset from the preceding page." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Default 25." }
+        }),
+        &[],
+        true,
+    )
+}
 
 /// Said to the model when the connection opens (clients that show server instructions put it in
 /// the system prompt) and repeated in short in the chat's first message.
@@ -400,6 +419,9 @@ impl ApiService {
     /// workspace.
     fn listed_tools(&self) -> Vec<Value> {
         let mut listed = Vec::new();
+        if self.code_graph.is_some() {
+            listed.push(code_graph_tool());
+        }
         if memory::enabled(self.db.as_ref()) {
             listed.extend(tools());
         }
@@ -411,6 +433,9 @@ impl ApiService {
 
     fn instructions(&self) -> String {
         let mut parts = Vec::new();
+        if self.code_graph.is_some() {
+            parts.push(CODE_GRAPH_INSTRUCTIONS);
+        }
         if memory::enabled(self.db.as_ref()) {
             parts.push(INSTRUCTIONS);
         }
@@ -448,6 +473,41 @@ impl ApiService {
     }
 
     fn run_tool(&self, name: &str, args: &Value, write: bool) -> ApiResult<Value> {
+        if name == "code_graph" {
+            let graph = self
+                .code_graph
+                .as_ref()
+                .ok_or_else(|| bad("code graph is unavailable"))?;
+            let query = text(args, "query").unwrap_or("").trim();
+            let path = text(args, "path")
+                .map(str::trim)
+                .filter(|path| !path.is_empty());
+            if query.is_empty() && path.is_none() {
+                return Err(bad("provide a `query` or `path`"));
+            }
+            let kind = text(args, "kind");
+            if kind.is_some_and(|kind| !matches!(kind, "symbol" | "call" | "import")) {
+                return Err(bad("`kind` must be symbol, call or import"));
+            }
+            let page = graph.code_graph(
+                self.scope,
+                GraphQuery {
+                    query,
+                    path: path.filter(|path| *path != "." && *path != "./"),
+                    kind,
+                    offset: args
+                        .get("offset")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or_default(),
+                    limit: args
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .map_or(25, |value| value.clamp(1, 100) as usize),
+                },
+            )?;
+            return serde_json::to_value(page).map_err(|error| bad(error.to_string()));
+        }
         if let Some(outcome) = self.run_chat_tool(name, args) {
             return outcome;
         }

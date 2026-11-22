@@ -87,6 +87,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     tee.attach(&engine);
     if let Some(api) = &api {
         api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
+        api.set_code_graph(Arc::clone(&engine) as Arc<dyn crate::api::CodeGraph>);
         api.set_scheduler(Arc::clone(&engine) as Arc<dyn crate::api::Scheduling>);
         api.set_sink(tauri_sink.clone() as Arc<dyn crate::ports::InsightSink>);
     }

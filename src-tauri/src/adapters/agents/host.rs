@@ -1634,12 +1634,13 @@ impl AgentRuntime for AgentHost {
         if carried_subagents.is_empty() {
             if let Some(insights) = &self.inner.insights {
                 carried_subagents = insights.list_subagents(session.id).unwrap_or_default();
-                // A subagent cannot outlive the app, whatever it was doing when it closed.
-                for record in carried_subagents.iter_mut() {
-                    if record.status == SubagentStatus::Running {
-                        record.status = SubagentStatus::Failed;
-                    }
-                }
+            }
+        }
+        // A subagent cannot outlive the harness process that owned it.
+        for record in &mut carried_subagents {
+            if record.status == SubagentStatus::Running {
+                record.status = SubagentStatus::Failed;
+                record.detached = false;
             }
         }
         if carried.is_empty() {
@@ -1727,11 +1728,8 @@ impl AgentRuntime for AgentHost {
             .as_ref()
             .map(|gateway| gateway.issue(session_id, !session.kind.read_only()));
         let api_token = api.as_ref().map(|access| access.token.clone());
-        // The memory tools and the tools to read the workspace's other chats are an MCP server of
-        // the app itself, reached with this chat's token.
+        // The app's own MCP server uses the same token as the chat's local API.
         if let Some(access) = &api
-            && (crate::app::memory::enabled(self.inner.store.as_ref())
-                || session.workspace_id.is_some())
             && let Err(error) = agent_config.attach_ataraxia_server(access)
         {
             self.inner.revoke(api_token.as_deref());
@@ -2021,6 +2019,22 @@ impl AgentRuntime for AgentHost {
             Ok(SubagentRoute::Direct) => {
                 let mut sessions = self.inner.sessions.lock();
                 if let Some(live) = sessions.get_mut(session_id) {
+                    // A direct reply can outlive the parent turn. It may also have finished
+                    // synchronously before the backend returned the route.
+                    if let Some(record) = live.subagents.iter_mut().find(|item| {
+                        item.id == subagent_id
+                            && item.status == SubagentStatus::Running
+                            && !item.detached
+                    }) {
+                        record.detached = true;
+                        self.inner.persist_subagents(*session_id, &live.subagents);
+                        self.inner.sink.emit_agent(AgentEvent::Subagent {
+                            session_id: *session_id,
+                            subagent_id: subagent_id.to_string(),
+                            title: String::new(),
+                            update: SubagentUpdate::Detached,
+                        });
+                    }
                     if live.active_turn == Some(turn_id) {
                         live.active_turn = None;
                         live.status = SessionStatus::Ready;
@@ -2263,6 +2277,7 @@ impl AgentRuntime for AgentHost {
             live.subagents
                 .iter()
                 .any(|item| item.detached && item.status == SubagentStatus::Running)
+                && live.backend.is_alive()
         })
     }
 
@@ -3986,32 +4001,56 @@ mod tests {
         );
     }
 
+    struct SubagentReplyBackend {
+        direct: bool,
+    }
+
+    impl AgentBackend for SubagentReplyBackend {
+        fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+            struct Wrapped {
+                inner: Arc<dyn BackendSession>,
+                direct: bool,
+            }
+            impl BackendSession for Wrapped {
+                fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
+                    self.inner.prompt(turn_id, text)
+                }
+                fn cancel(&self) -> Result<()> {
+                    self.inner.cancel()
+                }
+                fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
+                    self.inner.resolve_permission(decision)
+                }
+                fn shutdown(&self) {
+                    self.inner.shutdown()
+                }
+                fn message_subagent(
+                    &self,
+                    _turn_id: TurnId,
+                    _subagent_id: &str,
+                    _text: &str,
+                ) -> Result<SubagentRoute> {
+                    if self.direct {
+                        Ok(SubagentRoute::Direct)
+                    } else {
+                        Err(Error::new(
+                            ErrorCode::Unsupported,
+                            "subagent replies are unavailable",
+                        ))
+                    }
+                }
+            }
+            let inner = FakeBackend::new(Duration::ZERO).start(ctx)?;
+            Ok(Arc::new(Wrapped {
+                inner,
+                direct: self.direct,
+            }))
+        }
+    }
+
     #[test]
     fn a_provider_that_cannot_reach_subagents_reports_why_and_stays_usable() {
-        struct Mute;
-        impl AgentBackend for Mute {
-            fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
-                FakeBackend::new(Duration::ZERO).start(ctx).map(|inner| {
-                    struct Wrapped(Arc<dyn BackendSession>);
-                    impl BackendSession for Wrapped {
-                        fn prompt(&self, turn_id: TurnId, text: &str) -> Result<()> {
-                            self.0.prompt(turn_id, text)
-                        }
-                        fn cancel(&self) -> Result<()> {
-                            self.0.cancel()
-                        }
-                        fn resolve_permission(&self, decision: &PermissionDecision) -> Result<()> {
-                            self.0.resolve_permission(decision)
-                        }
-                        fn shutdown(&self) {
-                            self.0.shutdown()
-                        }
-                    }
-                    Arc::new(Wrapped(inner)) as Arc<dyn BackendSession>
-                })
-            }
-        }
-        let h = harness_with_backend(Arc::new(Mute));
+        let h = harness_with_backend(Arc::new(SubagentReplyBackend { direct: false }));
         seed_subagent(&h);
         let error = h
             .host
@@ -4021,6 +4060,19 @@ mod tests {
         let snapshot = h.host.snapshot(&h.session.id).expect("snapshot");
         assert_eq!(snapshot.status, SessionStatus::Ready);
         h.host.prompt(&h.session.id, "still works").expect("prompt");
+    }
+
+    #[test]
+    fn a_direct_subagent_reply_counts_as_work_until_it_finishes() {
+        let h = harness_with_backend(Arc::new(SubagentReplyBackend { direct: true }));
+        seed_subagent(&h);
+        h.host
+            .message_subagent(&h.session.id, "sub-1", "keep working")
+            .expect("message");
+        assert_eq!(h.host.status(&h.session.id).unwrap(), SessionStatus::Ready);
+        assert!(h.host.has_background_work());
+        seed_subagent(&h);
+        assert!(!h.host.has_background_work());
     }
 
     #[test]

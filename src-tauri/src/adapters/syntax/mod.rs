@@ -8,7 +8,7 @@ use tree_sitter::{Language, Node, Parser};
 mod facts;
 
 use crate::domain::Symbol;
-use crate::ports::Syntax;
+use crate::ports::{CodeReference, CodeStructure, Syntax};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TreeSitterSyntax;
@@ -69,17 +69,36 @@ impl Syntax for TreeSitterSyntax {
     }
 
     fn symbols(&self, path: &str, text: &str) -> Option<Vec<Symbol>> {
+        self.parse(path, text, false)
+            .map(|structure| structure.symbols)
+    }
+
+    fn code_structure(&self, path: &str, text: &str) -> Option<CodeStructure> {
+        self.parse(path, text, true)
+    }
+}
+
+impl TreeSitterSyntax {
+    fn parse(&self, path: &str, text: &str, graph: bool) -> Option<CodeStructure> {
         let lang = Lang::of(path)?;
         let mut parser = Parser::new();
         parser.set_language(&lang.grammar()).ok()?;
         let tree = parser.parse(text, None)?;
         let mut out = Vec::new();
-        let walker = Walker {
+        let mut walker = Walker {
             lang,
             source: text.as_bytes(),
+            spans: graph.then(Vec::new),
         };
         walker.walk(tree.root_node(), None, false, &mut out);
-        Some(out)
+        let mut references = Vec::new();
+        if graph {
+            walker.references(tree.root_node(), &mut references);
+        }
+        Some(CodeStructure {
+            symbols: out,
+            references,
+        })
     }
 }
 
@@ -97,9 +116,73 @@ struct Found {
 struct Walker<'a> {
     lang: Lang,
     source: &'a [u8],
+    spans: Option<Vec<(usize, usize)>>,
 }
 
 impl Walker<'_> {
+    fn references(&self, root: Node, out: &mut Vec<CodeReference>) {
+        let mut cursor = root.walk();
+        let spans = self.spans.as_deref().unwrap_or_default();
+        let mut enclosing = Vec::<usize>::new();
+        let mut next = 0;
+        loop {
+            let node = cursor.node();
+            if let Some((kind, target)) = self.reference(node) {
+                let start = node.start_byte();
+                while next < spans.len() && spans[next].0 <= start {
+                    if spans[next].1 > start {
+                        enclosing.push(next);
+                    }
+                    next += 1;
+                }
+                while enclosing
+                    .last()
+                    .is_some_and(|&index| spans[index].1 <= start)
+                {
+                    enclosing.pop();
+                }
+                out.push(CodeReference {
+                    kind,
+                    target,
+                    line: node.start_position().row as u32 + 1,
+                    owner: enclosing.last().copied(),
+                });
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn reference(&self, node: Node) -> Option<(&'static str, String)> {
+        let (kind, target) = match node.kind() {
+            "call_expression" | "call" => ("call", node.child_by_field_name("function")?),
+            "method_invocation" => ("call", node.child_by_field_name("name")?),
+            "import_statement" | "export_statement"
+                if matches!(self.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) =>
+            {
+                ("import", node.child_by_field_name("source")?)
+            }
+            "import_from_statement" => ("import", node.child_by_field_name("module_name")?),
+            "import_spec" => ("import", node.child_by_field_name("path")?),
+            "use_declaration" => ("import", node.child_by_field_name("argument")?),
+            "import_statement" | "import_declaration" => ("import", node),
+            "mod_item" if node.child_by_field_name("body").is_none() => {
+                ("import", node.child_by_field_name("name")?)
+            }
+            _ => return None,
+        };
+        let text = target.utf8_text(self.source).ok()?;
+        let text = text.trim_matches(['"', '\'', '`']);
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!text.is_empty() && text.len() <= 240).then_some((kind, text))
+    }
+
     fn text(&self, node: Node) -> String {
         node.utf8_text(self.source).unwrap_or_default().to_string()
     }
@@ -109,7 +192,7 @@ impl Walker<'_> {
             .map(|child| self.text(child))
     }
 
-    fn walk(&self, node: Node, parent: Option<&str>, exported: bool, out: &mut Vec<Symbol>) {
+    fn walk(&mut self, node: Node, parent: Option<&str>, exported: bool, out: &mut Vec<Symbol>) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "export_statement" {
@@ -124,6 +207,9 @@ impl Walker<'_> {
                 };
                 let body_start = found.body.unwrap_or(child.end_byte());
                 let measured = facts::measure(self.lang, child, self.source, found.container);
+                if let Some(spans) = &mut self.spans {
+                    spans.push((child.start_byte(), child.end_byte()));
+                }
                 out.push(Symbol {
                     name: found.name.clone(),
                     qualified: qualified.clone(),

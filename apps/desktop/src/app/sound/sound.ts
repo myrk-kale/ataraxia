@@ -38,6 +38,12 @@ const listeners = new Set<() => void>();
 
 export function setSound(change: Partial<SoundSettings>) {
   settings = normalizeSound({ ...settings, ...change });
+  if (!settings.enabled || settings.volume === 0) {
+    if (context) {
+      discardAudio(context);
+    }
+    lastPlayed.clear();
+  }
   try {
     window.localStorage.setItem(KEY, JSON.stringify(settings));
   } catch {
@@ -63,13 +69,18 @@ let noise: AudioBuffer | null = null;
 const lastPlayed = new Map<SoundName, number>();
 /** The same sound twice within this many milliseconds is one sound. */
 const MIN_GAP = 35;
+const AUDIO_TIMEOUT_MS = 300;
+const MAX_CUE_AGE_MS = 2 * AUDIO_TIMEOUT_MS;
 
 /** Audio may only start once the person has pressed something; before that nothing is made. */
 let touched = false;
 
 function audio(): AudioContext | null {
-  if (context) {
+  if (context && context.state !== "closed") {
     return context;
+  }
+  if (context) {
+    discardAudio(context);
   }
   const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
   if (!touched && !activation?.hasBeenActive) {
@@ -85,6 +96,14 @@ function audio(): AudioContext | null {
     return null;
   }
   return context;
+}
+
+function discardAudio(ctx: AudioContext): void {
+  context = null;
+  noise = null;
+  if (ctx.state !== "closed") {
+    void ctx.close().catch(() => undefined);
+  }
 }
 
 function noiseBuffer(ctx: AudioContext): AudioBuffer {
@@ -142,28 +161,74 @@ const VOICES: Record<SoundName, (ctx: AudioContext, at: number, v: number) => vo
 };
 
 /** Plays a sound, unless sounds are off or the browser has not allowed audio yet. */
-export function play(name: SoundName, override?: Partial<SoundSettings>) {
-  const { enabled, volume } = { ...settings, ...override };
-  if (!enabled || volume <= 0 || typeof window === "undefined") {
+export function play(name: SoundName): void {
+  if (!settings.enabled || settings.volume <= 0 || typeof window === "undefined") {
     return;
   }
   const now = performance.now();
   if (now - (lastPlayed.get(name) ?? -Infinity) < MIN_GAP) {
     return;
   }
-  lastPlayed.set(name, now);
   const ctx = audio();
   if (!ctx) {
     return;
   }
-  if (ctx.state === "suspended") {
-    void ctx.resume().catch(() => undefined);
+  lastPlayed.set(name, now);
+  playCue(ctx, name, Date.now(), true);
+}
+
+function playCue(ctx: AudioContext, name: SoundName, requestedAt: number, retry: boolean): void {
+  function recover() {
+    if (ctx !== context) {
+      return;
+    }
+    discardAudio(ctx);
+    if (retry && Date.now() - requestedAt <= MAX_CUE_AGE_MS) {
+      const fresh = audio();
+      if (fresh) {
+        playCue(fresh, name, requestedAt, false);
+      }
+    }
   }
-  try {
-    VOICES[name](ctx, ctx.currentTime + 0.005, volume);
-  } catch {
-    // A sound that cannot be made is simply not heard.
+
+  function start() {
+    if (ctx !== context || Date.now() - requestedAt > MAX_CUE_AGE_MS) {
+      return;
+    }
+    try {
+      const at = ctx.currentTime + 0.005;
+      VOICES[name](ctx, at, settings.volume);
+      // WebKit can report "running" while the render clock is stuck.
+      window.setTimeout(() => {
+        if (ctx.currentTime <= at) {
+          recover();
+        }
+      }, AUDIO_TIMEOUT_MS);
+    } catch {
+      recover();
+    }
   }
+
+  if (ctx.state === "running") {
+    start();
+    return;
+  }
+
+  const timeout = window.setTimeout(recover, AUDIO_TIMEOUT_MS);
+  void ctx.resume().then(
+    () => {
+      window.clearTimeout(timeout);
+      if (ctx.state === "running") {
+        start();
+      } else {
+        recover();
+      }
+    },
+    () => {
+      window.clearTimeout(timeout);
+      recover();
+    },
+  );
 }
 
 /** Notes that the person has touched the app, after which the browser lets audio start. */
