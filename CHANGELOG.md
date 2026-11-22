@@ -6,6 +6,20 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Every agent can explore the chat's worktrees with `code_graph`, a read-only Tree-sitter tool on
+  the Ataraxia MCP server. It finds declarations, calls and imports with file and line locations,
+  including local edits and new files. Agents start with the graph and can still use grep for text
+  searches and gaps in coverage.
+
+### Fixed
+
+- The switch in Settings > Sound now mutes effects and cancels pending sounds. The app retries
+  playback if its audio context stalls after an interruption.
+- macOS uses a native assertion to prevent idle sleep while agents have work pending, on battery
+  and AC power. Direct subagent replies keep the assertion active even when the parent chat is idle.
+
 ## [0.15.0] - 2026-11-21
 
 ### Added

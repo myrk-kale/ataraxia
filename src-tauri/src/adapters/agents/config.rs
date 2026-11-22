@@ -126,7 +126,7 @@ pub struct AgentConfiguration {
 pub const ATARAXIA_MCP: &str = "ataraxia";
 
 impl AgentConfiguration {
-    /// Adds the `ataraxia` MCP server (the memory tools), reached over the local API with the
+    /// Adds the `ataraxia` MCP server, reached over the local API with the
     /// chat's own token, and writes it into the chat's MCP file. It replaces a server a user
     /// configured under the same name.
     pub fn attach_ataraxia_server(&mut self, access: &crate::ports::ApiAccess) -> Result<()> {

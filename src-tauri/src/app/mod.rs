@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod artifacts;
 pub mod autocomplete;
 pub mod btw;
+pub mod code_graph;
 pub mod decisions;
 pub mod engine;
 pub mod fakes;

@@ -1,12 +1,87 @@
 //! Keeping the machine awake, per platform.
 //!
-//! macOS and Linux hold a helper process that blocks idle sleep for as long as it lives and is
-//! killed when the hold ends. On macOS `caffeinate -w` also ends it if the app dies; on Linux
-//! the helper is killed on drop. Windows sets the execution state of the calling thread.
+//! macOS holds an IOKit assertion. Linux holds a systemd inhibitor process. Windows sets
+//! the execution state of the calling thread.
 
 use crate::ports::SleepGuard;
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+mod imp {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+    use parking_lot::Mutex;
+
+    const ASSERTION_LEVEL_ON: u32 = 255;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOPMAssertionCreateWithName(
+            assertion_type: CFStringRef,
+            level: u32,
+            name: CFStringRef,
+            id: *mut u32,
+        ) -> i32;
+        fn IOPMAssertionRelease(id: u32) -> i32;
+    }
+
+    struct Assertion(u32);
+
+    impl Assertion {
+        fn acquire() -> Result<Self, i32> {
+            // This assertion applies on battery and AC and lets the display sleep.
+            let kind = CFString::new("PreventUserIdleSystemSleep");
+            let name = CFString::new("Ataraxia has work in progress");
+            let mut id = 0;
+            // SAFETY: Both strings and the writable output slot live through the call.
+            let result = unsafe {
+                IOPMAssertionCreateWithName(
+                    kind.as_concrete_TypeRef(),
+                    ASSERTION_LEVEL_ON,
+                    name.as_concrete_TypeRef(),
+                    &mut id,
+                )
+            };
+            if result == 0 {
+                Ok(Self(id))
+            } else {
+                Err(result)
+            }
+        }
+    }
+
+    impl Drop for Assertion {
+        fn drop(&mut self) {
+            // SAFETY: This ID came from a successful acquisition and is released once.
+            let result = unsafe { IOPMAssertionRelease(self.0) };
+            if result != 0 {
+                eprintln!("ataraxia: could not release the sleep assertion: {result:#x}");
+            }
+        }
+    }
+
+    #[derive(Default)]
+    pub struct Hold {
+        assertion: Mutex<Option<Assertion>>,
+    }
+
+    impl Hold {
+        pub fn set(&self, awake: bool) {
+            let mut assertion = self.assertion.lock();
+            if !awake {
+                *assertion = None;
+            } else if assertion.is_none() {
+                match Assertion::acquire() {
+                    Ok(acquired) => *assertion = Some(acquired),
+                    Err(error) => {
+                        eprintln!("ataraxia: could not keep the system awake: {error:#x}")
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
     use std::process::{Child, Command, Stdio};
 
@@ -17,17 +92,6 @@ mod imp {
         child: Mutex<Option<Child>>,
     }
 
-    #[cfg(target_os = "macos")]
-    fn spawn() -> std::io::Result<Child> {
-        Command::new("caffeinate")
-            .args(["-i", "-w", &std::process::id().to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    }
-
-    #[cfg(not(target_os = "macos"))]
     fn spawn() -> std::io::Result<Child> {
         Command::new("systemd-inhibit")
             .args([

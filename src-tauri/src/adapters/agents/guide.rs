@@ -36,11 +36,6 @@ pub fn install(dir: &Path) -> Result<PathBuf> {
 pub fn preamble(index: &Path, memory: bool) -> String {
     let mut text = base_preamble(index);
     if memory {
-        text = text.replacen(
-            "There are no tools for it.",
-            "There are no tools for it, except the memory tools below.",
-            1,
-        );
         let marker = "The developer's message follows.";
         text = text.replacen(
             marker,
@@ -66,13 +61,15 @@ fn base_preamble(index: &Path) -> String {
          - When explaining structure, relations or three or more things compared, or when asked for an SVG or mind map, add an SVG in a ```svg code block (the chat shows an image). Before your first in a chat, read {} (how, and when not).\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
-         - The way to act on Ataraxia is its local HTTP API, called from bash with curl as that guide explains, using $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment. There are no tools for it.\n\
+         - Use the local HTTP API from bash with curl as the guide explains, with $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment.\n\
+         - {}\n\
          - The developer keeps numbered tasks in Ataraxia. When they name one (\"#12\", \"task 12\"), fetch it with `curl -sS \"$ATARAXIA_API_URL/v1/tasks/12\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\"` and work from its title and notes; {} has details. Do not guess a task from its number.\n\
          The developer's message follows.\n\n",
         index.display(),
         index.with_file_name("svg.md").display(),
         index.with_file_name("schedule.md").display(),
         index.with_file_name("queue.md").display(),
+        crate::api::CODE_GRAPH_INSTRUCTIONS,
         index.with_file_name("tasks.md").display()
     )
 }
@@ -239,12 +236,11 @@ mod tests {
             assert!(on.contains(wanted), "{wanted}");
         }
         assert!(on.contains("/data/guide/memory.md"));
-        assert!(on.contains("except the memory tools below"));
         assert!(on.ends_with("The developer's message follows.\n\n"));
         let off = preamble(index, false);
         assert!(!off.contains("memory"));
-        assert!(!off.contains("except the memory tools"));
-        assert!(off.contains("There are no tools for it."));
+        assert!(off.contains("`code_graph` MCP tool before grep"));
+        assert!(off.contains("grep or rg"));
     }
 
     #[test]

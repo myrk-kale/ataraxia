@@ -214,10 +214,12 @@ export function Toggle({
 }) {
   return (
     <HeroSwitch isDisabled={isDisabled} isSelected={isSelected} onChange={onChange}>
-      <HeroSwitch.Control>
-        <HeroSwitch.Thumb />
-      </HeroSwitch.Control>
-      <HeroSwitch.Content className={hideLabel ? "sr-only" : "text-ui text-cg-ink"}>{label}</HeroSwitch.Content>
+      <HeroSwitch.Content>
+        <HeroSwitch.Control>
+          <HeroSwitch.Thumb />
+        </HeroSwitch.Control>
+        <span className={hideLabel ? "sr-only" : "text-ui text-cg-ink"}>{label}</span>
+      </HeroSwitch.Content>
     </HeroSwitch>
   );
 }

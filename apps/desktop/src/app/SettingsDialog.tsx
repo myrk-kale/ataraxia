@@ -146,7 +146,7 @@ export function SettingsDialog({
                     onChange={(enabled) => {
                       sound.set({ enabled });
                       if (enabled) {
-                        play("tick", { enabled: true });
+                        play("tick");
                       }
                     }}
                   />

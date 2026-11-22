@@ -10,6 +10,7 @@
 
 mod chats;
 mod mcp;
+pub(crate) use mcp::CODE_GRAPH_INSTRUCTIONS;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -392,6 +393,14 @@ pub trait Anchor: Send + Sync {
     fn baseline(&self, session: SessionId) -> Result<crate::domain::Checkpoint>;
 }
 
+pub trait CodeGraph: Send + Sync {
+    fn code_graph(
+        &self,
+        session: SessionId,
+        query: crate::app::code_graph::GraphQuery<'_>,
+    ) -> Result<crate::app::code_graph::GraphPage>;
+}
+
 /// What an agent can ask of the chat's message flow: be sent a message later, or hold the queue.
 pub trait Scheduling: Send + Sync {
     fn list(&self, session: SessionId) -> Vec<crate::domain::Schedule>;
@@ -422,6 +431,7 @@ pub struct ApiService {
     scope: SessionId,
     allow_write: bool,
     anchor: Option<Arc<dyn Anchor>>,
+    code_graph: Option<Arc<dyn CodeGraph>>,
     scheduler: Option<Arc<dyn Scheduling>>,
     /// Tells the window what a write changed, so an open tab shows it without being reloaded.
     sink: Option<Arc<dyn InsightSink>>,
@@ -434,6 +444,7 @@ impl ApiService {
             scope,
             allow_write,
             anchor: None,
+            code_graph: None,
             scheduler: None,
             sink: None,
         }
@@ -1069,6 +1080,7 @@ struct ServerInner {
     grants: Mutex<Vec<Grant>>,
     /// Set once the engine exists; the engine needs the server first.
     anchor: std::sync::OnceLock<Arc<dyn Anchor>>,
+    code_graph: std::sync::OnceLock<Arc<dyn CodeGraph>>,
     scheduler: std::sync::OnceLock<Arc<dyn Scheduling>>,
     sink: std::sync::OnceLock<Arc<dyn InsightSink>>,
     port: u16,
@@ -1123,6 +1135,7 @@ impl ApiServer {
             db,
             grants: Mutex::new(Vec::new()),
             anchor: std::sync::OnceLock::new(),
+            code_graph: std::sync::OnceLock::new(),
             scheduler: std::sync::OnceLock::new(),
             sink: std::sync::OnceLock::new(),
             port,
@@ -1145,6 +1158,10 @@ impl ApiServer {
     /// Lets calls about a chat without code changes still be answered.
     pub fn set_anchor(&self, anchor: Arc<dyn Anchor>) {
         let _ = self.inner.anchor.set(anchor);
+    }
+
+    pub fn set_code_graph(&self, graph: Arc<dyn CodeGraph>) {
+        let _ = self.inner.code_graph.set(graph);
     }
 
     /// Lets agents schedule messages to themselves.
@@ -1549,10 +1566,11 @@ fn respond(
     };
 
     // From here on the caller is known, so every call is audited.
-    let service = ApiService::new(Arc::clone(&inner.db), session, write)
+    let mut service = ApiService::new(Arc::clone(&inner.db), session, write)
         .with_anchor(inner.anchor.get().cloned())
         .with_scheduler(inner.scheduler.get().cloned())
         .with_sink(inner.sink.get().cloned());
+    service.code_graph = inner.code_graph.get().cloned();
     let target = head.target.clone();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     if path.trim_end_matches('/') == "/mcp" {
@@ -2413,6 +2431,128 @@ mod tests {
             serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into())),
             result["isError"] == true,
         )
+    }
+
+    #[test]
+    fn the_code_graph_uses_the_current_worktree_even_when_memory_is_off() {
+        use crate::adapters::{
+            agents::AgentHost, fs::StdFs, git::GitCli, syntax::TreeSitterSyntax,
+        };
+        use crate::app::Engine;
+
+        struct Silent;
+        impl crate::ports::EventSink for Silent {
+            fn emit_agent(&self, _: crate::domain::AgentEvent) {}
+        }
+
+        let repo = repo_with_a_file();
+        let (db, chat, other, _) = seeded_at(repo.clone());
+        crate::app::memory::set_enabled(db.as_ref(), false).unwrap();
+        let host = AgentHost::new(db.clone(), Arc::new(Silent));
+        let engine = Engine::new(
+            Arc::new(GitCli),
+            Arc::new(StdFs),
+            Arc::new(TreeSitterSyntax),
+            db.clone(),
+            Arc::new(host),
+            Arc::new(Heard::default()),
+        );
+        let server = start(&db);
+        server.set_code_graph(engine);
+        let token = server.issue_token(chat, false).token;
+        let tools = rpc(&server, &token, 1, "tools/list", json!({}));
+        assert_eq!(tools.body["result"]["tools"][0]["name"], "code_graph");
+        assert_eq!(
+            tools.body["result"]["tools"][0]["annotations"]["readOnlyHint"],
+            true
+        );
+        let hello = rpc(&server, &token, 2, "initialize", json!({}));
+        assert!(
+            hello.body["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("`code_graph` MCP tool before grep")
+        );
+
+        std::fs::write(
+            repo.join("new.ts"),
+            "import { go } from './a';\nexport function run() { go(); } function other() {}",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".gitignore"), "ignored.ts\n").unwrap();
+        std::fs::write(repo.join("ignored.ts"), "function go() {}").unwrap();
+        let (page, failed) = tool_call(
+            &server,
+            &token,
+            "code_graph",
+            json!({ "query": "go", "limit": 1 }),
+        );
+        assert!(!failed, "{page}");
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["matches"][0]["path"], "a.py");
+        let (page, failed) = tool_call(
+            &server,
+            &token,
+            "code_graph",
+            json!({ "query": "go", "offset": page["next_offset"] }),
+        );
+        assert!(!failed, "{page}");
+        let call = &page["matches"][0];
+        assert_eq!(call["target"], "go");
+        assert_eq!(call["from"], "run");
+        assert_eq!(call["path"], "new.ts");
+        assert_eq!(call["line"], 2);
+
+        let (page, failed) = tool_call(
+            &server,
+            &token,
+            "code_graph",
+            json!({ "path": "new.ts", "kind": "import" }),
+        );
+        assert!(!failed, "{page}");
+        assert_eq!(page["matches"][0]["target"], "./a");
+        std::fs::write(repo.join("new.ts"), "function run() { stop(); }").unwrap();
+        let (page, failed) = tool_call(
+            &server,
+            &token,
+            "code_graph",
+            json!({ "query": "go", "kind": "call" }),
+        );
+        assert!(!failed, "{page}");
+        assert_eq!(page["total"], 0);
+
+        let secondary = repo_with_a_file();
+        let primary_worktree = db.get_session(chat).unwrap().unwrap().worktree_id;
+        let mut worktree = db.get_worktree(primary_worktree).unwrap().unwrap();
+        let mut repository = db.get_repository(worktree.repository_id).unwrap().unwrap();
+        repository.id = RepositoryId::new();
+        repository.root = secondary.clone();
+        repository.name = "secondary".into();
+        db.upsert_repository(&repository).unwrap();
+        worktree.id = WorktreeId::new();
+        worktree.repository_id = repository.id;
+        worktree.path = secondary.clone();
+        db.upsert_worktree(&worktree).unwrap();
+        db.set_session_worktrees(chat, &[worktree.id]).unwrap();
+        let (page, failed) = tool_call(
+            &server,
+            &token,
+            "code_graph",
+            json!({ "path": "secondary" }),
+        );
+        assert!(!failed, "{page}");
+        assert_eq!(page["matches"][0]["path"], "secondary/a.py");
+        let other_token = server.issue_token(other, false).token;
+        let (page, failed) = tool_call(
+            &server,
+            &other_token,
+            "code_graph",
+            json!({ "path": "secondary" }),
+        );
+        assert!(!failed, "{page}");
+        assert_eq!(page["total"], 0);
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(secondary).unwrap();
     }
 
     #[test]
