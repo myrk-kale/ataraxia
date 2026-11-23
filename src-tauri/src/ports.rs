@@ -233,6 +233,13 @@ pub struct FilesProbe {
 
 pub trait Git: Send + Sync {
     fn discover(&self, path: &Path) -> Result<RepoInfo>;
+
+    /// Makes `path` a repository (`git init`) and says where it is. An error means the folder
+    /// stays as it was: git is not installed, or the folder cannot be written.
+    fn init(&self, _path: &Path) -> Result<RepoInfo> {
+        unsupported("init")
+    }
+
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>>;
 
     /// What `HEAD` says right now (`ref: refs/heads/main`, or a commit id when detached), read

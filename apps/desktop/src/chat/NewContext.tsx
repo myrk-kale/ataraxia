@@ -46,7 +46,7 @@ export function NewContext({
             </div>
           ) : (
             <Button disabled={busy} variant="primary" onClick={onOpenRepository}>
-              Open a repository
+              Open a folder
             </Button>
           )}
         </div>
@@ -73,7 +73,7 @@ export function NewContext({
           <p className="mt-4 text-small text-cg-muted">
             {hasRepository
               ? "Each chat is tied to this worktree."
-              : "Pick a git repository to create chats, review code and run the terminal."}
+              : "Pick a folder to create chats, review code and run the terminal."}
           </p>
         )}
       </Hero>

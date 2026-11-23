@@ -704,7 +704,7 @@ export function AppShell() {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: "Open git repository",
+      title: "Open folder",
     });
     if (typeof selected !== "string" || selected.length === 0) {
       return;

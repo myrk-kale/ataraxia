@@ -62,7 +62,7 @@ export function WorkspaceDialog({
   }
 
   async function addFolder() {
-    const selected = await open({ directory: true, multiple: false, title: "Add a git repository" });
+    const selected = await open({ directory: true, multiple: false, title: "Add a folder" });
     if (typeof selected !== "string" || selected.length === 0) {
       return;
     }

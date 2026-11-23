@@ -9,8 +9,8 @@ use crate::domain::agent::ProviderKind;
 use crate::domain::ids::{RepositoryId, SessionId, WorkspaceId, WorktreeId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
-    ChatSession, Error, ErrorCode, Repository, Result, SessionKind, SessionStatus, Workspace,
-    Worktree,
+    ChatSession, Error, ErrorCode, RepoInfo, Repository, Result, SessionKind, SessionStatus,
+    Workspace, Worktree, WorktreeInfo,
 };
 use crate::ports::{FilesProbe, Git, Store};
 
@@ -21,6 +21,16 @@ const PREF_SELECTED_WORKSPACE: &str = "selected_workspace_id";
 const PREF_PREVIOUS_WORKSPACE: &str = "previous_workspace_id";
 
 /// The repository a workspace was last looking at.
+/// A folder used as a project without git: its name is the folder's.
+fn plain_folder(root: std::path::PathBuf) -> RepoInfo {
+    let name = root
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| root.display().to_string());
+    RepoInfo { root, name }
+}
+
 fn focus_key(workspace_id: WorkspaceId) -> String {
     format!("focus_repository:{}", workspace_id.0)
 }
@@ -375,13 +385,7 @@ impl<'a> WorkspaceService<'a> {
 
     /// Finds or records the repository at `path` and reads its worktrees, selecting nothing.
     pub fn register_repository(&self, path: impl AsRef<Path>) -> Result<Repository> {
-        let info = self.git.discover(path.as_ref()).map_err(|error| {
-            if error.code == ErrorCode::Io || error.code == ErrorCode::NotARepo {
-                Error::new(ErrorCode::NotARepo, error.message)
-            } else {
-                error
-            }
-        })?;
+        let info = self.discover_or_make(path.as_ref())?;
         let now = now_rfc3339()?;
         let repository = match self.store.find_repository_by_root(&info.root)? {
             Some(mut existing) => {
@@ -404,6 +408,30 @@ impl<'a> WorkspaceService<'a> {
         };
         self.sync_worktrees(repository.id, &repository.root, &now)?;
         Ok(repository)
+    }
+
+    /// The repository a folder belongs to. A folder with none gets one (`git init`); when git is
+    /// not there or the folder cannot take it, the folder is used as it is, a project without
+    /// version control.
+    fn discover_or_make(&self, path: &Path) -> Result<RepoInfo> {
+        let error = match self.git.discover(path) {
+            Ok(info) => return Ok(info),
+            Err(error) if error.code == ErrorCode::Io || error.code == ErrorCode::NotARepo => {
+                Error::new(ErrorCode::NotARepo, error.message)
+            }
+            Err(error) => return Err(error),
+        };
+        if !path.is_dir() {
+            return Err(error);
+        }
+        let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        // Never a repository of a whole home folder or disk: every file in it would be untracked.
+        if root.parent().is_none()
+            || std::env::var_os("HOME").is_some_and(|home| root == Path::new(&home))
+        {
+            return Ok(plain_folder(root));
+        }
+        Ok(self.git.init(&root).unwrap_or_else(|_| plain_folder(root)))
     }
 
     /// Opens a folder: its repository becomes a workspace of one (or that workspace is shown
@@ -1205,7 +1233,18 @@ impl<'a> WorkspaceService<'a> {
         repo_root: &Path,
         now: &str,
     ) -> Result<Vec<Worktree>> {
-        let discovered = self.git.list_worktrees(repo_root)?;
+        let discovered = match self.git.list_worktrees(repo_root) {
+            Ok(found) => found,
+            // A folder without git is its own single checkout.
+            Err(_) if repo_root.is_dir() && !repo_root.join(".git").exists() => {
+                vec![WorktreeInfo {
+                    path: repo_root.to_path_buf(),
+                    branch: None,
+                    head: None,
+                }]
+            }
+            Err(error) => return Err(error),
+        };
         for info in discovered {
             if let Some(mut existing) = self
                 .store
@@ -2380,6 +2419,86 @@ mod tests {
                 .unwrap();
             assert!(service.select_branch(id, "feature/a").is_ok());
             let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+        }
+
+        fn plain_dir() -> PathBuf {
+            let dir = std::env::temp_dir().join(format!("ataraxia-plain-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/main.txt"), "hello\n").unwrap();
+            std::fs::create_dir_all(dir.join("node_modules/dep")).unwrap();
+            std::fs::write(dir.join("node_modules/dep/x.txt"), "x").unwrap();
+            dir
+        }
+
+        #[test]
+        fn a_folder_without_git_becomes_a_repository_when_opened() {
+            let dir = plain_dir();
+            let store = SqliteStore::open_in_memory().unwrap();
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            let snapshot = service.open_repository(&dir).unwrap();
+            assert!(dir.join(".git").exists());
+            assert_eq!(snapshot.repositories.len(), 1);
+            assert!(snapshot.selected_worktree_id.is_some());
+            // The repository has no commit yet; what the agent writes still has a starting point.
+            let rev = GitCli.head_rev(&dir).unwrap();
+            let snap = GitCli.snapshot(&dir, "t/plain").unwrap();
+            let changed = GitCli.changed_files(&dir, &rev, &snap).unwrap();
+            assert!(changed.iter().any(|file| file.path == "src/main.txt"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_folder_inside_a_repository_still_opens_that_repository() {
+            let (repo, _other, store) = setup();
+            let inner = repo.join("sub");
+            std::fs::create_dir_all(&inner).unwrap();
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            service.open_repository(&inner).unwrap();
+            assert!(!inner.join(".git").exists());
+            let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+        }
+
+        #[test]
+        fn a_folder_that_git_cannot_take_opens_as_a_plain_project() {
+            // `FakeGit` cannot make repositories, as when git is not installed.
+            let dir = plain_dir();
+            let git = FakeGit::default();
+            let store = FakeStore::default();
+            let service = WorkspaceService {
+                git: &git,
+                store: &store,
+            };
+            let snapshot = service.open_repository(&dir).unwrap();
+            let root = dir.canonicalize().unwrap();
+            assert_eq!(snapshot.repositories[0].root, root);
+            assert_eq!(
+                store.list_worktrees(snapshot.repositories[0].id).unwrap()[0].path,
+                root
+            );
+            assert!(!dir.join(".git").exists());
+            assert_eq!(
+                GitCli.list_files(&dir).unwrap(),
+                vec!["src/main.txt".to_string()]
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_path_that_is_not_a_folder_is_still_refused() {
+            let store = SqliteStore::open_in_memory().unwrap();
+            let service = WorkspaceService {
+                git: &GitCli,
+                store: &store,
+            };
+            let missing =
+                std::env::temp_dir().join(format!("ataraxia-gone-{}", uuid::Uuid::new_v4()));
+            assert!(service.open_repository(&missing).is_err());
         }
     }
 }

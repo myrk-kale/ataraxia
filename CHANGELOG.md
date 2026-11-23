@@ -6,6 +6,22 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Any folder can be opened, not only git repositories. A folder that is not a repository gets one
+  (`git init`) when git is available; when it is not, or the folder cannot take it, the folder opens
+  as a project without version control. A folder inside a repository still opens that repository, and
+  a home folder or a disk root is never turned into one.
+
+### Changed
+
+- The folder pickers and the empty chat now say "folder" instead of "git repository".
+
+### Fixed
+
+- A repository with no commit yet no longer fails when its changes are compared: the empty tree is
+  its starting point.
+
 ## [0.17.0] - 2026-11-23
 
 ### Added
