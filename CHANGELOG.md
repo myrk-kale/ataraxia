@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-23
+
 ### Added
 
 - Any folder can be opened, not only git repositories. A folder that is not a repository gets one
