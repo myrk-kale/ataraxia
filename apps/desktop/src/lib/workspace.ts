@@ -3,7 +3,7 @@ export type WorkspaceId = string;
 export type WorktreeId = string;
 export type SessionId = string;
 
-export type ProviderKind = "fake" | "opencode" | "claude" | "codex";
+export type ProviderKind = "fake" | "opencode" | "claude" | "codex" | "cursor";
 
 export type SessionStatus =
   | "idle"

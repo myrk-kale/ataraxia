@@ -87,16 +87,6 @@ impl AgentBackend for OpenCodeBackend {
         let (program, args) = self
             .command(ctx.launch.as_ref())
             .map_err(|message| Error::new(ErrorCode::Unsupported, message))?;
-        let shared = Arc::new(AcpShared {
-            config: Mutex::new(Vec::new()),
-            initial: Mutex::new(HashMap::new()),
-            emit: ctx.emit,
-            client: OnceLock::new(),
-            acp_session_id: OnceLock::new(),
-            exit: Mutex::new(None),
-            state: Mutex::new(AcpState::default()),
-        });
-        let handler_shared = Arc::clone(&shared);
         let mut env = compose_env(
             api_env(ctx.session_id, ctx.api.as_ref()),
             ctx.launch.as_ref(),
@@ -148,117 +138,225 @@ impl AgentBackend for OpenCodeBackend {
             config["mcp"] = json!({ "servers": mcp_servers });
         }
         env.push(("OPENCODE_CONFIG_CONTENT".into(), config.to_string()));
-        let client = RpcClient::spawn(
-            &SpawnSpec {
-                program,
-                args,
-                cwd: ctx.cwd.clone(),
-                env,
-                env_remove: vec![
-                    "OPENCODE_CONFIG".into(),
-                    "OPENCODE_CONFIG_CONTENT".into(),
-                    "OPENCODE_CONFIG_DIR".into(),
-                    "OPENCODE_PERMISSION".into(),
-                ],
-            },
-            true,
-            move |incoming| handler_shared.on_incoming(incoming),
-        )?;
-        let _ = shared.client.set(Arc::clone(&client));
+        launch_acp(
+            Dialect::OpenCode,
+            ctx,
+            program,
+            args,
+            env,
+            vec![
+                "OPENCODE_CONFIG".into(),
+                "OPENCODE_CONFIG_CONTENT".into(),
+                "OPENCODE_CONFIG_DIR".into(),
+                "OPENCODE_PERMISSION".into(),
+            ],
+        )
+    }
+}
 
-        let mut resumed = false;
-        let handshake = (|| -> Result<()> {
-            let hello = client.request(
-                "initialize",
-                json!({
-                    "protocolVersion": 1,
-                    "clientCapabilities": {
-                        "fs": { "readTextFile": false, "writeTextFile": false },
-                        "terminal": false
-                    },
-                    "clientInfo": {
-                        "name": "ataraxia",
-                        "title": "Ataraxia",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }
-                }),
-                Some(HANDSHAKE_TIMEOUT),
-            )?;
-            // The session of the last run, when the agent can pick one up without replaying it
-            // (replayed messages would be shown twice); a lost one begins a new session.
-            let can_resume = hello
-                .pointer("/agentCapabilities/sessionCapabilities/resume")
-                .is_some_and(|value| !value.is_null());
-            let agent_capabilities = hello.get("agentCapabilities");
-            let supports_http = agent_capabilities
-                .and_then(|value| value.pointer("/mcpCapabilities/http"))
-                .is_some_and(|value| value == true);
-            let supports_sse = agent_capabilities
-                .and_then(|value| value.pointer("/mcpCapabilities/sse"))
-                .is_some_and(|value| value == true);
-            let mcp_servers =
-                acp_mcp_servers(&ctx.config.mcp_servers, supports_http, supports_sse)?;
-            let supports_additional_directories = agent_capabilities
-                .and_then(|value| value.pointer("/sessionCapabilities/additionalDirectories"))
-                .is_some_and(|value| !value.is_null() && value != false);
-            let additional_directories = if supports_additional_directories {
-                session_directories(&ctx.cwd, &ctx.extra_dirs, &ctx.config.skill_roots)
-            } else {
-                Vec::new()
-            };
-            if let (true, Some(wanted)) = (can_resume, ctx.resume.as_deref()) {
-                let mut params = json!({
-                    "sessionId": wanted,
-                    "cwd": ctx.cwd.to_string_lossy(),
-                    "mcpServers": mcp_servers.clone()
-                });
-                if !additional_directories.is_empty() {
-                    params["additionalDirectories"] = json!(additional_directories);
-                }
-                if let Ok(picked) =
-                    client.request("session/resume", params, Some(HANDSHAKE_TIMEOUT))
-                {
-                    let _ = shared.acp_session_id.set(wanted.to_string());
-                    if let Some(options) = picked.get("configOptions") {
-                        shared.remember_config(parse_config_options(options), true);
-                    }
-                    resumed = true;
-                    return Ok(());
-                }
+/// The ACP harnesses this engine speaks to. They share the protocol and differ in the few places
+/// each agent's own extensions show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Dialect {
+    OpenCode,
+    Cursor,
+}
+
+impl Dialect {
+    /// How the harness is called in messages to the person.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::OpenCode => "opencode",
+            Self::Cursor => "cursor-agent",
+        }
+    }
+
+    /// Cursor lists model, effort and fast as separate options instead of one selector per variant.
+    fn client_meta(self) -> Option<Value> {
+        match self {
+            Self::OpenCode => None,
+            Self::Cursor => Some(json!({ "parameterizedModelPicker": true })),
+        }
+    }
+
+    /// OpenCode sets remote and cwd-bound MCP servers up in its own config; Cursor takes every
+    /// server over ACP.
+    fn handles_mcp_natively(self, config: &Value) -> bool {
+        self == Self::OpenCode && native_mcp(config)
+    }
+
+    /// The mode a session that only investigates runs in, among the ones the agent offers.
+    fn read_only_mode(self, offered: &[ConfigValue]) -> Option<String> {
+        let wanted: &[&str] = match self {
+            Self::OpenCode => return Some("plan".into()),
+            Self::Cursor => &["plan", "ask"],
+        };
+        wanted
+            .iter()
+            .find(|wanted| offered.iter().any(|value| value.value == **wanted))
+            .map(|wanted| (*wanted).to_string())
+    }
+
+    /// A start that failed for lack of a login says how to sign in.
+    fn sign_in_hint(self, message: String) -> String {
+        let signed_out = message.to_lowercase().contains("auth");
+        match self {
+            Self::Cursor if signed_out => {
+                format!("{message}. Sign in once with `cursor-agent login`.")
             }
+            _ => message,
+        }
+    }
+}
+
+/// Spawns the agent over ACP, opens (or picks up again) its session and applies the saved
+/// model, effort and mode.
+pub(super) fn launch_acp(
+    dialect: Dialect,
+    ctx: BackendContext,
+    program: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    env_remove: Vec<String>,
+) -> Result<Arc<dyn BackendSession>> {
+    let shared = Arc::new(AcpShared {
+        dialect,
+        config: Mutex::new(Vec::new()),
+        initial: Mutex::new(HashMap::new()),
+        emit: Arc::clone(&ctx.emit),
+        client: OnceLock::new(),
+        acp_session_id: OnceLock::new(),
+        exit: Mutex::new(None),
+        state: Mutex::new(AcpState::default()),
+    });
+    let handler_shared = Arc::clone(&shared);
+    let mut client_capabilities = json!({
+        "fs": { "readTextFile": false, "writeTextFile": false },
+        "terminal": false
+    });
+    if let Some(meta) = dialect.client_meta() {
+        client_capabilities["_meta"] = meta;
+    }
+    let client = RpcClient::spawn(
+        &SpawnSpec {
+            program,
+            args,
+            cwd: ctx.cwd.clone(),
+            env,
+            env_remove,
+        },
+        true,
+        move |incoming| handler_shared.on_incoming(incoming),
+    )?;
+    let _ = shared.client.set(Arc::clone(&client));
+
+    let mut resumed = false;
+    let handshake = (|| -> Result<()> {
+        let hello = client.request(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": client_capabilities,
+                "clientInfo": {
+                    "name": "ataraxia",
+                    "title": "Ataraxia",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+            Some(HANDSHAKE_TIMEOUT),
+        )?;
+        // The session of the last run, when the agent can pick one up without replaying it
+        // (replayed messages would be shown twice); a lost one begins a new session.
+        let can_resume = hello
+            .pointer("/agentCapabilities/sessionCapabilities/resume")
+            .is_some_and(|value| !value.is_null());
+        let agent_capabilities = hello.get("agentCapabilities");
+        let supports_http = agent_capabilities
+            .and_then(|value| value.pointer("/mcpCapabilities/http"))
+            .is_some_and(|value| value == true);
+        let supports_sse = agent_capabilities
+            .and_then(|value| value.pointer("/mcpCapabilities/sse"))
+            .is_some_and(|value| value == true);
+        let mcp_servers = acp_mcp_servers(
+            dialect,
+            &ctx.config.mcp_servers,
+            supports_http,
+            supports_sse,
+        )?;
+        let supports_additional_directories = agent_capabilities
+            .and_then(|value| value.pointer("/sessionCapabilities/additionalDirectories"))
+            .is_some_and(|value| !value.is_null() && value != false);
+        let additional_directories = if supports_additional_directories {
+            session_directories(&ctx.cwd, &ctx.extra_dirs, &ctx.config.skill_roots)
+        } else {
+            Vec::new()
+        };
+        if let (true, Some(wanted)) = (can_resume, ctx.resume.as_deref()) {
             let mut params = json!({
+                "sessionId": wanted,
                 "cwd": ctx.cwd.to_string_lossy(),
-                "mcpServers": mcp_servers
+                "mcpServers": mcp_servers.clone()
             });
             if !additional_directories.is_empty() {
                 params["additionalDirectories"] = json!(additional_directories);
             }
-            let created = client.request("session/new", params, Some(HANDSHAKE_TIMEOUT))?;
-            let session_id = created
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
-            let _ = shared.acp_session_id.set(session_id.to_string());
-            if let Some(options) = created.get("configOptions") {
-                shared.remember_config(parse_config_options(options), true);
+            if let Ok(picked) = client.request("session/resume", params, Some(HANDSHAKE_TIMEOUT)) {
+                let _ = shared.acp_session_id.set(wanted.to_string());
+                if let Some(options) = picked.get("configOptions") {
+                    shared.remember_config(parse_config_options(options), true);
+                }
+                resumed = true;
+                return Ok(());
             }
-            Ok(())
-        })();
-        if let Err(error) = handshake {
-            let message = shared.with_exit_info(error.message);
-            client.kill();
-            return Err(Error::new(ErrorCode::Agent, message));
         }
-        // Best effort: a stale saved model or agent must not stop the chat from opening.
-        let _ = shared.apply(
-            ctx.model.as_deref(),
-            ctx.effort.as_deref(),
-            ctx.agent
-                .as_deref()
-                .or(if ctx.read_only { Some("plan") } else { None }),
-        );
-        Ok(Arc::new(AcpSession { shared, resumed }))
+        let mut params = json!({
+            "cwd": ctx.cwd.to_string_lossy(),
+            "mcpServers": mcp_servers
+        });
+        if !additional_directories.is_empty() {
+            params["additionalDirectories"] = json!(additional_directories);
+        }
+        let created = client.request("session/new", params, Some(HANDSHAKE_TIMEOUT))?;
+        let session_id = created
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
+        let _ = shared.acp_session_id.set(session_id.to_string());
+        if let Some(options) = created.get("configOptions") {
+            shared.remember_config(parse_config_options(options), true);
+        }
+        Ok(())
+    })();
+    if let Err(error) = handshake {
+        let message = shared.with_exit_info(error.message);
+        client.kill();
+        return Err(Error::new(ErrorCode::Agent, dialect.sign_in_hint(message)));
     }
+    let agent = match ctx.agent.as_deref() {
+        Some(agent) => Some(agent.to_string()),
+        None if ctx.read_only => {
+            let offered = shared.mode_values();
+            match dialect.read_only_mode(&offered) {
+                Some(mode) => Some(mode),
+                None => {
+                    // Starting anyway would let a session that must not write do so.
+                    client.kill();
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        format!("{} offers no read-only mode (plan or ask)", dialect.name()),
+                    ));
+                }
+            }
+        }
+        None => None,
+    };
+    // Best effort: a stale saved model or agent must not stop the chat from opening.
+    let _ = shared.apply(
+        ctx.model.as_deref(),
+        ctx.effort.as_deref(),
+        agent.as_deref(),
+    );
+    Ok(Arc::new(AcpSession { shared, resumed }))
 }
 
 fn opencode_skill_permissions(skills: &[super::config::SkillDefinition]) -> Vec<Value> {
@@ -390,13 +488,14 @@ struct AcpOption {
 
 /// Translates portable MCP entries into the active ACP v1 transport shapes.
 fn acp_mcp_servers(
+    dialect: Dialect,
     servers: &Map<String, Value>,
     supports_http: bool,
     supports_sse: bool,
 ) -> Result<Vec<Value>> {
     servers
         .iter()
-        .filter(|(_, config)| !native_mcp(config))
+        .filter(|(_, config)| !dialect.handles_mcp_natively(config))
         .map(|(name, config)| {
             let mut entry = Map::new();
             entry.insert("name".into(), Value::String(name.clone()));
@@ -425,7 +524,10 @@ fn acp_mcp_servers(
                     "http" | "sse" => {
                         return Err(Error::new(
                             ErrorCode::Unsupported,
-                            format!("OpenCode ACP does not support the {transport} MCP transport"),
+                            format!(
+                                "{} does not support the {transport} MCP transport over ACP",
+                                dialect.name()
+                            ),
                         ));
                     }
                     _ => {
@@ -498,6 +600,9 @@ struct QueuedPermission {
     tool_name: String,
     detail: String,
     options: Vec<AcpOption>,
+    /// Questions the agent put to the person (Cursor); the reply is built from the answers.
+    questions: Vec<crate::domain::PermissionQuestion>,
+    asked: Option<super::cursor::Questions>,
 }
 
 struct ToolMeta {
@@ -649,6 +754,7 @@ fn parse_config_options(value: &Value) -> Vec<ConfigOption> {
 }
 
 struct AcpShared {
+    dialect: Dialect,
     /// Config options as last reported, and the values the session started with.
     config: Mutex<Vec<ConfigOption>>,
     initial: Mutex<HashMap<String, String>>,
@@ -670,6 +776,16 @@ impl AcpShared {
         *self.config.lock() = options;
     }
 
+    /// The modes the agent offers, as last reported.
+    fn mode_values(&self) -> Vec<ConfigValue> {
+        self.config
+            .lock()
+            .iter()
+            .find(|option| option.is("mode", "mode"))
+            .map(|option| option.values.clone())
+            .unwrap_or_default()
+    }
+
     fn option_id(&self, category: &str, id: &str) -> Option<String> {
         self.config
             .lock()
@@ -682,7 +798,10 @@ impl AcpShared {
     fn set_config(&self, config_id: &str, value: &str) -> Result<()> {
         let (Some(client), Some(session_id)) = (self.client.get(), self.acp_session_id.get())
         else {
-            return Err(Error::new(ErrorCode::Agent, "opencode is not running"));
+            return Err(Error::new(
+                ErrorCode::Agent,
+                format!("{} is not running", self.dialect.name()),
+            ));
         };
         let reply = client.request(
             "session/set_config_option",
@@ -709,7 +828,9 @@ impl AcpShared {
             let target = match wanted {
                 Some(value) => Some(value.to_string()),
                 // Back to default: the effort option has an explicit `default` value.
-                None if category == "thought_level" => Some("default".to_string()),
+                None if category == "thought_level" && self.dialect == Dialect::OpenCode => {
+                    Some("default".to_string())
+                }
                 None => self.initial.lock().get(&config_id).cloned(),
             };
             let Some(target) = target else {
@@ -730,7 +851,7 @@ impl AcpShared {
 
     fn with_exit_info(&self, message: String) -> String {
         match self.exit.lock().as_ref() {
-            Some(info) => info.describe("opencode"),
+            Some(info) => info.describe(self.dialect.name()),
             None => message,
         }
     }
@@ -753,6 +874,10 @@ impl AcpShared {
                 }
             }
             Incoming::Request { id, method, params } => {
+                if self.dialect == Dialect::Cursor && self.on_cursor_request(&id, &method, &params)
+                {
+                    return;
+                }
                 if method == "session/request_permission" {
                     self.on_permission(id, &params);
                 } else if let Some(client) = self.client.get() {
@@ -760,11 +885,60 @@ impl AcpShared {
                 }
             }
             Incoming::Closed(info) => {
-                let message = info.describe("opencode");
+                let message = info.describe(self.dialect.name());
                 *self.exit.lock() = Some(info);
                 (self.emit)(BackendEvent::Error { message });
             }
         }
+    }
+
+    /// Cursor's own requests (questions, plans, reports). False when the request is none of them.
+    fn on_cursor_request(&self, id: &Value, method: &str, params: &Value) -> bool {
+        use super::cursor::{Handled, classify};
+        let Some(handled) = classify(method, params) else {
+            return false;
+        };
+        match handled {
+            Err(message) => {
+                if let Some(client) = self.client.get() {
+                    let _ = client.respond_error(id, -32602, &message);
+                }
+            }
+            Ok(Handled::Reply(reply)) => self.answer(id, reply),
+            Ok(Handled::Plan { reply, text }) => {
+                self.answer(id, reply);
+                if let Some(turn_id) = self.state.lock().turn {
+                    (self.emit)(BackendEvent::Delta {
+                        turn_id,
+                        text: format!("\n\n**Plan**\n\n{text}\n"),
+                    });
+                }
+            }
+            Ok(Handled::Ask { questions, keep }) => {
+                let mut state = self.state.lock();
+                let Some(turn_id) = state.turn else {
+                    // Nothing is running: refuse rather than leave the agent hanging.
+                    drop(state);
+                    self.answer(id, json!({ "outcome": { "outcome": "cancelled" } }));
+                    return true;
+                };
+                state.queue.push_back(QueuedPermission {
+                    request_id: PermissionRequestId::new(),
+                    turn_id,
+                    rpc_id: id.clone(),
+                    tool_name: "Question".into(),
+                    detail: questions
+                        .first()
+                        .map(|question| question.question.clone())
+                        .unwrap_or_default(),
+                    options: Vec::new(),
+                    questions,
+                    asked: Some(keep),
+                });
+                self.pump_permissions(&mut state);
+            }
+        }
+        true
     }
 
     fn on_update(&self, update: &Value) {
@@ -1060,6 +1234,8 @@ impl AcpShared {
             tool_name: title.unwrap_or(kind).to_string(),
             detail: permission_detail(kind, &tool_call),
             options,
+            questions: Vec::new(),
+            asked: None,
         });
         self.pump_permissions(&mut state);
     }
@@ -1075,7 +1251,7 @@ impl AcpShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
-                questions: Vec::new(),
+                questions: next.questions.clone(),
             });
             state.active = Some(next);
         }
@@ -1219,7 +1395,8 @@ impl BackendSession for AcpSession {
         if !self.is_alive() {
             return Err(Error::new(
                 ErrorCode::Agent,
-                self.shared.with_exit_info("opencode is not running".into()),
+                self.shared
+                    .with_exit_info(format!("{} is not running", self.shared.dialect.name())),
             ));
         }
         let shared = Arc::clone(&self.shared);
@@ -1282,7 +1459,8 @@ impl BackendSession for AcpSession {
         if !self.is_alive() {
             return Err(Error::new(
                 ErrorCode::Agent,
-                self.shared.with_exit_info("opencode is not running".into()),
+                self.shared
+                    .with_exit_info(format!("{} is not running", self.shared.dialect.name())),
             ));
         }
         {
@@ -1333,13 +1511,20 @@ impl BackendSession for AcpSession {
                 return Err(Error::new(ErrorCode::Invalid, "no matching permission"));
             }
             let active = state.active.take().expect("checked above");
-            let outcome = match pick_option(&active.options, decision.allow) {
-                Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
-                None => json!({ "outcome": "cancelled" }),
+            let result = match &active.asked {
+                // A question's reply already carries its `outcome`.
+                Some(keep) => super::cursor::reply(keep, decision),
+                None => {
+                    let outcome = match pick_option(&active.options, decision.allow) {
+                        Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
+                        None => json!({ "outcome": "cancelled" }),
+                    };
+                    json!({ "outcome": outcome })
+                }
             };
-            (active.rpc_id, outcome)
+            (active.rpc_id, result)
         };
-        self.shared.answer(&rpc_id, json!({ "outcome": outcome }));
+        self.shared.answer(&rpc_id, outcome);
         let mut state = self.shared.state.lock();
         self.shared.pump_permissions(&mut state);
         Ok(())
@@ -1576,7 +1761,7 @@ mod tests {
         );
         assert_eq!(native.get("default-cwd"), None);
 
-        let acp = acp_mcp_servers(servers, true, true).expect("ACP config");
+        let acp = acp_mcp_servers(Dialect::OpenCode, servers, true, true).expect("ACP config");
         assert_eq!(acp.len(), 1);
         assert_eq!(acp[0]["name"], "default-cwd");
         assert_eq!(acp[0]["args"], json!([]));
@@ -1598,7 +1783,7 @@ mod tests {
         );
         assert_eq!(native["api"]["headers"]["X-Key"], "k");
         // Never over ACP: an agent without the HTTP transport would refuse the whole session.
-        let acp = acp_mcp_servers(servers, false, false).expect("ACP config");
+        let acp = acp_mcp_servers(Dialect::OpenCode, servers, false, false).expect("ACP config");
         assert!(acp.is_empty());
     }
 

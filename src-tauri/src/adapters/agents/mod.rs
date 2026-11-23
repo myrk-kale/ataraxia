@@ -6,6 +6,7 @@ pub mod claude;
 pub mod codex;
 pub mod codex_commands;
 pub mod config;
+pub mod cursor;
 pub mod definitions;
 pub mod fake;
 pub mod guide;
@@ -22,6 +23,7 @@ pub mod subagent_tail;
 
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
+pub use cursor::CursorBackend;
 pub use fake::FakeBackend;
 pub use host::AgentHost;
 pub use opencode::OpenCodeBackend;

@@ -56,6 +56,7 @@ pub enum ProviderKind {
     OpenCode,
     Claude,
     Codex,
+    Cursor,
 }
 
 impl ProviderKind {
@@ -75,6 +76,7 @@ impl ProviderKind {
             Self::OpenCode => "opencode",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -84,6 +86,7 @@ impl ProviderKind {
             "opencode" => Some(Self::OpenCode),
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -281,11 +284,12 @@ pub struct ProviderDescriptor {
 mod tests {
     use super::*;
 
-    const ALL: [ProviderKind; 4] = [
+    const ALL: [ProviderKind; 5] = [
         ProviderKind::Fake,
         ProviderKind::OpenCode,
         ProviderKind::Claude,
         ProviderKind::Codex,
+        ProviderKind::Cursor,
     ];
 
     #[test]
