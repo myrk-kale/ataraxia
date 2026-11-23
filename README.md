@@ -2,7 +2,7 @@
 
 Review what your coding agents wrote, one component at a time.
 
-Ataraxia is a desktop app where you chat with Claude Code, Codex or OpenCode, and then read the result
+Ataraxia is a desktop app where you chat with Claude Code, Codex, OpenCode or Cursor, and then read the result
 ranked by what needs your eyes first. It puts the chat, the code review, the decisions behind the change
 and a diagram of how it fits together in one window, and you move between them from the keyboard.
 
@@ -25,7 +25,7 @@ and a diagram of how it fits together in one window, and you move between them f
    On Windows, run the `-setup.exe` from the [latest release](https://github.com/myrk-kale/ataraxia/releases/latest).
    On Linux you can also use the `.deb`, `.rpm` or `.AppImage` there. [All the ways to install](#install).
 
-2. Have a coding agent installed: Claude Code, Codex or OpenCode. Ataraxia finds it on your `PATH`.
+2. Have a coding agent installed: Claude Code, Codex, OpenCode or Cursor. Ataraxia finds it on your `PATH`.
 
 3. Run `ataraxia`, open a repository from the header, and ask the agent for a change. When its turn ends,
    open Code: the files it touched are there, with the components that changed at the top of the list.
@@ -104,7 +104,7 @@ workspace of one, so nothing changes until you make a second one.
 
 ## Use the agent you like, and change your mind
 
-Claude Code, Codex and OpenCode run behind the same chat, with streaming, tool cards, permission
+Claude Code, Codex, OpenCode and Cursor run behind the same chat, with streaming, tool cards, permission
 prompts, cancel, and subagents you can open and write to. Switching the provider in the middle of a chat
 keeps the conversation on screen, writes it to a text file, and tells the new agent where that file is,
 so it can read what was said before.
@@ -207,7 +207,7 @@ cargo binstall ataraxia-ide                                  # the prebuilt bina
 cargo install ataraxia-ide --locked --features custom-protocol   # or build it (needs the system libraries below)
 ```
 
-You also need a coding agent: Claude Code, Codex or OpenCode. With none installed, the app says what to install.
+You also need a coding agent: Claude Code, Codex, OpenCode or Cursor. With none installed, the app says what to install.
 
 ## Run it from the source code
 

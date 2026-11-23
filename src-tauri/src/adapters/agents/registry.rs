@@ -125,6 +125,33 @@ impl ProviderRegistry {
                     subagent_messages: true,
                 },
             },
+            ProviderDescriptor {
+                kind: ProviderKind::Cursor,
+                display_name: "Cursor".into(),
+                capabilities: CapabilityMatrix {
+                    rewind: false,
+                    fork: ForkMode::None,
+                    compact: false,
+                    compact_instructions: false,
+                    thread_goal: false,
+                    context_usage: true,
+                    image_prompts: false,
+                    steering: SteeringMode::Queue,
+                    approval_enforcement: ApprovalEnforcement::Host,
+                    child_sessions: false,
+                },
+                available: true,
+                detail: None,
+                settings: ProviderSettings {
+                    configurable: true,
+                    models: Vec::new(),
+                    efforts: Vec::new(),
+                    custom_model: false,
+                    dynamic: true,
+                    agents: true,
+                    subagent_messages: false,
+                },
+            },
         ]
     }
 }
@@ -149,8 +176,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_four_providers() {
-        assert_eq!(ProviderRegistry::descriptors().len(), 4);
+    fn registry_lists_five_providers() {
+        assert_eq!(ProviderRegistry::descriptors().len(), 5);
         assert!(ProviderRegistry::capabilities_for(ProviderKind::OpenCode).is_ok());
     }
 }

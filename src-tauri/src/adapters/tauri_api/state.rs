@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::adapters::agents::{
-    AgentHost, ClaudeBackend, CodexBackend, FakeBackend, OpenCodeBackend, guide,
+    AgentHost, ClaudeBackend, CodexBackend, CursorBackend, FakeBackend, OpenCodeBackend, guide,
 };
 use crate::adapters::fs::StdFs;
 use crate::adapters::git::GitCli;
@@ -73,6 +73,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
             .with_config_dir(data_dir.clone())
             .with_backend(ProviderKind::Fake, Arc::new(FakeBackend::default()))
             .with_backend(ProviderKind::OpenCode, Arc::new(OpenCodeBackend::new()))
+            .with_backend(ProviderKind::Cursor, Arc::new(CursorBackend::new()))
             .with_backend(ProviderKind::Claude, Arc::new(ClaudeBackend::new()))
             .with_backend(ProviderKind::Codex, Arc::new(CodexBackend::new())),
     );

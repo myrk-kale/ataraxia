@@ -18,7 +18,7 @@ import { ProviderMark } from "../chat/ProviderMark";
 import { Button } from "../ui/Button";
 
 /** The harnesses that can have profiles: the demo provider has nothing to start. */
-const HARNESSES: readonly ProviderKind[] = ["claude", "codex", "opencode"];
+const HARNESSES: readonly ProviderKind[] = ["claude", "codex", "opencode", "cursor"];
 
 const COLOR_NAMES: Record<string, string> = {
   "#3b82f6": "Blue",
@@ -35,6 +35,7 @@ const EXAMPLE: Record<ProviderKind, string> = {
   claude: "CLAUDE_CONFIG_DIR=~/.claude-work claude",
   codex: "CODEX_HOME=~/.codex-work codex",
   opencode: "XDG_DATA_HOME=~/.opencode-work opencode",
+  cursor: "CURSOR_CONFIG_DIR=~/.cursor-work cursor-agent",
   fake: "",
 };
 

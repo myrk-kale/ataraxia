@@ -16,6 +16,9 @@ const CODEX_KNOT =
 const OPENCODE =
   "M16 6H8v12h8V6zm4 16H4V2h16v20z";
 
+// Cursor's own logo is not drawn here: a plain pointer stands for it until the licensed mark is added.
+const CURSOR = "M5 3l14 8.5-6.2 1.6L9.5 20.5 5 3z";
+
 const DEMO_TONE = "bg-cg-mark-demo-bg text-cg-mark-demo-fg";
 
 export function ProviderMark({ provider, size = 20 }: { provider: ProviderKind; size?: number }) {
@@ -34,7 +37,7 @@ export function ProviderMark({ provider, size = 20 }: { provider: ProviderKind; 
   return (
     <svg
       aria-hidden="true"
-      className={`flex-none ${provider === "opencode" ? "text-cg-ink" : ""}`}
+      className={`flex-none ${provider === "opencode" || provider === "cursor" ? "text-cg-ink" : ""}`}
       focusable="false"
       height={size}
       viewBox="0 0 24 24"
@@ -54,6 +57,7 @@ export function ProviderMark({ provider, size = 20 }: { provider: ProviderKind; 
           </defs>
         </>
       ) : null}
+      {provider === "cursor" ? <path d={CURSOR} fill="currentColor" /> : null}
       {provider === "opencode" ? <path clipRule="evenodd" d={OPENCODE} fill="currentColor" fillRule="evenodd" /> : null}
     </svg>
   );

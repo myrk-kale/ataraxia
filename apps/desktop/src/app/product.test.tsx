@@ -114,12 +114,12 @@ describe("words for states", () => {
   });
 
   it("a provider mark is the agent's own logo, decorative, and each agent has a different one", () => {
-    const marks = (["claude", "codex", "opencode"] as const).map((provider) => renderToStaticMarkup(<ProviderMark provider={provider} />));
+    const marks = (["claude", "codex", "opencode", "cursor"] as const).map((provider) => renderToStaticMarkup(<ProviderMark provider={provider} />));
     for (const html of marks) {
       expect(html).toContain('aria-hidden="true"');
       expect(html).toContain("<svg");
     }
-    expect(new Set(marks).size).toBe(3);
+    expect(new Set(marks).size).toBe(4);
   });
 });
 

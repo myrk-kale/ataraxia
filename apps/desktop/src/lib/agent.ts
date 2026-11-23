@@ -159,6 +159,7 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   opencode: "OpenCode",
   claude: "Claude Code",
   codex: "Codex",
+  cursor: "Cursor",
 };
 
 export type ModelChoice = {

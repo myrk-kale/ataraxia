@@ -95,7 +95,7 @@ const PROVIDER_STORAGE_KEY = "ataraxia.newChatProvider";
 function readStoredProvider(): ProviderKind | null {
   try {
     const stored = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
-    if (stored === "opencode" || stored === "claude" || stored === "codex") {
+    if (stored === "opencode" || stored === "claude" || stored === "codex" || stored === "cursor") {
       return stored;
     }
     if (stored === "fake" && import.meta.env.DEV) {
@@ -718,7 +718,7 @@ export function AppShell() {
       return;
     }
     if (!provider) {
-      setError("No coding agent is available. Install Claude Code, Codex or OpenCode first.");
+      setError("No coding agent is available. Install Claude Code, Codex, OpenCode or Cursor first.");
       return;
     }
     setSessionsOpen(false);
