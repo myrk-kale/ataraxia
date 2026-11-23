@@ -9,6 +9,7 @@ mod resources;
 mod speech;
 mod state;
 mod tasks;
+mod updater;
 mod wake;
 
 use base64::Engine as _;
@@ -33,6 +34,7 @@ pub use resources::*;
 pub use speech::*;
 pub use state::{AppState, build_app_state, follow_git};
 pub use tasks::*;
+pub use updater::*;
 pub use wake::*;
 
 fn map_error(error: Error) -> String {

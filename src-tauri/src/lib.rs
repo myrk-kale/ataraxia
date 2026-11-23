@@ -20,6 +20,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(tauri_api::PendingUpdate::default())
         .setup(|app| {
             let state = tauri_api::build_app_state(app.handle())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -168,6 +170,8 @@ pub fn run() {
             tauri_api::memory_delete,
             tauri_api::memory_link,
             tauri_api::memory_unlink,
+            tauri_api::update_check,
+            tauri_api::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ataraxia")

@@ -28,10 +28,14 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
+      sign: ${{ steps.v.outputs.sign }}
     steps:
       - uses: actions/checkout@v4
       - name: Cargo.toml, tauri.conf.json and the tag must agree
         id: v
+        env:
+          # Only whether it is there matters here; the build job reads the key itself.
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           version="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | jq -r '.packages[0].version')"
           conf="$(jq -r .version src-tauri/tauri.conf.json)"
@@ -47,11 +51,16 @@ jobs:
             fi
             grep -q "^## \[${version}\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for ${version}"; exit 1; }
             publish=true
+            # An unsigned release would leave every installed app unable to update itself.
+            [ -n "${SIGNING_KEY}" ] || { echo "the secret TAURI_SIGNING_PRIVATE_KEY is not set, so the release cannot be signed for the in-app updater"; exit 1; }
           fi
+          sign=false
+          [ -z "${SIGNING_KEY}" ] || sign=true
           {
             echo "version=${version}"
             echo "tag=v${version}"
             echo "publish=${publish}"
+            echo "sign=${sign}"
           } >> "$GITHUB_OUTPUT"
 
   build:
@@ -152,6 +161,17 @@ jobs:
           echo "Files:"
           scripts/collect-release-files.sh "${TAG}" "${{ matrix.target }}" dist ${{ matrix.kinds }}
 
+      - name: Sign the package the in-app updater installs
+        # A rehearsal without the secret skips this; a tag without it was stopped by the version job.
+        if: needs.version.outputs.sign == 'true'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "Signatures:"
+          scripts/sign-updater-files.sh dist
+
       - name: Attest build provenance
         if: needs.version.outputs.publish == 'true'
         uses: actions/attest-build-provenance@v2
@@ -200,6 +220,9 @@ jobs:
           ' CHANGELOG.md > notes.md
           test -s notes.md
 
+      - name: The manifest the in-app updater reads
+        run: scripts/make-latest-json.sh "${TAG}" dist notes.md "${GITHUB_REPOSITORY}" > dist/latest.json
+
       - name: Verify the checksums and the set of files
         working-directory: dist
         run: |
@@ -221,9 +244,10 @@ jobs:
           for file in "${expected[@]}"; do
             sha256sum -c "${file}.sha256"
           done
-          # Nothing else may be attached: twelve files, each with its checksum.
+          # Nothing else may be attached: twelve files, each with its checksum, the signatures of
+          # the four packages the updater installs, and its manifest.
           files=(./*)
-          test "${#files[@]}" = 24 || { echo "expected 24 files, found ${#files[@]}"; exit 1; }
+          test "${#files[@]}" = 29 || { echo "expected 29 files, found ${#files[@]}"; exit 1; }
 
       - name: Publish the GitHub release
         env:

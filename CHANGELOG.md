@@ -6,6 +6,15 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Ataraxia updates itself. A few seconds after it opens, and every six hours, it looks for a newer release;
+  when there is one, a card offers it with what is new, and "Update and restart" downloads it, checks its
+  signature, installs it and opens the app again. "Later" leaves it for the next time the app opens. It works
+  for the macOS app, the Windows installer and the Linux AppImage; a `.deb`, a `.rpm`, the Homebrew
+  formula or `cargo install` are left to the way they were installed. Releases are signed for this, so only one made by this project is ever installed. A
+  version released before this one has to be updated by hand once.
+
 ## [0.19.0] - 2026-11-23
 
 ### Added

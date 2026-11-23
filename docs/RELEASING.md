@@ -8,8 +8,10 @@ git tag vX.Y.Z  ──►  Release workflow
                       ├─ ci                CI workflow: lint, typecheck, tests, build, cargo fmt/test/check
                       ├─ version           Cargo.toml, tauri.conf.json, the tag and the CHANGELOG agree
                       ├─ build  (x4)       macOS universal · Linux x86_64 · Linux aarch64 · Windows x64
-                      │                    each smoke-tests the binary (`--version`) and attests its files
-                      ├─ release           checks the twelve files and their checksums, creates the GitHub release
+                      │                    each smoke-tests the binary (`--version`), signs the package the
+                      │                    in-app updater installs, and attests its files
+                      ├─ release           writes latest.json, checks the files and their checksums,
+                      │                    creates the GitHub release
                       ├─ homebrew          installs the formula on macOS and Linux, then pushes it to the tap
                       └─ crates            dispatches crates.yml, which publishes the crate
 ```
@@ -22,7 +24,9 @@ git tag vX.Y.Z  ──►  Release workflow
 | Linux x86_64 and aarch64 (built on Ubuntu 22.04) | `….deb`, `….rpm`, `….AppImage`, `….tar.gz`, for each architecture |
 | Windows x64 | `….-setup.exe` (NSIS installer, per user or per machine), `….msi` |
 
-Each has a `.sha256`. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, the binary on macOS and
+Each has a `.sha256`. Four of them also have a `.sig`, the minisign signature the app checks before it
+installs an update (the macOS `.app.tar.gz`, the two AppImages and the Windows `-setup.exe`), and the release
+carries `latest.json`, the manifest the app reads to find them (see "In-app updates"). That makes 29 files. The Homebrew formula (`brew install myrk-kale/tap/ataraxia`, the binary on macOS and
 Linux) and the cask (`brew install --cask myrk-kale/tap/ataraxia`, `Ataraxia.app` in Applications on
 macOS) are generated from those checksums by `packaging/render.sh`. The Homebrew workflow installs the
 cask on a macOS runner and runs `ataraxia --version` from the installed app before it pushes anything. The crate is `ataraxia-ide` (the name `ataraxia` on crates.io belongs to
@@ -57,6 +61,8 @@ These live in the repository settings (Settings > Secrets and variables > Action
 | Name | Kind | What it is |
 | --- | --- | --- |
 | `HOMEBREW_TAP_DEPLOY_KEY` | secret | The private half of an SSH key whose public half is a deploy key, with write access, on `myrk-kale/homebrew-tap` |
+| `TAURI_SIGNING_PRIVATE_KEY` | secret | The private updater key: the text of `~/.tauri/ataraxia-updater.key`. A tag without it is stopped by the version job |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secret | The key's password. Leave it out when the key has none (the current one has none) |
 | `PUBLISH_CRATE` | variable | `true` to publish the crate in a release; anything else skips it |
 
 The tap is shared with other projects; this one adds `Formula/ataraxia.rb` and `Casks/ataraxia.rb`. The crate needs no secret: it
@@ -75,6 +81,33 @@ publishing with an API token altogether.
 
 To check the setup without publishing, run **Actions > crates.io > Run workflow** with a tag that is
 already published: the sign-in runs first, and the publish is skipped.
+
+## In-app updates
+
+A running app looks for a newer release a few seconds after it opens and every six hours. It reads
+`https://github.com/myrk-kale/ataraxia/releases/latest/download/latest.json`, which lists, per platform, the
+package to download and its signature. When the version there is newer it offers it; if the person agrees, the
+app downloads the package, checks the signature against the public key in `src-tauri/tauri.conf.json`
+(`plugins.updater.pubkey`), installs it, and restarts.
+
+| Platform | Package the updater installs | Notes |
+| --- | --- | --- |
+| macOS | the universal `.app.tar.gz` | replaces `Ataraxia.app` where it is; asks for an administrator password if the folder is not writable. Never offered to the bare binary (Homebrew formula, `cargo install`) |
+| Windows | the `-setup.exe`, in passive mode | the installer closes the app and starts it again |
+| Linux | the `.AppImage` of its architecture | only when the app was started from an AppImage. A `.deb` or `.rpm` belongs to the package manager and is never offered an update |
+
+A version that already contains this feature can update itself; one released before it cannot, and has to be
+updated by hand once (`brew upgrade`, or the installer).
+
+The key pair is made once with `tauri signer generate`. The public half is in `tauri.conf.json`; the private
+half is the secret above. **Keep a copy of the private key somewhere safe.** If it is lost, no installed app
+can be updated again: they trust only the public key they were built with, so a new key has to be shipped by
+hand in a release people install themselves. If it leaks, treat it the same way: replace the pair and ship the
+new public key by hand.
+
+`scripts/sign-updater-files.sh` signs the packages and `scripts/make-latest-json.sh` writes the manifest; both can
+be run on a folder of release files to see what a release would publish. A rehearsal (Actions > Release > Run
+workflow) signs too, when the secret is there.
 
 ## Re-running a part
 

@@ -77,6 +77,7 @@ import { SessionsPanel } from "./SessionsPanel";
 import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutLegend } from "./ShortcutLegend";
 import { Toast } from "./Toast";
+import { UpdatePrompt } from "./UpdatePrompt";
 import { activeItem, newBridge, otherItems, type SpaceBridges } from "./spaceCommands";
 import { isSearchKey, isSpaceKey, resolveShortcut } from "./shortcuts";
 import { TRAFFIC_LIGHTS_INSET, useTitlebarInset } from "./titlebar";
@@ -1307,6 +1308,7 @@ export function AppShell() {
         onClose={() => setWorkspaceDialog(null)}
         onSaved={setWorkspace}
       />
+      <UpdatePrompt />
       <Toast message={error} onDismiss={() => setError(null)} />
     </div>
   );
