@@ -329,6 +329,8 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "core_status": return "ready";
     case "speech_status": return { ready: false, engine: "built-in Whisper", streaming: true, needs_model: true, downloading: false, model: "fast", model_megabytes: 190, model_url: "", models: [{ id: "fast", name: "Fast (small)", megabytes: 190, downloaded: false }, { id: "accurate", name: "Accurate (large-v3-turbo)", megabytes: 574, downloaded: false }], problem: null, command: "", language: "", languages: [{ code: "", name: "Detect it" }, { code: "en", name: "English" }, { code: "pt", name: "Português" }] };
     case "speech_set": return handle("speech_status");
+    case "wake_mode": return "display";
+    case "wake_set_mode": return args?.mode ?? "display";
     case "memory_snapshot": return { enabled: memoryEnabled, memories: devMemories.slice(), links: devMemoryLinks.slice() };
     case "memory_set_enabled": memoryEnabled = Boolean(args?.enabled); return null;
     case "memory_create": {

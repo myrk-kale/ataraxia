@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { forgetDraft, loadDraft, saveDraft } from "./draftStore";
+import { forgetDraft, keepNewChatText, loadDraft, saveDraft, takeNewChatText } from "./draftStore";
 
 afterEach(() => window.localStorage.clear());
 
@@ -20,5 +20,13 @@ describe("composer drafts", () => {
     saveDraft("a", "y");
     forgetDraft("a");
     expect(loadDraft("a")).toBe("");
+  });
+
+  it("hands the text of a left + chat to the next one, once", () => {
+    keepNewChatText("   ");
+    expect(takeNewChatText()).toBe("");
+    keepNewChatText("pendente");
+    expect(takeNewChatText()).toBe("pendente");
+    expect(takeNewChatText()).toBe("");
   });
 });
