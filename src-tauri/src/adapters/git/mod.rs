@@ -26,6 +26,11 @@ impl Git for GitCli {
         Ok(RepoInfo { root, name })
     }
 
+    fn init(&self, path: &Path) -> Result<RepoInfo> {
+        git_output(&["init", "-q"], Some(path))?;
+        self.discover(path)
+    }
+
     fn list_worktrees(&self, repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
         let porcelain = git_output(&["worktree", "list", "--porcelain"], Some(repo_root))?;
         parse_worktree_porcelain(&porcelain)
@@ -154,9 +159,13 @@ impl Git for GitCli {
     }
 
     fn head_rev(&self, worktree: &Path) -> Result<String> {
-        Ok(git_output(&["rev-parse", "HEAD"], Some(worktree))?
-            .trim()
-            .to_string())
+        // A repository just made has no commit yet: its starting point is the empty tree, which
+        // git knows without storing it, so what was written since shows up as a diff against it.
+        match git_output(&["rev-parse", "--verify", "-q", "HEAD"], Some(worktree)) {
+            Ok(rev) => Ok(rev.trim().to_string()),
+            Err(error) if error.code == ErrorCode::NotARepo => Err(error),
+            Err(_) => Ok(EMPTY_TREE.to_string()),
+        }
     }
 
     fn snapshot(&self, worktree: &Path, keep: &str) -> Result<String> {
@@ -351,10 +360,17 @@ impl Git for GitCli {
     }
 
     fn list_files(&self, worktree: &Path) -> Result<Vec<String>> {
-        let out = git_output(
+        let out = match git_output(
             &["ls-files", "-co", "--exclude-standard", "-z"],
             Some(worktree),
-        )?;
+        ) {
+            Ok(out) => out,
+            // A folder opened without git (not installed, or it could not make the repository).
+            Err(_) if worktree.is_dir() && !worktree.join(".git").exists() => {
+                return Ok(walk_files(worktree));
+            }
+            Err(error) => return Err(error),
+        };
         let mut files: Vec<String> = out
             .split('\0')
             .filter(|item| !item.is_empty())
@@ -364,6 +380,47 @@ impl Git for GitCli {
         files.dedup();
         Ok(files)
     }
+}
+
+/// The tree with nothing in it. Git knows it without having it stored.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The most files read from a folder that has no git to list them.
+const WALK_LIMIT: usize = 20_000;
+
+/// Folders nobody wants listed as the files of a project.
+const WALK_SKIP: &[&str] = &[".git", "node_modules", "target", "dist", "build", ".venv"];
+
+/// The files of a folder that is not a repository, relative paths with `/`, without the folders
+/// that only hold dependencies or build output.
+fn walk_files(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if !WALK_SKIP.contains(&name.as_str()) {
+                    pending.push(path);
+                }
+            } else if kind.is_file() && name != ".DS_Store" {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    files.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            if files.len() >= WALK_LIMIT {
+                return files;
+            }
+        }
+    }
+    files
 }
 
 /// A revision typed by the user goes to git as an argument: keep it to plain revision syntax.
