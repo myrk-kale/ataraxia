@@ -6,6 +6,22 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Settings > Power chooses what stays on while there is work in progress: the computer and the
+  screen (the default), the computer only, or nothing. The choice is saved and applies within a
+  few seconds, without a restart.
+
+### Fixed
+
+- The screen no longer turns off and locks while agents have work pending: the default now keeps
+  the display on as well as the system.
+- Local MCP servers whose whole command line was typed in the Command field (`npx some-server
+  --flag`) now start in every harness. The line is split into the program and its arguments when
+  saved and when read, so servers saved that way work without being edited.
+- Text typed in a chat made with + and left before its first message is no longer lost. That chat
+  is still discarded, and the text comes back in the next chat made with +.
+
 ## [0.16.0] - 2026-11-22
 
 ### Added

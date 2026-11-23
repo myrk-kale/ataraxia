@@ -9,6 +9,7 @@ import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings"
 import { ProfileSettings } from "./ProfileSettings";
 import { AutocompletePanel } from "./AutocompleteSettings";
 import { VoicePanel } from "./VoiceSettings";
+import { WakePanel } from "./WakeSettings";
 import { ResourcesSettings } from "./ResourcesSettings";
 import { MemoryPanel } from "../memory/MemoryPanel";
 import type { WorkspaceName } from "../memory/MemoryEditor";
@@ -22,6 +23,7 @@ const TABS = [
   { id: "autocomplete", label: "Autocomplete" },
   { id: "voice", label: "Voice" },
   { id: "sound", label: "Sound" },
+  { id: "power", label: "Power" },
   { id: "privacy", label: "Privacy" },
 ] as const;
 
@@ -170,6 +172,8 @@ export function SettingsDialog({
                 </SettingRow>
               </>
             ) : null}
+
+            {tab === "power" ? <WakePanel /> : null}
 
             {tab === "privacy" ? (
               <SettingRow

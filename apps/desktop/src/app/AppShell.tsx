@@ -86,7 +86,7 @@ import { nextSpace, SPACES, type SpaceId } from "./spaces";
 import { pickProvider, visibleProviders } from "./providers";
 import { useAppearance } from "./appearance/store";
 import { useFailedArtifacts, useSessionActivity } from "./useSessionActivity";
-import { forgetDraft } from "../chat/draftStore";
+import { forgetDraft, keepNewChatText, loadDraft, saveDraft, takeNewChatText } from "../chat/draftStore";
 import { forgetClosedSubagents } from "../chat/closedSubagents";
 import { DRAFT_SETTLED_EVENT, draftChats, markDraftChat, settleDraftChat } from "../chat/draftChats";
 
@@ -733,6 +733,9 @@ export function AppShell() {
       setSpace("chat");
       return;
     }
+    // Text left in an earlier + chat goes on to this one. From a + chat still on screen it is
+    // taken now, before that chat is deleted for being left.
+    const fromCurrent = current && drafts.has(current.id) ? loadDraft(current.id) : "";
     await runWorkspace(async () => {
       const snapshot = await workspaceCreateSession(
         selectedRepository.id,
@@ -745,6 +748,13 @@ export function AppShell() {
       if (snapshot.selected_session_id) {
         markDraftChat(snapshot.selected_session_id);
         setDrafts(draftChats());
+        const carried = fromCurrent.trim() !== "" ? fromCurrent : takeNewChatText();
+        if (carried.trim() !== "") {
+          saveDraft(snapshot.selected_session_id, carried);
+          if (current && fromCurrent !== "") {
+            forgetDraft(current.id);
+          }
+        }
       }
       return snapshot;
     });
@@ -769,7 +779,8 @@ export function AppShell() {
     return () => window.removeEventListener(DRAFT_SETTLED_EVENT, refresh);
   }, []);
   // A chat made with + and left without a message is not kept: once another chat is on screen
-  // (or, after a restart, any that is not on screen), it is deleted.
+  // (or, after a restart, any that is not on screen), it is deleted. Its text is kept for the
+  // next chat made with +.
   useEffect(() => {
     if (boot.kind !== "ready") {
       return;
@@ -784,12 +795,13 @@ export function AppShell() {
     void (async () => {
       for (const id of stale) {
         settleDraftChat(id);
+        keepNewChatText(loadDraft(id));
+        forgetDraft(id);
         if (!known.has(id)) {
           continue;
         }
         try {
           const snapshot = await workspaceDeleteSession(id);
-          forgetDraft(id);
           forgetClosedSubagents(id);
           if (!cancelled) {
             setWorkspace(snapshot);

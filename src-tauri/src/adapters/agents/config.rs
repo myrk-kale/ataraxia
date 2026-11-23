@@ -462,10 +462,82 @@ pub(super) fn read_mcp_entries(path: &Path) -> Result<Option<(Map<String, Value>
             format!("{} must contain an object named mcpServers", path.display()),
         ));
     };
-    for (name, config) in entries {
+    let mut entries = entries.clone();
+    for (name, config) in entries.iter_mut() {
         validate_mcp_server(path, name, config)?;
+        split_command_line(config);
     }
-    Ok(Some((entries.clone(), contents)))
+    Ok(Some((entries, contents)))
+}
+
+/// Moves the arguments of a command typed as one line (`npx some-server --flag`) into `args`.
+/// Every agent runs `command` as the program itself, so a whole line there is a program that
+/// does not exist and the server never starts. A path to a file that exists is left whole, even
+/// with spaces in it.
+pub(super) fn split_command_line(config: &mut Value) {
+    let Some(config) = config.as_object_mut() else {
+        return;
+    };
+    let Some(command) = config.get("command").and_then(Value::as_str) else {
+        return;
+    };
+    let line = command.trim();
+    if !line.contains(char::is_whitespace) || Path::new(line).is_file() {
+        if line != command && !line.is_empty() {
+            config.insert("command".into(), Value::String(line.into()));
+        }
+        return;
+    }
+    let mut words = command_words(line).into_iter();
+    let Some(program) = words.next() else {
+        return;
+    };
+    let mut args: Vec<Value> = words.map(Value::String).collect();
+    if let Some(Value::Array(existing)) = config.get("args") {
+        args.extend(existing.iter().cloned());
+    }
+    config.insert("command".into(), Value::String(program));
+    config.insert("args".into(), Value::Array(args));
+}
+
+/// Splits a command line into words the way a shell would for plain quoting: single quotes keep
+/// everything, double quotes keep spaces, a backslash escapes the next character.
+fn command_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') | (None, '\\') => {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+                started = true;
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
 }
 
 pub(super) fn validate_mcp_server(path: &Path, name: &str, config: &Value) -> Result<()> {
@@ -769,6 +841,62 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("ataraxia-{label}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_command_typed_as_one_line_is_split_into_program_and_arguments() {
+        let mut server = serde_json::json!({
+            "command": " npx chrome-devtools-mcp@latest --autoConnect ",
+            "args": ["--extra"],
+        });
+        split_command_line(&mut server);
+        assert_eq!(
+            server,
+            serde_json::json!({
+                "command": "npx",
+                "args": ["chrome-devtools-mcp@latest", "--autoConnect", "--extra"],
+            })
+        );
+
+        let mut quoted = serde_json::json!({"command": r#"node "/my dir/server.js" 'a b' c\ d"#});
+        split_command_line(&mut quoted);
+        assert_eq!(
+            quoted,
+            serde_json::json!({"command": "node", "args": ["/my dir/server.js", "a b", "c d"]})
+        );
+
+        let mut plain = serde_json::json!({"command": "npx", "args": ["-y", "server"]});
+        let before = plain.clone();
+        split_command_line(&mut plain);
+        assert_eq!(plain, before);
+
+        let dir = temporary_directory("spaced command");
+        fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("my server");
+        fs::write(&program, "").unwrap();
+        let mut spaced = serde_json::json!({"command": program.to_str().unwrap()});
+        let before = spaced.clone();
+        split_command_line(&mut spaced);
+        assert_eq!(spaced, before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_saved_one_line_command_reaches_the_agent_split() {
+        let dir = temporary_directory("one-line-mcp");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mcp.json");
+        fs::write(
+            &file,
+            r#"{"mcpServers":{"Chrome":{"command":"npx chrome-devtools-mcp@latest --autoConnect"}}}"#,
+        )
+        .unwrap();
+        let (entries, _) = read_mcp_entries(&file).unwrap().unwrap();
+        assert_eq!(
+            entries["Chrome"],
+            serde_json::json!({"command": "npx", "args": ["chrome-devtools-mcp@latest", "--autoConnect"]})
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

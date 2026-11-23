@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use super::config::{
     ResourcePolicy, collect_skills, parse_skill, read_mcp_entries, repository_root,
-    user_config_dir, validate_mcp_server,
+    split_command_line, user_config_dir, validate_mcp_server,
 };
 use super::mcp_oauth;
 use crate::domain::ids::{RepositoryId, WorkspaceId};
@@ -557,7 +557,9 @@ impl ResourceManager {
             ));
         }
         let file = self.mcp_file(context.scope, context.workspace_id, context.repository_id)?;
+        let mut config = config;
         validate_mcp_server(&file, name, &config)?;
+        split_command_line(&mut config);
         let mut servers = self.read_servers(&file)?;
         match (servers.contains_key(name), replace) {
             (true, false) => {

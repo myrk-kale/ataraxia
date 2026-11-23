@@ -31,6 +31,8 @@ pub struct AppState {
     pub api: Option<Arc<ApiServer>>,
     /// Speech to text: the Whisper model and the engine that listens.
     pub speech: Arc<crate::adapters::speech::Recognizer>,
+    /// Keeps the machine (and, as Settings says, the display) on while there is work.
+    pub sleep_guard: Arc<crate::adapters::sleep::SystemSleepGuard>,
 }
 
 pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
@@ -94,7 +96,14 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     engine.ensure_builtin_presets()?;
     engine.recover();
     engine.start_scheduler();
-    engine.start_sleep_guard(Arc::new(crate::adapters::sleep::SystemSleepGuard::default()));
+    let wake_mode = store
+        .get_preference(super::wake::PREF_WAKE_MODE)
+        .ok()
+        .flatten()
+        .map(|value| crate::adapters::sleep::WakeMode::parse(&value))
+        .unwrap_or(crate::adapters::sleep::WakeMode::DEFAULT);
+    let sleep_guard = Arc::new(crate::adapters::sleep::SystemSleepGuard::new(wake_mode));
+    engine.start_sleep_guard(sleep_guard.clone());
     Ok(AppState {
         git,
         store,
@@ -105,6 +114,7 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         db_path,
         api,
         speech: crate::adapters::speech::Recognizer::new(data_dir.join("models")),
+        sleep_guard,
     })
 }
 
