@@ -6,6 +6,18 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-23
+
+### Added
+
+- Cursor is a fourth chat agent, next to Claude Code, Codex and OpenCode. It runs as `cursor-agent acp`:
+  streaming, tool cards, permission requests for shell commands, plans, questions the agent puts to
+  you, and the models, reasoning efforts and modes (agent, plan, ask) Cursor reports. A chat that only
+  investigates runs in Cursor's plan mode. Install the CLI from cursor.com/cli and sign in with
+  `cursor-agent login`; `ATARAXIA_CURSOR_BIN` points at a CLI that is not on the `PATH`. Cursor does
+  not ask before editing files in the workspace (only for shell commands), and it keeps the chosen model
+  for the whole account, so picking one in a chat also changes the default of `cursor-agent` in a terminal.
+
 ## [0.18.0] - 2026-11-23
 
 ### Added
