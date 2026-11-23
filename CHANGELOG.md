@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-23
+
 ### Added
 
 - Settings > Power chooses what stays on while there is work in progress: the computer and the
