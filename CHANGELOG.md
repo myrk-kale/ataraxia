@@ -15,6 +15,10 @@ are the section of this file for its version.
   formula or `cargo install` are left to the way they were installed. Releases are signed for this, so only one made by this project is ever installed. A
   version released before this one has to be updated by hand once.
 
+### Fixed
+
+- Expanded SVG drawings now use the available window space instead of appearing smaller than in the chat.
+
 ## [0.19.0] - 2026-11-23
 
 ### Added
