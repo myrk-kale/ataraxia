@@ -104,8 +104,8 @@ export function SvgBlock({ source }: { source: string }) {
           width={result.width}
         />
       </div>
-      <Dialog className="p-4" isOpen={large} label={label} size="lg" onClose={() => setLarge(false)}>
-        <img alt={label} className="mx-auto h-auto max-h-[80vh] w-full object-contain" src={url} />
+      <Dialog className="m-auto flex h-[90vh] w-[94vw] max-w-none items-center justify-center p-4" isOpen={large} label={label} size="full" onClose={() => setLarge(false)}>
+        <img alt={result.description ? `${label}. ${result.description}` : label} className="h-full w-full object-contain" src={url} />
       </Dialog>
     </figure>
   );

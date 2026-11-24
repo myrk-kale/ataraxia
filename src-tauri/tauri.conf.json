@@ -59,5 +59,16 @@
       }
     }
   },
-  "mainBinaryName": "ataraxia"
+  "mainBinaryName": "ataraxia",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0NTIxQjc0NEFBMTNEMzEKUldReFBhRktkQnRTMURrS2JSSUoxNDVmNGdCMnVQS3VpbnFqbkFTYnZPUjFIZmFSaDIwbnpXS3YK",
+      "endpoints": [
+        "https://github.com/myrk-kale/ataraxia/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }

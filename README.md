@@ -200,6 +200,11 @@ gtk3`); the `.deb` and `.rpm` ask for them by themselves.
 or use the `.msi` for managed installs. The installer is not signed, so SmartScreen shows "More info
 > Run anyway". WebView2 is installed along with it when the machine lacks it.
 
+**Updates.** The app looks for a newer release a few seconds after it opens and every six hours. When there is
+one, a card offers it, and "Update and restart" downloads it, checks its signature, installs it and opens the app
+again. This works for the macOS app, the Windows installer and the Linux AppImage; a `.deb`, a `.rpm`, the
+Homebrew formula or `cargo install` are updated the way you installed them.
+
 **With Cargo** (the crate is `ataraxia-ide`; the binary it installs is `ataraxia`)
 
 ```bash
