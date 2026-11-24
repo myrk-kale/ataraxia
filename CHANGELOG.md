@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-24
+
 ### Added
 
 - Ataraxia updates itself. A few seconds after it opens, and every six hours, it looks for a newer release;
