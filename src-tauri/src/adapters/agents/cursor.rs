@@ -766,6 +766,50 @@ mod tests {
             .collect()
     }
 
+    /// Only opens the session: no prompt, so nothing is sent to a model and no setting changes.
+    #[test]
+    #[ignore = "needs the cursor-agent CLI and a login"]
+    fn the_real_cursor_opens_a_session_with_remote_and_local_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = super::super::config::AgentConfiguration::default();
+        // The shapes the app passes: its own server (with a token), a remote one without any
+        // headers (the CLI refused the session for it: "Invalid params") and a local one.
+        for (name, server) in [
+            (
+                "ataraxia",
+                json!({ "url": "http://127.0.0.1:9/mcp", "headers": { "Authorization": "Bearer x" } }),
+            ),
+            ("remote", json!({ "url": "http://127.0.0.1:9/remote" })),
+            (
+                "local",
+                json!({ "command": "npx", "args": ["a-server", "--flag"] }),
+            ),
+        ] {
+            config.mcp_servers.insert(name.into(), server);
+        }
+        let (sender, _events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let session = CursorBackend::new()
+            .start(BackendContext {
+                launch: None,
+                read_only: false,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: dir.path().canonicalize().unwrap(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                config,
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("the real cursor-agent opens a session with these MCP servers");
+        session.shutdown();
+    }
+
     #[test]
     #[ignore = "needs the cursor-agent CLI and a login"]
     fn the_real_cursor_lists_models_and_modes_and_answers_a_prompt() {
