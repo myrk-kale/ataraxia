@@ -6,6 +6,29 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- When an agent turns a request down, the error now says why. Cursor answers a bare "Internal error" and keeps
+  the cause in a separate field, which used to be dropped; it is shown now (for example
+  `Internal error: Failed to initialize session services`), and a request the agent finds invalid names the
+  fields it did not accept.
+- Signing in to an MCP server whose authorization server refuses to register Ataraxia (HTTP 401 or 403) says
+  so: some servers, such as Figma's remote one, only accept the apps on their own approved list, and nothing in
+  Ataraxia can change that.
+
+### Fixed
+
+- Cursor refused to open a chat that had a remote MCP server without headers (a plain URL, such as Notion's):
+  the whole session was rejected as "Invalid params". Remote MCP servers are now always passed with their list
+  of headers, empty when there are none.
+- A message sent to a chat whose agent had failed to start was answered with "agent session not started" for
+  good. It now starts the agent again, and when that fails too it says why. The same goes for a chat whose
+  agent could not be restarted after its model was changed.
+- The animated background of the chat no longer depends on the web view calling for animation frames. It
+  draws the picture at once, keeps it moving on a timer when frames stop while the window is in view, asks for
+  a frame again when the window comes back after a sleep, and follows the "Reduce motion" setting while the
+  app is open.
+
 ## [0.20.0] - 2026-11-24
 
 ### Added
