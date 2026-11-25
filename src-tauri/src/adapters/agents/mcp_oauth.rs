@@ -395,6 +395,40 @@ fn reply(stream: &mut TcpStream, success: bool) {
     );
 }
 
+const REGISTER_FAILED: &str = "Could not register Ataraxia with the MCP authorization server";
+
+/// A server that answers the registration with 401 or 403 is not failing: it is turning
+/// Ataraxia down. Some MCP servers only register the apps on their own approved list (Figma's
+/// remote one answers 403 `Forbidden` to any other), and nothing in the request can change that.
+fn refused_registration(status: u16) -> Error {
+    oauth_error(&format!(
+        "{REGISTER_FAILED} (HTTP {status}). The server refused Ataraxia: some MCP servers only register the apps on their own approved list."
+    ))
+}
+
+/// Registers Ataraxia as a public client (RFC 7591) with the authorization server.
+fn register_client(agent: &Agent, endpoint: &Url, redirect: &Url) -> Result<ClientRegistration> {
+    let response = agent
+        .post(endpoint.as_str())
+        .header("Content-Type", "application/json")
+        .send(
+            json!({
+                "client_name": "Ataraxia",
+                "redirect_uris": [redirect],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none"
+            })
+            .to_string(),
+        );
+    if let Ok(refused) = &response
+        && matches!(refused.status().as_u16(), 401 | 403)
+    {
+        return Err(refused_registration(refused.status().as_u16()));
+    }
+    json_response(response, REGISTER_FAILED)
+}
+
 pub(super) fn sign_in(
     root: &Path,
     config: &Value,
@@ -425,22 +459,7 @@ pub(super) fn sign_in(
         .map_err(|_| oauth_error("Could not read the OAuth callback address"))?;
     let redirect =
         Url::parse(&format!("http://{address}{CALLBACK_PATH}")).expect("local OAuth redirect");
-    let client: ClientRegistration = json_response(
-        agent
-            .post(registration.as_str())
-            .header("Content-Type", "application/json")
-            .send(
-                json!({
-                    "client_name": "Ataraxia",
-                    "redirect_uris": [redirect],
-                    "grant_types": ["authorization_code", "refresh_token"],
-                    "response_types": ["code"],
-                    "token_endpoint_auth_method": "none"
-                })
-                .to_string(),
-            ),
-        "Could not register Ataraxia with the MCP authorization server",
-    )?;
+    let client = register_client(&agent, registration, &redirect)?;
     let verifier = random_secret();
     let state = random_secret();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -597,6 +616,90 @@ mod tests {
         reply(&mut stream, true);
         drop(stream);
         browser.join().unwrap();
+    }
+
+    /// A server that reads one request, answers `response` and hands back the body it received.
+    fn answer_once(response: String) -> (Url, std::thread::JoinHandle<String>) {
+        use std::io::Read;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = Url::parse(&format!(
+            "http://{}/register",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let served = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8(body).unwrap()
+        });
+        (endpoint, served)
+    }
+
+    fn reply_with(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn redirect() -> Url {
+        Url::parse(&format!("http://127.0.0.1:4321{CALLBACK_PATH}")).unwrap()
+    }
+
+    #[test]
+    fn a_server_that_turns_the_client_down_says_so_and_not_only_the_status() {
+        // Figma's remote MCP answers every client that is not on its list with 403 "Forbidden".
+        for (status, code) in [("403 Forbidden", 403), ("401 Unauthorized", 401)] {
+            let (endpoint, served) = answer_once(reply_with(status, "Forbidden"));
+            let Err(error) = register_client(&http_agent(), &endpoint, &redirect()) else {
+                panic!("a refused registration succeeded");
+            };
+            served.join().unwrap();
+            assert!(
+                error
+                    .message
+                    .starts_with(&format!("{REGISTER_FAILED} (HTTP {code})")),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains("approved list"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_registration_that_fails_for_another_reason_is_not_blamed_on_a_list() {
+        let (endpoint, served) = answer_once(reply_with("500 Internal Server Error", ""));
+        let Err(error) = register_client(&http_agent(), &endpoint, &redirect()) else {
+            panic!("a failed registration succeeded");
+        };
+        served.join().unwrap();
+        assert_eq!(error.message, format!("{REGISTER_FAILED} (HTTP 500)"));
+    }
+
+    #[test]
+    fn registration_asks_for_a_public_client_and_reads_its_id() {
+        let (endpoint, served) =
+            answer_once(reply_with("201 Created", r#"{"client_id":"abc123"}"#));
+        let client = register_client(&http_agent(), &endpoint, &redirect()).unwrap();
+        assert_eq!(client.client_id, "abc123");
+        let sent: Value = serde_json::from_str(&served.join().unwrap()).unwrap();
+        assert_eq!(sent["client_name"], "Ataraxia");
+        assert_eq!(sent["redirect_uris"], json!([redirect().as_str()]));
+        assert_eq!(sent["token_endpoint_auth_method"], "none");
     }
 
     #[test]
