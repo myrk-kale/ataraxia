@@ -6,6 +6,15 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-25
+
+### Fixed
+
+- MCP OAuth registration retries with Codex client metadata and the requested scope when the server
+  refuses Ataraxia with HTTP 401 or 403. The local OAuth redirect now uses `/callback` for compatibility
+  with servers that restrict callback paths. If both registration attempts are refused, the error still
+  explains the server's restriction.
+
 ## [0.20.1] - 2026-11-25
 
 ### Changed
