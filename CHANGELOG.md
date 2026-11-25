@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-25
+
 ### Changed
 
 - When an agent turns a request down, the error now says why. Cursor answers a bare "Internal error" and keeps
