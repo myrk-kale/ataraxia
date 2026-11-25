@@ -14,6 +14,9 @@ are the section of this file for its version.
   refuses Ataraxia with HTTP 401 or 403. The local OAuth redirect now uses `/callback` for compatibility
   with servers that restrict callback paths. If both registration attempts are refused, the error still
   explains the server's restriction.
+- The Homebrew cask no longer makes `brew` print two deprecation warnings every time it reads the tap (the
+  string form of `depends_on macos:`, and `postflight`). It now uses `depends_on :macos` and
+  `postflight_steps`, which need Homebrew 5.1.14 or newer; `brew update` brings that.
 
 ## [0.20.1] - 2026-11-25
 
