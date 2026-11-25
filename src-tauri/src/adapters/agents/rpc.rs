@@ -163,15 +163,221 @@ fn dispatch_line(line: &str, pending: &Pending, handler: &(dyn Fn(Incoming) + Se
                 return;
             };
             let outcome = match frame.get("error") {
-                Some(error) => Err(error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("agent returned an error")
-                    .to_string()),
+                Some(error) => Err(error_text(error)),
                 None => Ok(frame.get("result").cloned().unwrap_or(Value::Null)),
             };
             let _ = sender.send(outcome);
         }
         (None, None) => {}
+    }
+}
+
+/// The longest explanation taken from an error's `data`.
+const MAX_DETAIL_CHARS: usize = 500;
+/// Where agents put the sentence that explains an error, in the order they are tried.
+const DETAIL_KEYS: [&str; 4] = ["details", "message", "error", "reason"];
+
+/// What an agent says went wrong: the `message` of its JSON-RPC error, plus whatever it explains
+/// in `data`. Cursor answers a bare `Internal error` and keeps the cause in `data.details`; a
+/// request it refuses lists the fields it did not accept there.
+fn error_text(error: &Value) -> String {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("agent returned an error");
+    match error.get("data").and_then(error_detail) {
+        Some(detail) if !message.contains(&detail) => format!("{message}: {detail}"),
+        _ => message.to_string(),
+    }
+}
+
+fn error_detail(data: &Value) -> Option<String> {
+    let text = match data {
+        Value::String(text) => text.trim().to_string(),
+        Value::Object(fields) => match DETAIL_KEYS
+            .iter()
+            .find_map(|key| fields.get(*key).and_then(error_detail))
+        {
+            Some(detail) => detail,
+            None => {
+                let mut problems = Vec::new();
+                validation_problems(data, "", &mut problems);
+                if problems.is_empty() {
+                    data.to_string()
+                } else {
+                    problems.join("; ")
+                }
+            }
+        },
+        Value::Null => return None,
+        other => other.to_string(),
+    };
+    if text.is_empty() || text == "{}" || text == "[]" {
+        return None;
+    }
+    Some(match text.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    })
+}
+
+/// The problems of a validation report (`{"field": {"_errors": ["..."]}}`), each with the path of
+/// the field it is about.
+fn validation_problems(report: &Value, path: &str, found: &mut Vec<String>) {
+    let Some(fields) = report.as_object() else {
+        return;
+    };
+    for (key, value) in fields {
+        if key == "_errors" {
+            for problem in value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                let line = if path.is_empty() {
+                    problem.to_string()
+                } else {
+                    format!("{path}: {problem}")
+                };
+                if !found.contains(&line) {
+                    found.push(line);
+                }
+            }
+        } else {
+            let nested = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            validation_problems(value, &nested, found);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The error the request `1` ends with when the agent answers `frame`.
+    fn answered_with(frame: Value) -> String {
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::channel();
+        pending.lock().insert(1, sender);
+        dispatch_line(&frame.to_string(), &pending, &|_| {});
+        receiver
+            .recv()
+            .expect("the request was answered")
+            .expect_err("the agent answered with an error")
+    }
+
+    fn failure(error: Value) -> String {
+        answered_with(json!({ "jsonrpc": "2.0", "id": 1, "error": error }))
+    }
+
+    #[test]
+    fn an_error_without_data_is_just_its_message() {
+        assert_eq!(
+            failure(json!({ "code": -32002, "message": "session not found" })),
+            "session not found"
+        );
+        assert_eq!(
+            failure(json!({ "code": -32603, "message": "Internal error", "data": null })),
+            "Internal error"
+        );
+        assert_eq!(failure(json!({ "code": 1 })), "agent returned an error");
+    }
+
+    #[test]
+    fn the_cause_an_agent_keeps_in_data_is_not_lost() {
+        // Cursor: every unexpected failure is "Internal error"; the cause is in `data`.
+        assert_eq!(
+            failure(json!({
+                "code": -32603,
+                "message": "Internal error",
+                "data": { "details": "Failed to initialize session services" }
+            })),
+            "Internal error: Failed to initialize session services"
+        );
+        assert_eq!(
+            failure(json!({
+                "code": -32603,
+                "message": "Internal error",
+                "data": { "message": "Failed to initialize ACP services" }
+            })),
+            "Internal error: Failed to initialize ACP services"
+        );
+        assert_eq!(
+            failure(json!({ "code": -32000, "message": "Boom", "data": "disk is full" })),
+            "Boom: disk is full"
+        );
+    }
+
+    #[test]
+    fn data_that_only_repeats_the_message_adds_nothing() {
+        assert_eq!(
+            failure(json!({
+                "code": -32000,
+                "message": "Authentication required",
+                "data": { "message": "Authentication required" }
+            })),
+            "Authentication required"
+        );
+        assert_eq!(
+            failure(json!({ "code": 1, "message": "Boom", "data": {} })),
+            "Boom"
+        );
+    }
+
+    #[test]
+    fn a_refused_request_names_the_fields_it_did_not_accept() {
+        let text = failure(json!({
+            "code": -32602,
+            "message": "Invalid params",
+            "data": {
+                "_errors": [],
+                "mcpServers": {
+                    "_errors": [],
+                    "0": {
+                        "_errors": [],
+                        "headers": {
+                            "_errors": [
+                                "Invalid input: expected array, received undefined",
+                                "Invalid input: expected array, received undefined"
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+        assert_eq!(
+            text,
+            "Invalid params: mcpServers.0.headers: Invalid input: expected array, received undefined"
+        );
+    }
+
+    #[test]
+    fn data_of_another_shape_is_shown_as_it_is_and_kept_short() {
+        assert_eq!(
+            failure(json!({ "code": 1, "message": "Boom", "data": { "retryAfter": 5 } })),
+            r#"Boom: {"retryAfter":5}"#
+        );
+        let long = "x".repeat(MAX_DETAIL_CHARS * 2);
+        let text = failure(json!({ "code": 1, "message": "Boom", "data": long }));
+        assert_eq!(text.chars().count(), "Boom: ".len() + MAX_DETAIL_CHARS + 1);
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn a_result_is_not_an_error() {
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::channel();
+        pending.lock().insert(1, sender);
+        dispatch_line(r#"{"id":1,"result":{"ok":true}}"#, &pending, &|_| {});
+        assert_eq!(
+            receiver.recv().expect("answered").expect("a result"),
+            json!({ "ok": true })
+        );
     }
 }

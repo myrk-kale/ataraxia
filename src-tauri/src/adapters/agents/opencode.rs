@@ -538,9 +538,13 @@ fn acp_mcp_servers(
                     }
                 }
                 entry.insert("url".into(), Value::String(url.to_string()));
-                if let Some(headers) = config.get("headers") {
-                    entry.insert("headers".into(), acp_pairs(headers, "headers", name)?);
-                }
+                // ACP requires the list even when it is empty; Cursor refuses the whole session
+                // ("Invalid params") for a remote server without it.
+                let headers = match config.get("headers") {
+                    Some(headers) => acp_pairs(headers, "headers", name)?,
+                    None => json!([]),
+                };
+                entry.insert("headers".into(), headers);
             } else {
                 return Err(Error::new(
                     ErrorCode::Invalid,
@@ -1785,6 +1789,33 @@ mod tests {
         // Never over ACP: an agent without the HTTP transport would refuse the whole session.
         let acp = acp_mcp_servers(Dialect::OpenCode, servers, false, false).expect("ACP config");
         assert!(acp.is_empty());
+    }
+
+    #[test]
+    fn a_remote_server_over_acp_carries_its_headers_even_when_it_has_none() {
+        let servers = json!({
+            "Notion": { "url": "https://mcp.notion.com/mcp" },
+            "api": { "url": "https://example.test/mcp", "headers": { "X-Key": "k" } },
+            "stream": { "url": "https://example.test/sse", "type": "sse" }
+        });
+        let servers = servers.as_object().expect("MCP server map");
+
+        // Cursor takes every server over ACP and checks each against the protocol's schema,
+        // where `headers` is required: without it the whole session was refused.
+        let acp = acp_mcp_servers(Dialect::Cursor, servers, true, true).expect("ACP config");
+        let server = |name: &str| {
+            acp.iter()
+                .find(|server| server["name"] == name)
+                .expect("server sent")
+        };
+        assert_eq!(server("Notion")["type"], "http");
+        assert_eq!(server("Notion")["headers"], json!([]));
+        assert_eq!(
+            server("api")["headers"],
+            json!([{ "name": "X-Key", "value": "k" }])
+        );
+        assert_eq!(server("stream")["type"], "sse");
+        assert_eq!(server("stream")["headers"], json!([]));
     }
 
     #[test]

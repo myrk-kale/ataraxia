@@ -1031,7 +1031,7 @@ impl AgentHost {
         let images = self.store_images(session_id, &uploads)?;
         let turn_id = TurnId::new();
         self.follow_profile(session_id)?;
-        self.revive_if_dead(session_id)?;
+        self.ensure_running(session_id)?;
         let guide_index = self.inner.guide.lock().clone();
         let (backend, guide_intro, config_intro, config_preamble) = {
             let mut sessions = self.inner.sessions.lock();
@@ -1226,7 +1226,6 @@ impl AgentHost {
         }
     }
 
-    /// Restarts a provider process that exited since the last turn.
     /// The repositories of a chat's workspace as the chat sees them: its own first, then the
     /// others, each with the folder of the worktree the chat was made with.
     /// The titles of the other chats of this chat's workspace, most recently used first, and how
@@ -1303,14 +1302,18 @@ impl AgentHost {
         self.restart(session_id, &session)
     }
 
-    fn revive_if_dead(&self, session_id: &SessionId) -> Result<()> {
-        let dead = self
+    /// Makes sure the chat has a live agent process before a message goes to it. One that exited
+    /// since the last turn is started again, and so is one that is not there at all because its
+    /// start failed (a restart that failed removed the old process first): the message then
+    /// retries the start and, if that fails too, answers with the reason, not with "not started".
+    fn ensure_running(&self, session_id: &SessionId) -> Result<()> {
+        let stale = self
             .inner
             .sessions
             .lock()
             .get(session_id)
-            .is_some_and(|live| !live.backend.is_alive());
-        if !dead {
+            .is_none_or(|live| !live.backend.is_alive());
+        if !stale {
             return Ok(());
         }
         let session = self
@@ -1979,7 +1982,7 @@ impl AgentRuntime for AgentHost {
             self.prompt(&child, text)?;
             return Ok(());
         }
-        self.revive_if_dead(session_id)?;
+        self.ensure_running(session_id)?;
         let turn_id = TurnId::new();
         let (backend, previous) = {
             let mut sessions = self.inner.sessions.lock();
@@ -3136,6 +3139,94 @@ mod tests {
             .with_api(gateway.clone());
         assert!(host.start_session(&session).is_err());
         assert_eq!(gateway.revoked.lock().clone(), vec!["token-0".to_string()]);
+    }
+
+    /// Refuses its first starts with a reason, then starts like the fake backend.
+    struct Unsteady {
+        refusals: Mutex<u32>,
+        inner: FakeBackend,
+    }
+
+    impl AgentBackend for Unsteady {
+        fn start(&self, ctx: BackendContext) -> Result<Arc<dyn BackendSession>> {
+            {
+                let mut left = self.refusals.lock();
+                if *left > 0 {
+                    *left -= 1;
+                    return Err(Error::new(
+                        ErrorCode::Agent,
+                        "Internal error: services are down",
+                    ));
+                }
+            }
+            self.inner.start(ctx)
+        }
+    }
+
+    fn unsteady(refusals: u32) -> Arc<Unsteady> {
+        Arc::new(Unsteady {
+            refusals: Mutex::new(refusals),
+            inner: FakeBackend::new(Duration::ZERO),
+        })
+    }
+
+    #[test]
+    fn a_message_after_a_failed_start_starts_the_agent_again() {
+        let h =
+            harness_with_api_and_config(unsteady(1), None, PathBuf::from("/tmp/repo"), None, false);
+        // The chat opens and its agent does not come up, so nothing runs for it.
+        let refused = h
+            .host
+            .start_session(&h.session)
+            .expect_err("the first start is refused");
+        assert_eq!(refused.code, ErrorCode::Agent);
+
+        // The message is a second try, not an error about a session that was never started.
+        h.host
+            .prompt(&h.session.id, "hello")
+            .expect("the agent starts and takes the message");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.shutdown_all();
+    }
+
+    #[test]
+    fn a_message_to_an_agent_that_still_cannot_start_says_why() {
+        let h =
+            harness_with_api_and_config(unsteady(2), None, PathBuf::from("/tmp/repo"), None, false);
+        assert!(h.host.start_session(&h.session).is_err());
+
+        let error = h
+            .host
+            .prompt(&h.session.id, "hello")
+            .expect_err("the agent is still down");
+        assert_eq!(error.code, ErrorCode::Agent);
+        assert!(
+            error.message.contains("services are down"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_restart_that_fails_leaves_the_next_message_to_start_the_agent() {
+        let backend = unsteady(0);
+        let h = harness_with_backend(backend.clone());
+        *backend.refusals.lock() = 1;
+
+        // The old process is gone before the new one is tried.
+        let refused = h
+            .host
+            .configure_session(&h.session.id, Some("opus".into()), None, None)
+            .expect_err("the restart is refused");
+        assert_eq!(refused.code, ErrorCode::Agent);
+
+        h.host
+            .prompt(&h.session.id, "hello")
+            .expect("the agent starts again");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.shutdown_all();
     }
 
     #[test]
