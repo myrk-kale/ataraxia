@@ -61,7 +61,7 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 base64 = "0.23.1"
 calamine = { version = "0.35", features = ["dates"] }
-cfb = "0.7.3"
+cfb = "0.16"
 command-group = "5.0.1"
 csv = "1.4.0"
 encoding_rs = "0.8"

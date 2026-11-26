@@ -455,21 +455,32 @@ fn check_xls_grid(bytes: &[u8]) -> Result<()> {
             columns = 0;
         }
         if kind == 0x0200 {
-            let (end_row, end_col) = match len {
+            let (first_row, end_row, first_col, end_col) = match len {
                 10 => (
+                    u16::from_le_bytes([record[0], record[1]]) as usize,
                     u16::from_le_bytes([record[2], record[3]]) as usize,
+                    u16::from_le_bytes([record[4], record[5]]) as usize,
                     u16::from_le_bytes([record[6], record[7]]) as usize,
                 ),
                 14 | 16 => (
+                    u32::from_le_bytes(
+                        record[0..4]
+                            .try_into()
+                            .map_err(|_| invalid("invalid XLS dimensions"))?,
+                    ) as usize,
                     u32::from_le_bytes(
                         record[4..8]
                             .try_into()
                             .map_err(|_| invalid("invalid XLS dimensions"))?,
                     ) as usize,
+                    u16::from_le_bytes([record[8], record[9]]) as usize,
                     u16::from_le_bytes([record[10], record[11]]) as usize,
                 ),
                 _ => return Err(invalid("invalid XLS dimensions")),
             };
+            if (end_row > 0 && first_row >= end_row) || (end_col > 0 && first_col >= end_col) {
+                return Err(invalid("XLS dimensions have reversed or empty bounds"));
+            }
             if end_row.saturating_mul(end_col) > MAX_CELLS {
                 return Err(invalid("XLS dimensions exceed 1,000,000 cells"));
             }

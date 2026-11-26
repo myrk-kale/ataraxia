@@ -240,3 +240,24 @@ fn ods_cell_budget_is_shared_by_all_sheets_before_dense_ranges_are_loaded() {
             .contains("1,000,000")
     );
 }
+
+#[test]
+fn reversed_xls_dimensions_are_rejected_before_range_allocation() {
+    let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    let mut record = vec![0u8; 14];
+    record[0..4].copy_from_slice(&100u32.to_le_bytes());
+    record[4..8].copy_from_slice(&2u32.to_le_bytes());
+    record[10..12].copy_from_slice(&2u16.to_le_bytes());
+    {
+        let mut stream = compound.create_stream("/Workbook").unwrap();
+        stream.write_all(&[0x00, 0x02, 14, 0]).unwrap();
+        stream.write_all(&record).unwrap();
+    }
+    let bytes = compound.into_inner().into_inner();
+    assert!(
+        prepare("application/vnd.ms-excel", &bytes)
+            .unwrap_err()
+            .message
+            .contains("reversed")
+    );
+}
