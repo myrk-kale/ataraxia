@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-26
+
 ### Added
 
 - Chat attachments accept HTML, PDF, Markdown and DOCX alongside images. The harness receives a folder
