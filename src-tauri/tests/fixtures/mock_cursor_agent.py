@@ -7,6 +7,7 @@ arrive as requests from the agent. The prompt text selects the scenario:
   ask   -> asks a question, then says what was answered
   plan  -> proposes a plan, then says what Cursor was told
   mode  -> says the mode the session runs in
+  settings -> says the model and its reasoning options
   other -> short streamed reply
 `--no-read-only` leaves the plan and ask modes out of the session's options.
 `--slow-session` answers `session/new` after a second, like the real CLI's first one.
@@ -17,7 +18,15 @@ import sys
 import time
 
 SESSION = "cur_mock"
-STATE = {"mode": "agent", "caps": None}
+STATE = {"mode": "agent", "caps": None, "model": "auto", "reasoning": {}}
+# Like the real CLI: each model has its own reasoning options, under the `thought_level`
+# category with ids that differ per model, and some Claude models add a `thinking` switch.
+REASONING = {
+    "auto": [],
+    "gpt-5": [("reasoning", "medium", ["none", "low", "medium", "high", "extra-high"])],
+    "claude": [("thinking", "false", ["false", "true"]),
+               ("effort", "high", ["low", "medium", "high", "xhigh", "max"])],
+}
 NO_READ_ONLY = "--no-read-only" in sys.argv
 SLOW_SESSION = "--slow-session" in sys.argv
 FAILING_SESSION = "--failing-session" in sys.argv
@@ -32,13 +41,42 @@ def config_options():
     modes = [{"value": "agent", "name": "Agent"}]
     if not NO_READ_ONLY:
         modes += [{"value": "plan", "name": "Plan"}, {"value": "ask", "name": "Ask"}]
-    return [
+    options = [
         {"id": "model", "name": "Model", "category": "model", "type": "select",
-         "currentValue": "auto",
-         "options": [{"value": "auto", "name": "Auto"}, {"value": "gpt-5", "name": "GPT-5"}]},
+         "currentValue": STATE["model"],
+         "options": [{"value": "auto", "name": "Auto"}, {"value": "gpt-5", "name": "GPT-5"},
+                     {"value": "claude", "name": "Claude"}]},
         {"id": "mode", "name": "Mode", "category": "mode", "type": "select",
          "currentValue": STATE["mode"], "options": modes},
     ]
+    for ident, _default, values in REASONING[STATE["model"]]:
+        options.append({"id": ident, "name": ident, "category": "thought_level", "type": "select",
+                        "currentValue": STATE["reasoning"][ident],
+                        "options": [{"value": value, "name": value} for value in values]})
+    return options
+
+
+def use_model(model):
+    STATE["model"] = model
+    STATE["reasoning"] = {ident: default for ident, default, _ in REASONING[model]}
+
+
+def set_option(config_id, value):
+    """None when set, else why not, the way the real CLI words it."""
+    if config_id == "mode":
+        STATE["mode"] = value
+    elif config_id == "model":
+        if value not in REASONING:
+            return "Invalid value for model: %s" % value
+        use_model(value)
+    else:
+        known = {ident: values for ident, _, values in REASONING[STATE["model"]]}
+        if config_id not in known:
+            return "Unknown model config option: %s" % config_id
+        if value not in known[config_id]:
+            return "Invalid value for %s: %s" % (config_id, value)
+        STATE["reasoning"][config_id] = value
+    return None
 
 
 def say(text):
@@ -78,6 +116,10 @@ def prompt(ident, text):
         say("plan %s" % result["outcome"]["outcome"])
     elif text == "mode":
         say("mode=%s" % STATE["mode"])
+    elif text == "settings":
+        parts = ["model=%s" % STATE["model"]]
+        parts += ["%s=%s" % item for item in sorted(STATE["reasoning"].items())]
+        say(" ".join(parts))
     else:
         say("ok")
     send({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "end_turn"}})
@@ -104,8 +146,11 @@ for raw in sys.stdin:
         send({"jsonrpc": "2.0", "id": ident, "result": {
             "sessionId": SESSION, "configOptions": config_options()}})
     elif method == "session/set_config_option":
-        if params["configId"] == "mode":
-            STATE["mode"] = params["value"]
+        refused = set_option(params["configId"], params["value"])
+        if refused:
+            send({"jsonrpc": "2.0", "id": ident, "error": {
+                "code": -32602, "message": "Invalid params", "data": {"message": refused}}})
+            continue
         send({"jsonrpc": "2.0", "id": ident, "result": {"configOptions": config_options()}})
     elif method == "session/prompt":
         text = "".join(block.get("text", "") for block in params.get("prompt", []))

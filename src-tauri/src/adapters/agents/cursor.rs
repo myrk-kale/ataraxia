@@ -600,6 +600,16 @@ mod tests {
     }
 
     fn start_mock(read_only: bool, flag: Option<&str>) -> Result<Harness> {
+        start_mock_with(read_only, flag, None, None, None)
+    }
+
+    fn start_mock_with(
+        read_only: bool,
+        flag: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<Harness> {
         let (sender, events) = mpsc::channel();
         let sender = Mutex::new(sender);
         let mut args: Vec<String> = vec![
@@ -617,9 +627,9 @@ mod tests {
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
                 extra_dirs: Vec::new(),
-                model: None,
-                effort: None,
-                agent: None,
+                model: model.map(str::to_string),
+                effort: effort.map(str::to_string),
+                agent: agent.map(str::to_string),
                 resume: None,
                 api: None,
                 config: super::super::config::AgentConfiguration::default(),
@@ -723,6 +733,88 @@ mod tests {
             })
             .collect();
         assert_eq!(text, "mode=plan");
+    }
+
+    /// What the mock says for `text`, once its turn ends.
+    fn answer_to(h: &Harness, text: &str) -> String {
+        h.session.prompt(TurnId::new(), text).expect("prompt");
+        h.until("turn done", done)
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_read_only_session_stays_read_only_when_its_settings_change() {
+        let h = start_mock_with(true, None, None, None, Some("agent")).expect("start");
+        assert_eq!(answer_to(&h, "mode"), "mode=plan", "the saved agent wrote");
+        assert!(h.session.apply_settings(None, None, None));
+        assert_eq!(
+            answer_to(&h, "mode"),
+            "mode=plan",
+            "back to the default mode"
+        );
+        assert!(h.session.apply_settings(None, None, Some("agent")));
+        assert_eq!(answer_to(&h, "mode"), "mode=plan", "a mode that writes");
+        assert!(h.session.apply_settings(None, None, Some("ask")));
+        assert_eq!(answer_to(&h, "mode"), "mode=ask");
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn effort_reaches_the_levels_of_a_model_with_a_thinking_switch() {
+        let h = start_mock_with(false, None, Some("claude"), Some("max"), None).expect("start");
+        let options = h.session.options();
+        assert_eq!(
+            options.efforts,
+            ["off", "low", "medium", "high", "xhigh", "max"],
+            "the switch must not hide the levels"
+        );
+        assert_eq!(
+            answer_to(&h, "settings"),
+            "model=claude effort=max thinking=true"
+        );
+        assert!(h.session.apply_settings(Some("claude"), Some("off"), None));
+        assert_eq!(
+            answer_to(&h, "settings"),
+            "model=claude effort=max thinking=false"
+        );
+        assert!(h.session.apply_settings(Some("claude"), None, None));
+        assert_eq!(
+            answer_to(&h, "settings"),
+            "model=claude effort=high thinking=false"
+        );
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn effort_follows_the_option_each_model_names_its_levels_with() {
+        let h = start(false).expect("start");
+        assert!(h.session.options().efforts.is_empty(), "auto has no levels");
+        assert!(h.session.apply_settings(Some("gpt-5"), Some("high"), None));
+        assert_eq!(
+            h.session.options().efforts,
+            ["none", "low", "medium", "high", "extra-high"]
+        );
+        assert_eq!(answer_to(&h, "settings"), "model=gpt-5 reasoning=high");
+        // Default is the model's own level, which it reported when it was picked.
+        assert!(h.session.apply_settings(Some("gpt-5"), None, None));
+        assert_eq!(answer_to(&h, "settings"), "model=gpt-5 reasoning=medium");
+        // A level of another model is not sent: Cursor would refuse it.
+        assert!(
+            h.session
+                .apply_settings(Some("claude"), Some("extra-high"), None)
+        );
+        assert_eq!(
+            answer_to(&h, "settings"),
+            "model=claude effort=high thinking=false"
+        );
+        assert!(h.session.apply_settings(None, None, None));
+        assert_eq!(answer_to(&h, "settings"), "model=auto");
+        h.session.shutdown();
     }
 
     #[test]
@@ -986,17 +1078,25 @@ mod tests {
     fn the_real_cursor_switches_model_and_reports_its_efforts() {
         let dir = tempfile::tempdir().unwrap();
         let h = start_real(false, &dir.path().canonicalize().unwrap());
-        for model in ["gpt-5.5", "claude-sonnet-5-5"] {
+        let own = h.session.options().default_model;
+        // Levels only, a thinking switch next to levels, and the switch alone. The effort is
+        // left alone: Cursor keeps each model's reasoning for the whole account too.
+        for (model, offered) in [
+            ("gpt-5.5", "extra-high"),
+            ("claude-opus-4-8", "max"),
+            ("claude-sonnet-4-5", "on"),
+        ] {
             let applied = h.session.apply_settings(Some(model), None, None);
             let options = h.session.options();
             eprintln!("{model}: applied={applied} efforts={:?}", options.efforts);
             assert!(applied);
+            assert!(options.efforts.iter().any(|effort| effort == offered));
         }
         // Cursor keeps the chosen model for the whole account, so put the original one back.
         assert!(h.session.apply_settings(None, None, None));
         assert_eq!(
-            h.session.options().default_model.as_deref(),
-            Some("default"),
+            h.session.options().default_model,
+            own,
             "the account's own model was not restored"
         );
         h.session.shutdown();

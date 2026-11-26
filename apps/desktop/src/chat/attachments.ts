@@ -1,14 +1,27 @@
 import type { ImageUpload } from "../lib/agent";
 
-/** Pictures on one message, and the size of each. The agent side holds to the same limits. */
+/** The wire protocol retains its image names; each message can also carry documents. */
 export const MAX_IMAGES = 5;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
-/** Only pictures for now. */
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
-export const IMAGE_ACCEPT = IMAGE_TYPES.join(",");
+const DOCUMENT_TYPES: Record<string, string> = {
+  html: "text/html",
+  htm: "text/html",
+  pdf: "application/pdf",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
+export const IMAGE_ACCEPT = [...IMAGE_TYPES, ".html", ".htm", ".pdf", ".md", ".markdown", ".docx"].join(",");
 
-/** A picture chosen for the next message, shown as a thumbnail until it is sent. */
+export function attachmentMime(file: File): string {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return DOCUMENT_TYPES[extension] ?? file.type;
+}
+
+/** A file chosen for the next message. Only images use the preview as a thumbnail. */
 export type Attachment = {
   id: string;
   file: File;
@@ -22,19 +35,22 @@ function megabytes(bytes: number): string {
 
 /**
  * Which of the files can be added, with a sentence for each one that cannot. `room` is how many
- * more pictures the message can take.
+ * more files the message can take.
  */
 export function pickImages(files: File[], room: number): { accepted: File[]; problems: string[] } {
   const accepted: File[] = [];
   const problems: string[] = [];
   for (const file of files) {
     const name = file.name || "A pasted image";
-    if (!(IMAGE_TYPES as readonly string[]).includes(file.type)) {
-      problems.push(`${name} is not a PNG, JPEG, GIF or WebP image.`);
-    } else if (file.size > MAX_IMAGE_BYTES) {
-      problems.push(`${name} is over ${megabytes(MAX_IMAGE_BYTES)}.`);
+    const mime = attachmentMime(file);
+    const image = (IMAGE_TYPES as readonly string[]).includes(mime);
+    const limit = image ? MAX_IMAGE_BYTES : MAX_DOCUMENT_BYTES;
+    if (!image && !Object.values(DOCUMENT_TYPES).includes(mime)) {
+      problems.push(`${name} is not a PNG, JPEG, GIF, WebP, HTML, PDF, Markdown or DOCX file.`);
+    } else if (file.size > limit) {
+      problems.push(`${name} is over ${megabytes(limit)}.`);
     } else if (accepted.length >= room) {
-      problems.push(`${name} was left out: a message takes ${MAX_IMAGES} images at most.`);
+      problems.push(`${name} was left out: a message takes ${MAX_IMAGES} files at most.`);
     } else {
       accepted.push(file);
     }
@@ -65,7 +81,7 @@ export function imagesFromClipboard(data: Pick<DataTransfer, "items" | "types"> 
 function toBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("could not read the image"));
+    reader.onerror = () => reject(reader.error ?? new Error("could not read the file"));
     reader.onload = () => {
       const result = String(reader.result);
       resolve(result.slice(result.indexOf(",") + 1));
@@ -79,7 +95,7 @@ export function toUploads(attachments: Attachment[]): Promise<ImageUpload[]> {
   return Promise.all(
     attachments.map(async ({ file }, index) => ({
       name: file.name || `image ${index + 1}`,
-      mime: file.type,
+      mime: attachmentMime(file),
       data: await toBase64(file),
     })),
   );

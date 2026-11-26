@@ -62,9 +62,11 @@ anyhow = "1"
 base64 = "0.23.1"
 command-group = "5.0.1"
 ignore = "0.4"
+lopdf = { version = "0.42.0", default-features = false }
 parking_lot = "0.12.5"
 png = "0.18"
 portable-pty = "0.9.0"
+quick-xml = "0.38.4"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -91,6 +93,7 @@ ureq = "3"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 whisper-rs = "0.16"
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 
 # Without this whisper.cpp is built with Metal switched off, and the model runs on the CPU alone:
 # several times slower on Apple silicon, which has a GPU made for it.
