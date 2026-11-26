@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-11-26
+
 ### Changed
 
 - Cursor chats open right away instead of waiting out the agent's slow first handshake. The session is
