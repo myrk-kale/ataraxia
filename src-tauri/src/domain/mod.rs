@@ -9,6 +9,7 @@ pub mod ids;
 pub mod image;
 pub mod insight;
 pub mod memory;
+pub mod office;
 pub mod profile;
 pub mod queue;
 pub mod repo;

@@ -13,8 +13,22 @@ const DOCUMENT_TYPES: Record<string, string> = {
   md: "text/markdown",
   markdown: "text/markdown",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xlsm: "application/vnd.ms-excel.sheet.macroEnabled.12",
+  xls: "application/vnd.ms-excel",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  txt: "text/plain",
+  json: "application/json",
+  xml: "application/xml",
 };
-export const IMAGE_ACCEPT = [...IMAGE_TYPES, ".html", ".htm", ".pdf", ".md", ".markdown", ".docx"].join(",");
+export const IMAGE_ACCEPT = [...IMAGE_TYPES, ...Object.keys(DOCUMENT_TYPES).map((extension) => `.${extension}`)].join(
+  ",",
+);
 
 export function attachmentMime(file: File): string {
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
@@ -46,7 +60,7 @@ export function pickImages(files: File[], room: number): { accepted: File[]; pro
     const image = (IMAGE_TYPES as readonly string[]).includes(mime);
     const limit = image ? MAX_IMAGE_BYTES : MAX_DOCUMENT_BYTES;
     if (!image && !Object.values(DOCUMENT_TYPES).includes(mime)) {
-      problems.push(`${name} is not a PNG, JPEG, GIF, WebP, HTML, PDF, Markdown or DOCX file.`);
+      problems.push(`${name} is not a supported image, document, spreadsheet or presentation.`);
     } else if (file.size > limit) {
       problems.push(`${name} is over ${megabytes(limit)}.`);
     } else if (accepted.length >= room) {

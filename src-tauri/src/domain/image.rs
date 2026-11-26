@@ -15,6 +15,7 @@ pub struct DecodedImage {
     pub name: String,
     pub mime: &'static str,
     pub bytes: Vec<u8>,
+    pub prepared: Option<super::office::Prepared>,
 }
 
 /// The format of a picture, from its first bytes.
@@ -86,13 +87,19 @@ pub fn decode_uploads(uploads: &[ImageUpload]) -> Result<Vec<DecodedImage>> {
         let mime = image_mime.or_else(|| super::document::mime(&upload.name, &bytes)).ok_or_else(|| {
             Error::new(
                 ErrorCode::Invalid,
-                format!("{name} is not a PNG, JPEG, GIF or WebP image, HTML, PDF, Markdown or DOCX document"),
+                format!("{name} is not a PNG, JPEG, GIF or WebP image, or a supported document, spreadsheet or presentation"),
             )
         })?;
-        if image_mime.is_none() {
+        let prepared = super::office::prepare(mime, &bytes)?;
+        if image_mime.is_none() && prepared.is_none() {
             super::document::validate(mime, &bytes)?;
         }
-        decoded.push(DecodedImage { name, mime, bytes });
+        decoded.push(DecodedImage {
+            name,
+            mime,
+            bytes,
+            prepared,
+        });
     }
     Ok(decoded)
 }
