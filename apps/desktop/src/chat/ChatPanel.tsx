@@ -133,6 +133,7 @@ export function ChatPanel({
   onOpenFile,
   onOpenDecisions,
   jumpTo,
+  browserPreview,
 }: {
   session: ChatSession;
   provider: ProviderDescriptor | null;
@@ -151,6 +152,7 @@ export function ChatPanel({
   onOpenFile?: (cite: FileCite) => void;
   onOpenDecisions?: () => void;
   jumpTo?: ConversationJump;
+  browserPreview?: ReactNode;
 }) {
   const sessionId = session.id;
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
@@ -1147,6 +1149,7 @@ export function ChatPanel({
             Latest
           </button>
         ) : null}
+        {browserPreview}
       </div>
 
       {state.rateLimitAt ? (

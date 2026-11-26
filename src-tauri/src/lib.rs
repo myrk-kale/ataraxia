@@ -72,6 +72,8 @@ pub fn run() {
             tauri_api::agent_attachment,
             tauri_api::agent_queue,
             tauri_api::browser_state,
+            tauri_api::browser_history,
+            tauri_api::browser_clear_history,
             tauri_api::browser_open,
             tauri_api::browser_close,
             tauri_api::browser_activate,

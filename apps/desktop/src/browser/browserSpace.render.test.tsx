@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetBrowserForTests, type BrowserTab, type LogView } from "../lib/browser";
+import { QuietSelect } from "../ui/QuietSelect";
 import { BrowserNotice } from "./BrowserNotice";
 import { BrowserSpace } from "./BrowserSpace";
 
@@ -14,6 +15,7 @@ let logs: LogView = { console: [], errors: [], net: [], mark: 0 };
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ cmd, args });
+    if (cmd === "browser_history") return Promise.resolve([]);
     if (cmd === "browser_logs") return Promise.resolve(logs);
     if (cmd === "browser_request_as") return Promise.resolve("curl 'https://shop.test/api/login'");
     if (cmd === "browser_screenshot") return Promise.resolve("");
@@ -53,9 +55,9 @@ const sent = (cmd: string) => calls.filter((call) => call.cmd === cmd);
 const button = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
 const byText = (text: string) => [...host.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent?.includes(text))!;
 
-async function render(props: { visible?: boolean; overlayOpen?: boolean } = {}) {
+async function render(props: { visible?: boolean; overlayOpen?: boolean; workspaceId?: string } = {}) {
   await act(async () => {
-    root.render(<BrowserSpace overlayOpen={props.overlayOpen ?? false} visible={props.visible ?? true} onError={(message) => errors.push(message)} />);
+    root.render(<BrowserSpace workspaceId={props.workspaceId} overlayOpen={props.overlayOpen ?? false} visible={props.visible ?? true} onError={(message) => errors.push(message)} />);
   });
   await act(async () => {
     await Promise.resolve();
@@ -166,6 +168,69 @@ describe("tabs", () => {
       expect(host.textContent).not.toContain("Paused while something is open over it");
     } finally {
       closed.remove();
+    }
+  });
+
+  it("ignores the workspace picker's closed list and resumes after its popover closes", async () => {
+    await act(async () => root.render(<>
+      <QuietSelect aria-label="Workspace" value="main" options={[{ value: "main", label: "Main" }]} onChange={() => undefined} />
+      <BrowserSpace visible overlayOpen={false} onError={() => undefined} />
+    </>));
+    expect(host.querySelector('[role="listbox"]')?.parentElement?.hasAttribute("popover")).toBe(true);
+    expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+    expect(host.textContent).not.toContain("Paused while something is open over it");
+
+    const popover = host.querySelector('[role="listbox"]')!.parentElement!;
+    // jsdom keeps the closed-popover UA display rule even when :popover-open is mocked.
+    await act(async () => { popover.style.display = "block"; });
+    const matches = popover.matches.bind(popover);
+    let open = true;
+    const spy = vi.spyOn(popover, "matches").mockImplementation((selector) => selector === ":popover-open" ? open : matches(selector));
+    try {
+      // Native popovers change state without changing DOM attributes.
+      await act(async () => { popover.dispatchEvent(new Event("toggle")); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: false });
+      open = false;
+      await act(async () => { popover.dispatchEvent(new Event("toggle")); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["hidden", "class", "style"])("tracks a menu ancestor's %s visibility", async (attribute) => {
+    const container = document.createElement("div");
+    container.innerHTML = '<div role="menu">Menu</div>';
+    const style = document.createElement("style");
+    style.textContent = ".closed-browser-test { display: none; }";
+    document.body.append(style, container);
+    const value = attribute === "class" ? "closed-browser-test" : attribute === "style" ? "display: none" : "";
+    container.setAttribute(attribute, value);
+    try {
+      await render();
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+      await act(async () => { container.removeAttribute(attribute); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: false });
+      await act(async () => { container.setAttribute(attribute, value); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+    } finally {
+      container.remove();
+      style.remove();
+    }
+  });
+
+  it("pauses only while a native dialog is open", async () => {
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    try {
+      await render();
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+      await act(async () => { dialog.setAttribute("open", ""); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: false });
+      await act(async () => { dialog.removeAttribute("open"); });
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+    } finally {
+      dialog.remove();
     }
   });
 
@@ -298,5 +363,20 @@ describe("developer tools", () => {
     expect(sent("browser_clear_logs")[0]?.args).toEqual({ id: 1 });
     await act(async () => button("Close developer tools").click());
     expect(host.querySelector('section[aria-label="Developer tools"]')).toBeNull();
+  });
+});
+
+
+describe("workspace history", () => {
+  it("hides native pages while history is open and restores focus on close", async () => {
+    resetBrowserForTests({ tabs: [tab(1)], active: 1, agentsAllowed: true });
+    await render({ workspaceId: "workspace-one" });
+    await act(async () => button("Browsing history").click());
+    expect(sent("browser_history").at(-1)?.args).toEqual({ workspaceId: "workspace-one" });
+    expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: false });
+    expect(host.querySelector('[aria-label="Workspace browsing history"]')).not.toBeNull();
+    await act(async () => button("Close history").click());
+    expect(document.activeElement).toBe(button("Browsing history"));
+    expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
   });
 });

@@ -102,9 +102,12 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         api.set_sink(tauri_sink.clone() as Arc<dyn crate::ports::InsightSink>);
     }
     let browser_engine = crate::adapters::browser::TauriEngine::new(app.clone());
-    let browser = crate::app::browser::Browser::new(
+    let browser = crate::app::browser::Browser::with_history(
         browser_engine.clone(),
         crate::adapters::browser::TauriEngine::emit(app),
+        Some(crate::app::browser_history::BrowserHistory::new(
+            store.clone(),
+        )),
     );
     browser_engine.set_events(browser.clone());
     browser.start_pump();

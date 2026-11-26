@@ -13,9 +13,11 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use super::browser::{Browser, Outcome};
+#[cfg(test)]
+use crate::domain::browser::Profile;
 use crate::domain::browser::{
-    BrowserTab, Move, NetEntry, NetFilter, Profile, Rect, TabId, json_shape, net_line, to_curl,
-    to_fetch, to_har, visible_headers,
+    BrowserTab, Move, NetEntry, NetFilter, Rect, TabId, json_shape, net_line, to_curl, to_fetch,
+    to_har, visible_headers,
 };
 use crate::domain::ids::SessionId;
 use crate::domain::{Error, ErrorCode, Result};
@@ -493,8 +495,9 @@ impl Browser {
                     ));
                 }
                 let url = text_arg(args, "url");
-                let tab = self.open(url, Profile::Agent, true)?;
+                let tab = self.open_for_session(url, session)?;
                 self.remember_current(session, tab.id);
+                self.agent_activity(tab.id, true, "tabs");
                 let note = if wait_for_load && url.is_some() {
                     self.settle(tab.id, LOAD_WAIT)
                 } else {
@@ -2234,6 +2237,19 @@ mod tests {
             "browser_tabs",
             json!({"action": "open", "wait": "none"}),
         );
+        let opening: Vec<bool> = events
+            .lock()
+            .iter()
+            .filter_map(|event| match event {
+                crate::domain::browser::BrowserEvent::Agent { busy, action, .. }
+                    if action == "tabs" =>
+                {
+                    Some(*busy)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opening, [true, false]);
         events.lock().clear();
         call(&browser, session, "browser_console", json!({}));
         let busy: Vec<bool> = events

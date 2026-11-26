@@ -30,6 +30,8 @@ import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsReview } from "../decisions/DecisionsReview";
 import { FlowSpace } from "../flow/FlowSpace";
 import { BrowserNotice } from "../browser/BrowserNotice";
+import { BrowserPictureInPicture } from "../browser/BrowserPictureInPicture";
+import { browserActivate } from "../lib/browser";
 import { Onboarding } from "../onboarding/Onboarding";
 import { Companion } from "../pet/Companion";
 import type { TabId as SettingsTab } from "./SettingsDialog";
@@ -197,10 +199,10 @@ export function AppShell() {
   const [legendOpen, setLegendOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
-  // The welcome tour: shown once, after the opening animation, to everybody who has not seen it.
+  // After the opening animation: every dev start, otherwise only for an unseen tour version.
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
-    if (!shouldShowOnboarding()) {
+    if (!import.meta.env.DEV && !shouldShowOnboarding()) {
       return;
     }
     const root = document.documentElement;
@@ -858,6 +860,10 @@ export function AppShell() {
   const activity = useSessionActivity(sessionId);
   const failedArtifacts = useFailedArtifacts(sessionId);
 
+  function watchBrowser(id: number): void {
+    void browserActivate(id).then(() => setSpace("browser")).catch((err: unknown) => setError(errorMessage(err)));
+  }
+
   function chatSpace() {
     if (boot.kind === "loading") {
       return <StateMessage text="Opening your workspace…" tone="loading" />;
@@ -894,6 +900,7 @@ export function AppShell() {
     if (selectedSession) {
       return (
         <ChatPanel
+          browserPreview={<BrowserPictureInPicture hidden={overlayOpen} onWatch={watchBrowser} />}
           jumpTo={searchTarget?.btwId ? undefined : conversationJump}
           key={selectedSession.id}
           contextLabel={contextLabel}
@@ -1190,7 +1197,7 @@ export function AppShell() {
         {visited.has("browser") ? (
           <div className={space === "browser" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Browser">
-              <BrowserSpace overlayOpen={overlayOpen} visible={space === "browser"} onError={setError} />
+              <BrowserSpace workspaceId={workspace.selected_workspace_id} overlayOpen={overlayOpen} visible={space === "browser"} onError={setError} />
             </ErrorBoundary>
           </div>
         ) : null}
@@ -1377,7 +1384,7 @@ export function AppShell() {
       />
       <UpdatePrompt />
       <Toast message={error} onDismiss={() => setError(null)} />
-      <BrowserNotice inBrowser={space === "browser"} onWatch={() => setSpace("browser")} />
+      <BrowserNotice inBrowser={space === "browser" || space === "chat"} onWatch={() => setSpace("browser")} />
     </div>
   );
 }

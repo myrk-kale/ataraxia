@@ -78,6 +78,7 @@ const EMPTY: BrowserState = { tabs: [], active: null, agentsAllowed: true };
 // work all read the same thing, and an event from the app updates them together.
 let current: BrowserState = EMPTY;
 let activity: AgentActivity | null = null;
+const dismissedPreviews = new Set<number>();
 let started = false;
 const listeners = new Set<() => void>();
 
@@ -131,6 +132,20 @@ export function useAgentActivity(): AgentActivity | null {
   return useSyncExternalStore(subscribe, () => activity);
 }
 
+/** Follow creation order, independently of which tab a tool is currently using. */
+export function useBrowserPreviewTab(): BrowserTab | null {
+  useEffect(startBrowser, []);
+  return useSyncExternalStore(subscribe, () => {
+    const latest = [...current.tabs].reverse().find((tab) => tab.profile === "agent");
+    return latest && !dismissedPreviews.has(latest.id) ? latest : null;
+  });
+}
+
+export function dismissBrowserPreview(id: number): void {
+  dismissedPreviews.add(id);
+  publish();
+}
+
 export const browserOpen = (url?: string) => invoke<BrowserTab>("browser_open", { url: url ?? null });
 export const browserClose = (id: number) => invoke<void>("browser_close", { id });
 export const browserActivate = (id: number) => invoke<void>("browser_activate", { id });
@@ -155,6 +170,11 @@ export const browserClearData = (profile: "user" | "agent") => invoke<void>("bro
 export function resetBrowserForTests(state: BrowserState = EMPTY, agent: AgentActivity | null = null) {
   current = state;
   activity = agent;
+  dismissedPreviews.clear();
   started = true;
   publish();
 }
+
+export type BrowserHistoryEntry = { url: string; title: string; visitedAt: string; profile: "user" | "agent" };
+export const browserHistory = (workspaceId: string) => invoke<BrowserHistoryEntry[]>("browser_history", { workspaceId });
+export const browserClearHistory = (workspaceId: string) => invoke<void>("browser_clear_history", { workspaceId });
