@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-26
+
 ### Added
 
 - Office attachments: Excel XLSX/XLSM/XLS, OpenDocument ODS, CSV and TSV spreadsheets; PowerPoint
