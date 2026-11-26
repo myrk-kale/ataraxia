@@ -727,10 +727,82 @@ mod tests {
 
     #[test]
     fn a_read_only_session_is_refused_when_cursor_offers_no_read_only_mode() {
-        let Err(error) = start_mock(true, Some("--no-read-only")) else {
-            panic!("a session that must not write started anyway");
+        let h = start_mock(true, Some("--no-read-only")).expect("spawn");
+        let seen = h.until("refusal", |event| {
+            matches!(event, BackendEvent::Error { .. })
+        });
+        let Some(BackendEvent::Error { message }) = seen.last() else {
+            panic!("expected an error");
         };
-        assert!(error.message.contains("read-only"), "{}", error.message);
+        assert!(message.contains("read-only"), "{message}");
+        // The session never opened, so nothing reaches Cursor.
+        // Refused at once when the process is gone, or answered with the reason while it ends.
+        let after = match h.session.prompt(TurnId::new(), "mode") {
+            Ok(()) => h.until("prompt refused", done),
+            Err(_) => Vec::new(),
+        };
+        assert!(
+            !after
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Delta { .. })),
+            "a session that must not write answered: {after:?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.session.is_alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!h.session.is_alive());
+    }
+
+    #[test]
+    fn the_chat_opens_before_cursor_opens_its_session_and_the_prompt_waits_for_it() {
+        let began = Instant::now();
+        let h = start_mock(false, Some("--slow-session")).expect("start");
+        assert!(
+            began.elapsed() < Duration::from_millis(800),
+            "start waited for session/new: {:?}",
+            began.elapsed()
+        );
+        h.session.prompt(TurnId::new(), "hello").expect("prompt");
+        let seen = h.until("turn done", done);
+        assert!(
+            seen.iter()
+                .any(|event| matches!(event, BackendEvent::TurnDone { ok: true, .. })),
+            "{seen:?}"
+        );
+        assert!(
+            began.elapsed() >= Duration::from_secs(1),
+            "answered before the session was open"
+        );
+        // The settings arrive once the session is open.
+        assert_eq!(h.session.options().agents.len(), 3);
+        h.session.shutdown();
+    }
+
+    #[test]
+    fn a_session_that_fails_to_open_says_why_once_and_ends_the_process() {
+        let h = start_mock(false, Some("--failing-session")).expect("start");
+        let seen = h.until("error", |event| matches!(event, BackendEvent::Error { .. }));
+        let Some(BackendEvent::Error { message }) = seen.last() else {
+            panic!("expected an error");
+        };
+        assert!(message.contains("no workspace"), "{message}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.session.is_alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !h.session.is_alive(),
+            "the process should end for a restart"
+        );
+        // Its exit is not reported a second time.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !h.events
+                .try_iter()
+                .any(|event| matches!(event, BackendEvent::Error { .. })),
+            "the failure was reported twice"
+        );
     }
 
     fn start_real(read_only: bool, cwd: &std::path::Path) -> Harness {
@@ -787,8 +859,9 @@ mod tests {
         ] {
             config.mcp_servers.insert(name.into(), server);
         }
-        let (sender, _events) = mpsc::channel();
+        let (sender, events) = mpsc::channel();
         let sender = Mutex::new(sender);
+        let began = Instant::now();
         let session = CursorBackend::new()
             .start(BackendContext {
                 launch: None,
@@ -806,8 +879,27 @@ mod tests {
                     let _ = sender.lock().send(event);
                 }),
             })
-            .expect("the real cursor-agent opens a session with these MCP servers");
+            .expect("the real cursor-agent starts");
+        let started = began.elapsed();
+        // The session opens in the background; its options are listed once it has.
+        let options = session.options();
+        eprintln!(
+            "started in {started:?}, session open in {:?}",
+            began.elapsed()
+        );
+        let failure = events.try_iter().find_map(|event| match event {
+            BackendEvent::Error { message } => Some(message),
+            _ => None,
+        });
         session.shutdown();
+        assert_eq!(
+            failure, None,
+            "the session did not open with these MCP servers"
+        );
+        assert!(
+            !options.models.is_empty(),
+            "no models once the session opened"
+        );
     }
 
     #[test]

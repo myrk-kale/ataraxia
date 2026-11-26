@@ -8,9 +8,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde_json::{Map, Value, json};
 
 use super::backend::{
@@ -29,6 +29,9 @@ use crate::domain::{
 const BINARY_NAME: &str = "opencode";
 const OVERRIDE_ENV: &str = "ATARAXIA_OPENCODE_BIN";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a prompt or a setting waits for a session still opening: `session/new` and the
+/// three settings applied after it, each within its own timeout.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 
 enum Launcher {
     Resolve,
@@ -211,6 +214,12 @@ impl Dialect {
 
 /// Spawns the agent over ACP, opens (or picks up again) its session and applies the saved
 /// model, effort and mode.
+///
+/// An agent that cannot pick a session up again (Cursor) opens it in the background: its first
+/// `session/new` takes seconds, and the chat need not wait for it. Prompts and settings wait
+/// until the session is open; a session that fails to open says why and ends its process, so
+/// the next message starts it again. An agent that can resume opens it before returning, since
+/// the host keeps the id it reports and asks right away whether the old one was picked up.
 pub(super) fn launch_acp(
     dialect: Dialect,
     ctx: BackendContext,
@@ -228,6 +237,8 @@ pub(super) fn launch_acp(
         acp_session_id: OnceLock::new(),
         exit: Mutex::new(None),
         state: Mutex::new(AcpState::default()),
+        opening: Mutex::new(Opening::Pending),
+        opened: Condvar::new(),
     });
     let handler_shared = Arc::clone(&shared);
     let mut client_capabilities = json!({
@@ -250,38 +261,76 @@ pub(super) fn launch_acp(
     )?;
     let _ = shared.client.set(Arc::clone(&client));
 
-    let mut resumed = false;
-    let handshake = (|| -> Result<()> {
-        let hello = client.request(
-            "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": client_capabilities,
-                "clientInfo": {
-                    "name": "ataraxia",
-                    "title": "Ataraxia",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-            Some(HANDSHAKE_TIMEOUT),
-        )?;
-        // The session of the last run, when the agent can pick one up without replaying it
-        // (replayed messages would be shown twice); a lost one begins a new session.
+    let hello = client.request(
+        "initialize",
+        json!({
+            "protocolVersion": 1,
+            "clientCapabilities": client_capabilities,
+            "clientInfo": {
+                "name": "ataraxia",
+                "title": "Ataraxia",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }),
+        Some(HANDSHAKE_TIMEOUT),
+    );
+    let opener = hello.and_then(|hello| Opener::new(dialect, &hello, &ctx));
+    let opener = match opener {
+        Ok(opener) => opener,
+        Err(error) => return Err(shared.fail_start(&client, error)),
+    };
+    if !opener.can_resume {
+        let background = Arc::clone(&shared);
+        let background_client = Arc::clone(&client);
+        thread::spawn(move || match opener.open(&background) {
+            Ok(_) => background.settle(Ok(())),
+            Err(error) => background.fail_open(&background_client, error),
+        });
+        return Ok(Arc::new(AcpSession {
+            shared,
+            resumed: false,
+        }));
+    }
+    match opener.open(&shared) {
+        Ok(resumed) => {
+            shared.settle(Ok(()));
+            Ok(Arc::new(AcpSession { shared, resumed }))
+        }
+        Err(error) => Err(shared.fail_start(&client, error)),
+    }
+}
+
+/// What opening the session needs, as learnt from `initialize` and the chat's settings.
+struct Opener {
+    can_resume: bool,
+    /// The session of the last run, when the agent can pick one up without replaying it
+    /// (replayed messages would be shown twice).
+    resume: Option<String>,
+    cwd: String,
+    mcp_servers: Vec<Value>,
+    additional_directories: Vec<String>,
+    read_only: bool,
+    model: Option<String>,
+    effort: Option<String>,
+    agent: Option<String>,
+}
+
+impl Opener {
+    fn new(dialect: Dialect, hello: &Value, ctx: &BackendContext) -> Result<Self> {
         let can_resume = hello
             .pointer("/agentCapabilities/sessionCapabilities/resume")
             .is_some_and(|value| !value.is_null());
         let agent_capabilities = hello.get("agentCapabilities");
-        let supports_http = agent_capabilities
-            .and_then(|value| value.pointer("/mcpCapabilities/http"))
-            .is_some_and(|value| value == true);
-        let supports_sse = agent_capabilities
-            .and_then(|value| value.pointer("/mcpCapabilities/sse"))
-            .is_some_and(|value| value == true);
+        let capable = |pointer: &str| {
+            agent_capabilities
+                .and_then(|value| value.pointer(pointer))
+                .is_some_and(|value| value == true)
+        };
         let mcp_servers = acp_mcp_servers(
             dialect,
             &ctx.config.mcp_servers,
-            supports_http,
-            supports_sse,
+            capable("/mcpCapabilities/http"),
+            capable("/mcpCapabilities/sse"),
         )?;
         let supports_additional_directories = agent_capabilities
             .and_then(|value| value.pointer("/sessionCapabilities/additionalDirectories"))
@@ -291,72 +340,86 @@ pub(super) fn launch_acp(
         } else {
             Vec::new()
         };
-        if let (true, Some(wanted)) = (can_resume, ctx.resume.as_deref()) {
-            let mut params = json!({
-                "sessionId": wanted,
-                "cwd": ctx.cwd.to_string_lossy(),
-                "mcpServers": mcp_servers.clone()
-            });
-            if !additional_directories.is_empty() {
-                params["additionalDirectories"] = json!(additional_directories);
-            }
+        Ok(Self {
+            can_resume,
+            resume: ctx.resume.clone().filter(|_| can_resume),
+            cwd: ctx.cwd.to_string_lossy().into_owned(),
+            mcp_servers,
+            additional_directories,
+            read_only: ctx.read_only,
+            model: ctx.model.clone(),
+            effort: ctx.effort.clone(),
+            agent: ctx.agent.clone(),
+        })
+    }
+
+    fn session_params(&self) -> Value {
+        let mut params = json!({ "cwd": self.cwd, "mcpServers": self.mcp_servers });
+        if !self.additional_directories.is_empty() {
+            params["additionalDirectories"] = json!(self.additional_directories);
+        }
+        params
+    }
+
+    /// Picks the old session up or begins a new one, then applies the saved settings. True when
+    /// the old one was picked up; a lost one begins a new session.
+    fn open(&self, shared: &AcpShared) -> Result<bool> {
+        let client = shared
+            .client
+            .get()
+            .ok_or_else(|| Error::new(ErrorCode::Agent, "the agent process is gone"))?;
+        let mut resumed = false;
+        if let Some(wanted) = &self.resume {
+            let mut params = self.session_params();
+            params["sessionId"] = json!(wanted);
             if let Ok(picked) = client.request("session/resume", params, Some(HANDSHAKE_TIMEOUT)) {
-                let _ = shared.acp_session_id.set(wanted.to_string());
+                let _ = shared.acp_session_id.set(wanted.clone());
                 if let Some(options) = picked.get("configOptions") {
                     shared.remember_config(parse_config_options(options), true);
                 }
                 resumed = true;
-                return Ok(());
             }
         }
-        let mut params = json!({
-            "cwd": ctx.cwd.to_string_lossy(),
-            "mcpServers": mcp_servers
-        });
-        if !additional_directories.is_empty() {
-            params["additionalDirectories"] = json!(additional_directories);
+        if !resumed {
+            let created = client.request(
+                "session/new",
+                self.session_params(),
+                Some(HANDSHAKE_TIMEOUT),
+            )?;
+            let session_id = created
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
+            let _ = shared.acp_session_id.set(session_id.to_string());
+            if let Some(options) = created.get("configOptions") {
+                shared.remember_config(parse_config_options(options), true);
+            }
         }
-        let created = client.request("session/new", params, Some(HANDSHAKE_TIMEOUT))?;
-        let session_id = created
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
-        let _ = shared.acp_session_id.set(session_id.to_string());
-        if let Some(options) = created.get("configOptions") {
-            shared.remember_config(parse_config_options(options), true);
-        }
-        Ok(())
-    })();
-    if let Err(error) = handshake {
-        let message = shared.with_exit_info(error.message);
-        client.kill();
-        return Err(Error::new(ErrorCode::Agent, dialect.sign_in_hint(message)));
-    }
-    let agent = match ctx.agent.as_deref() {
-        Some(agent) => Some(agent.to_string()),
-        None if ctx.read_only => {
-            let offered = shared.mode_values();
-            match dialect.read_only_mode(&offered) {
+        let agent = match self.agent.as_deref() {
+            Some(agent) => Some(agent.to_string()),
+            None if self.read_only => match shared.dialect.read_only_mode(&shared.mode_values()) {
                 Some(mode) => Some(mode),
+                // Starting anyway would let a session that must not write do so.
                 None => {
-                    // Starting anyway would let a session that must not write do so.
-                    client.kill();
                     return Err(Error::new(
                         ErrorCode::Unsupported,
-                        format!("{} offers no read-only mode (plan or ask)", dialect.name()),
+                        format!(
+                            "{} offers no read-only mode (plan or ask)",
+                            shared.dialect.name()
+                        ),
                     ));
                 }
-            }
-        }
-        None => None,
-    };
-    // Best effort: a stale saved model or agent must not stop the chat from opening.
-    let _ = shared.apply(
-        ctx.model.as_deref(),
-        ctx.effort.as_deref(),
-        agent.as_deref(),
-    );
-    Ok(Arc::new(AcpSession { shared, resumed }))
+            },
+            None => None,
+        };
+        // Best effort: a stale saved model or agent must not stop the chat from opening.
+        let _ = shared.apply(
+            self.model.as_deref(),
+            self.effort.as_deref(),
+            agent.as_deref(),
+        );
+        Ok(resumed)
+    }
 }
 
 fn opencode_skill_permissions(skills: &[super::config::SkillDefinition]) -> Vec<Value> {
@@ -767,9 +830,81 @@ struct AcpShared {
     acp_session_id: OnceLock<String>,
     exit: Mutex<Option<ExitInfo>>,
     state: Mutex<AcpState>,
+    opening: Mutex<Opening>,
+    opened: Condvar,
+}
+
+/// Where opening the agent's session stands.
+enum Opening {
+    Pending,
+    Open,
+    /// Why it could not open, already said to the person.
+    Failed(String),
 }
 
 impl AcpShared {
+    fn settle(&self, outcome: std::result::Result<(), String>) {
+        *self.opening.lock() = match outcome {
+            Ok(()) => Opening::Open,
+            Err(message) => Opening::Failed(message),
+        };
+        self.opened.notify_all();
+    }
+
+    /// Waits for the session to open; why it did not, otherwise.
+    fn wait_open(&self) -> std::result::Result<(), String> {
+        let deadline = Instant::now() + OPEN_TIMEOUT;
+        let mut opening = self.opening.lock();
+        loop {
+            match &*opening {
+                Opening::Open => return Ok(()),
+                Opening::Failed(message) => return Err(message.clone()),
+                Opening::Pending => {
+                    if self.opened.wait_until(&mut opening, deadline).timed_out() {
+                        return Err(format!(
+                            "{} took too long to open its session",
+                            self.dialect.name()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Why opening failed, as the person reads it: how the process ended, if it did, and how to
+    /// sign in when that was the cause.
+    fn failure(&self, error: Error) -> Error {
+        match error.code {
+            ErrorCode::Unsupported => error,
+            _ => Error::new(
+                ErrorCode::Agent,
+                self.dialect
+                    .sign_in_hint(self.with_exit_info(error.message)),
+            ),
+        }
+    }
+
+    /// A start that failed before returning: the caller reports the error.
+    fn fail_start(&self, client: &RpcClient, error: Error) -> Error {
+        let error = self.failure(error);
+        self.settle(Err(error.message.clone()));
+        client.kill();
+        error
+    }
+
+    /// An opening in the background that failed: the chat is told, the process ends and the next
+    /// message starts it again.
+    fn fail_open(&self, client: &RpcClient, error: Error) {
+        // A process that ended has said so already.
+        let reported = self.exit.lock().is_some();
+        let message = self.failure(error).message;
+        self.settle(Err(message.clone()));
+        client.kill();
+        if !reported {
+            (self.emit)(BackendEvent::Error { message });
+        }
+    }
+
     fn remember_config(&self, options: Vec<ConfigOption>, first: bool) {
         if first {
             let mut initial = self.initial.lock();
@@ -891,6 +1026,10 @@ impl AcpShared {
             Incoming::Closed(info) => {
                 let message = info.describe(self.dialect.name());
                 *self.exit.lock() = Some(info);
+                // Ended because its session could not open, which the chat was told already.
+                if matches!(*self.opening.lock(), Opening::Failed(_)) {
+                    return;
+                }
                 (self.emit)(BackendEvent::Error { message });
             }
         }
@@ -1321,6 +1460,24 @@ impl AcpShared {
     }
 
     fn run_prompt(&self, turn_id: TurnId, text: String) {
+        if let Err(message) = self.wait_open() {
+            self.state.lock().turn = None;
+            (self.emit)(BackendEvent::Error { message });
+            return;
+        }
+        // Stopped while the session was still opening: it never reached the agent.
+        let cancelled = {
+            let mut state = self.state.lock();
+            let cancelled = std::mem::take(&mut state.cancel_requested);
+            if cancelled {
+                state.turn = None;
+            }
+            cancelled
+        };
+        if cancelled {
+            (self.emit)(BackendEvent::TurnDone { turn_id, ok: false });
+            return;
+        }
         let Some(client) = self.client.get() else {
             return;
         };
@@ -1415,10 +1572,12 @@ impl BackendSession for AcpSession {
         effort: Option<&str>,
         agent: Option<&str>,
     ) -> bool {
-        self.shared.apply(model, effort, agent).is_ok()
+        self.shared.wait_open().is_ok() && self.shared.apply(model, effort, agent).is_ok()
     }
 
     fn options(&self) -> SessionOptions {
+        // The agent lists them when its session opens.
+        let _ = self.shared.wait_open();
         let config = self.shared.config.lock();
         let values = |category: &str, id: &str| -> Vec<ConfigValue> {
             config

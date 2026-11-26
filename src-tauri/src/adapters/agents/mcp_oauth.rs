@@ -290,15 +290,12 @@ fn exchange<'a>(
         return Err(oauth_error("MCP OAuth requires an HTTPS token endpoint"));
     }
     let mut request = agent.post(endpoint.as_str());
-    match (
+    match token_auth(
         client.token_endpoint_auth_method.as_deref(),
-        client.client_secret.as_deref(),
-    ) {
-        (Some("client_secret_post"), Some(secret)) => {
-            form.push(("client_id", &client.client_id));
-            form.push(("client_secret", secret));
-        }
-        (Some("client_secret_basic"), Some(secret)) => {
+        client.client_secret.is_some(),
+    )? {
+        TokenAuth::Basic => {
+            let secret = client.client_secret.as_deref().unwrap_or_default();
             let encode = |value: &str| {
                 url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
             };
@@ -306,14 +303,40 @@ fn exchange<'a>(
             let encoded = base64::engine::general_purpose::STANDARD.encode(pair);
             request = request.header("Authorization", format!("Basic {encoded}"));
         }
-        (None | Some("none"), _) => form.push(("client_id", &client.client_id)),
-        _ => {
-            return Err(oauth_error(
-                "MCP OAuth client authentication method is unsupported",
-            ));
+        TokenAuth::SecretPost => {
+            form.push(("client_id", &client.client_id));
+            if let Some(secret) = client.client_secret.as_deref() {
+                form.push(("client_secret", secret));
+            }
         }
+        TokenAuth::Public => form.push(("client_id", &client.client_id)),
     }
     json_response(request.send_form(form), "MCP OAuth token exchange failed")
+}
+
+/// How the client authenticates at the token endpoint.
+enum TokenAuth {
+    /// HTTP Basic with the client id and secret.
+    Basic,
+    /// The client id (and secret, when it has one) in the request body.
+    SecretPost,
+    /// A public client: its id alone.
+    Public,
+}
+
+/// Picks the token-endpoint authentication from the registered method and whether a secret was
+/// issued. A registration that hands out a secret is a confidential client and must send it, even
+/// when it reports `none`: Figma issues a secret yet echoes `token_endpoint_auth_method: "none"`,
+/// and its token endpoint then answers 400 to a request that leaves the secret out.
+fn token_auth(method: Option<&str>, has_secret: bool) -> Result<TokenAuth> {
+    match (method, has_secret) {
+        (Some("client_secret_basic"), _) => Ok(TokenAuth::Basic),
+        (_, true) => Ok(TokenAuth::SecretPost),
+        (None | Some("none") | Some("client_secret_post"), false) => Ok(TokenAuth::Public),
+        _ => Err(oauth_error(
+            "MCP OAuth client authentication method is unsupported",
+        )),
+    }
 }
 
 fn random_secret() -> String {
@@ -608,6 +631,33 @@ mod tests {
             apply(root.path(), &mut config);
             assert_eq!(config, original);
         }
+    }
+
+    #[test]
+    fn a_registered_secret_is_sent_even_when_the_server_reports_the_method_as_none() {
+        // Figma hands out a secret yet echoes "none"; the token endpoint demands the secret.
+        assert!(matches!(
+            token_auth(Some("none"), true),
+            Ok(TokenAuth::SecretPost)
+        ));
+        assert!(matches!(token_auth(None, true), Ok(TokenAuth::SecretPost)));
+        assert!(matches!(
+            token_auth(Some("client_secret_post"), true),
+            Ok(TokenAuth::SecretPost)
+        ));
+        // Basic auth when the server asked for it.
+        assert!(matches!(
+            token_auth(Some("client_secret_basic"), true),
+            Ok(TokenAuth::Basic)
+        ));
+        // A true public client (no secret) authenticates with its id alone.
+        assert!(matches!(
+            token_auth(Some("none"), false),
+            Ok(TokenAuth::Public)
+        ));
+        assert!(matches!(token_auth(None, false), Ok(TokenAuth::Public)));
+        // A method we cannot satisfy without a secret is refused.
+        assert!(token_auth(Some("private_key_jwt"), false).is_err());
     }
 
     #[test]
