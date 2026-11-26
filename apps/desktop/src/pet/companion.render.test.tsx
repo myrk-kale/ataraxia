@@ -54,6 +54,8 @@ async function say(event: Record<string, unknown>) {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // It starts off for a new person; these tests are about it being on screen.
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode: "pet" }));
   forgetPetForTests();
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 700 });
@@ -78,6 +80,13 @@ describe("the companion on screen", () => {
     expect(box.style.left).toBe(`${where.left}px`);
     expect(box.style.top).toBe(`${where.top}px`);
     expect(pet().getAttribute("aria-label")).toContain("Drag to move");
+  });
+
+  it("is off until the person turns it on", async () => {
+    window.localStorage.clear();
+    forgetPetForTests();
+    await show();
+    expect(host.querySelector(".pet")).toBeNull();
   });
 
   it("is not there when it is off, and comes back with /pet", async () => {

@@ -1,20 +1,6 @@
-import btwDark from "./images/btw-dark.jpg";
-import btwLight from "./images/btw-light.jpg";
-import chatDark from "./images/chat-dark.jpg";
-import chatLight from "./images/chat-light.jpg";
-import codeDark from "./images/code-dark.jpg";
-import codeLight from "./images/code-light.jpg";
-import decisionsDark from "./images/decisions-dark.jpg";
-import decisionsLight from "./images/decisions-light.jpg";
-import flowDark from "./images/flow-dark.jpg";
-import flowLight from "./images/flow-light.jpg";
-import themesDark from "./images/themes-dark.jpg";
-import themesLight from "./images/themes-light.jpg";
-
-/** What a slide shows: a screenshot of the app (one for each theme kind) or a drawing made for it. */
-export type Visual =
-  | { kind: "shot"; light: string; dark: string; alt: string }
-  | { kind: "art"; art: "welcome" | "workflow" | "browser" | "memory" };
+import type { SceneId } from "./scenes";
+/** What a slide shows: an animation made for it (see scenes/), drawn in the interface's own colours. */
+export type Visual = { scene: SceneId };
 
 export type Slide = {
   id: string;
@@ -37,7 +23,7 @@ export const SLIDES: readonly Slide[] = [
     title: "Agents write fast. You decide what ships.",
     problem: "Ataraxia is where you work with coding agents and keep up with what they change.",
     points: ["Talk to your agent in a chat", "Review only what matters", "Keep every decision and the reason for it"],
-    visual: { kind: "art", art: "welcome" },
+    visual: { scene: "welcome" },
   },
   {
     id: "workflow",
@@ -45,7 +31,7 @@ export const SLIDES: readonly Slide[] = [
     title: "A session, start to finish",
     problem: "A long diff read top to bottom hides the one change that matters.",
     points: ["Ask the agent for the work", "Open the review queue: the riskiest changes come first", "Settle the decisions it left to you", "Commit with the reasons on record"],
-    visual: { kind: "art", art: "workflow" },
+    visual: { scene: "workflow" },
   },
   {
     id: "chat",
@@ -57,7 +43,7 @@ export const SLIDES: readonly Slide[] = [
       "Keep typing while it works: messages queue, and you can pause the queue",
       "Choose the account per chat, right next to the model",
     ],
-    visual: { kind: "shot", light: chatLight, dark: chatDark, alt: "A chat with an agent, with its model and effort in the message bar" },
+    visual: { scene: "chat" },
   },
   {
     id: "review",
@@ -69,7 +55,7 @@ export const SLIDES: readonly Slide[] = [
       "Flip old and new with Alt+V, and comment on any line",
       "Let a subagent order the queue and leave out what needs no review",
     ],
-    visual: { kind: "shot", light: codeLight, dark: codeDark, alt: "The Code space: the ranked queue on the left and the changed function on the right" },
+    visual: { scene: "review" },
   },
   {
     id: "decisions",
@@ -77,7 +63,7 @@ export const SLIDES: readonly Slide[] = [
     title: "Choices get a verdict, not just a diff",
     problem: "The reasons behind a change are lost the moment it is merged.",
     points: ["Choices that deserve your say become threads", "Approve, push back or ask the agent why", "Link the commits that follow from each one"],
-    visual: { kind: "shot", light: decisionsLight, dark: decisionsDark, alt: "A decision with its alternatives and the discussion thread" },
+    visual: { scene: "decisions" },
   },
   {
     id: "flow",
@@ -85,7 +71,7 @@ export const SLIDES: readonly Slide[] = [
     title: "Diagrams tied to real code",
     problem: "Nobody can hold how a change works in their head.",
     points: ["Ask for a diagram of how it works", "Every node points at a file that exists", "It tells you when the code has moved on and it is out of date"],
-    visual: { kind: "shot", light: flowLight, dark: flowDark, alt: "A flow diagram whose nodes point at files" },
+    visual: { scene: "flow" },
   },
   {
     id: "btw",
@@ -97,7 +83,7 @@ export const SLIDES: readonly Slide[] = [
       { keys: ["Ctrl/⌘", "K"], label: "BTW" },
       { keys: ["Ctrl/⌘", "Shift", "K"], label: "Private BTW" },
     ],
-    visual: { kind: "shot", light: btwLight, dark: btwDark, alt: "The BTW bar asking about the code on screen" },
+    visual: { scene: "btw" },
   },
   {
     id: "browser",
@@ -111,7 +97,7 @@ export const SLIDES: readonly Slide[] = [
       "Its tabs keep their own cookies: yours are shared only when you say so",
     ],
     keys: [{ keys: ["Ctrl/⌘", "Shift", "L"], label: "Browser" }],
-    visual: { kind: "art", art: "browser" },
+    visual: { scene: "browser" },
   },
   {
     id: "memory",
@@ -127,19 +113,19 @@ export const SLIDES: readonly Slide[] = [
       { keys: ["Ctrl/⌘", "Shift", "G"], label: "Memory graph" },
       { keys: ["Ctrl/⌘", "T"], label: "Tasks" },
     ],
-    visual: { kind: "art", art: "memory" },
+    visual: { scene: "memory" },
   },
   {
     id: "yours",
     eyebrow: "Make it yours",
     title: "Quick to move, easy on the eyes",
     problem: "A tool you live in should fit the way you work.",
-    points: ["Themes, light and dark, fonts and sounds", "A pet you can drag anywhere and dress up: it shows what your agents are doing", "Dictate a message instead of typing it", "Search every chat, decision and file in one place"],
+    points: ["Themes, light and dark, fonts and sounds", "An optional pet to switch on, drag anywhere and dress up: it shows what your agents are doing", "Dictate a message instead of typing it", "Search every chat, decision and file in one place"],
     keys: [
       { keys: ["Shift", "↑/↓"], label: "Next space" },
       { keys: ["Ctrl/⌘", "B"], label: "Search" },
       { keys: ["Ctrl/⌘", "Shift", "M"], label: "Dictate" },
     ],
-    visual: { kind: "shot", light: themesLight, dark: themesDark, alt: "Ataraxia in one of its themes" },
+    visual: { scene: "yours" },
   },
 ];
