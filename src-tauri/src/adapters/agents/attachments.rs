@@ -30,6 +30,7 @@ pub struct StoredImage {
 fn extension(mime: &str) -> &'static str {
     FORMATS
         .iter()
+        .chain(crate::domain::office::FORMATS.iter())
         .find(|(known, _)| *known == mime)
         .map_or("bin", |(_, ext)| ext)
 }
@@ -60,7 +61,13 @@ pub fn store(
             path.clone()
         } else {
             let pages = dir.join(&id);
-            if let Err(error) = prepare_document(&pages, &path, image.mime, &image.bytes) {
+            if let Err(error) = prepare_document(
+                &pages,
+                &path,
+                image.mime,
+                &image.bytes,
+                image.prepared.as_ref(),
+            ) {
                 let _ = std::fs::remove_file(&path);
                 let _ = std::fs::remove_dir_all(&pages);
                 for previous in &stored {
@@ -88,49 +95,64 @@ pub fn store(
     Ok(stored)
 }
 
-fn prepare_document(dir: &Path, original: &Path, mime: &str, bytes: &[u8]) -> Result<()> {
+fn prepare_document(
+    dir: &Path,
+    original: &Path,
+    mime: &str,
+    bytes: &[u8],
+    prepared: Option<&crate::domain::office::Prepared>,
+) -> Result<()> {
     use crate::domain::document;
     let io = |error: std::io::Error| Error::new(ErrorCode::Io, error.to_string());
     std::fs::create_dir_all(dir).map_err(io)?;
-    let note = match mime {
-        "application/pdf" => {
-            let pdf = document::pdf(bytes)?;
-            let numbers: Vec<_> = pdf.get_pages().keys().copied().collect();
-            let mut remaining = 100 * 1024 * 1024;
-            for number in &numbers {
-                let mut page = pdf.clone();
-                page.delete_pages(
-                    &numbers
-                        .iter()
-                        .copied()
-                        .filter(|n| n != number)
-                        .collect::<Vec<_>>(),
-                );
-                page.prune_objects();
-                let file =
-                    std::fs::File::create(dir.join(format!("page-{number:04}.pdf"))).map_err(io)?;
-                let mut writer = LimitedWriter { file, remaining };
-                page.save_to(&mut writer).map_err(io)?;
-                remaining = writer.remaining;
-            }
-            format!(
-                "{} pages. Each page-XXXX.pdf preserves that page's content.\n",
-                numbers.len()
-            )
+    let note = if let Some(prepared) = prepared {
+        for (name, content) in &prepared.files {
+            std::fs::write(dir.join(name), content).map_err(io)?;
         }
-        document::DOCX_MIME => {
-            let pages = document::docx_pages(bytes)?;
-            for (index, page) in pages.iter().enumerate() {
-                std::fs::write(dir.join(format!("page-{:04}.txt", index + 1)), page).map_err(io)?;
+        prepared.note.clone()
+    } else {
+        match mime {
+            "application/pdf" => {
+                let pdf = document::pdf(bytes)?;
+                let numbers: Vec<_> = pdf.get_pages().keys().copied().collect();
+                let mut remaining = 100 * 1024 * 1024;
+                for number in &numbers {
+                    let mut page = pdf.clone();
+                    page.delete_pages(
+                        &numbers
+                            .iter()
+                            .copied()
+                            .filter(|n| n != number)
+                            .collect::<Vec<_>>(),
+                    );
+                    page.prune_objects();
+                    let file = std::fs::File::create(dir.join(format!("page-{number:04}.pdf")))
+                        .map_err(io)?;
+                    let mut writer = LimitedWriter { file, remaining };
+                    page.save_to(&mut writer).map_err(io)?;
+                    remaining = writer.remaining;
+                }
+                format!(
+                    "{} pages. Each page-XXXX.pdf preserves that page's content.\n",
+                    numbers.len()
+                )
             }
-            format!(
-                "{} text sections, split at explicit Word page breaks. These are not rendered pages. Tables are plain text; images and formatting remain in the original DOCX.\n",
-                pages.len()
-            )
-        }
-        _ => {
-            std::fs::write(dir.join(format!("document.{}", extension(mime))), bytes).map_err(io)?;
-            "Single text document; no fixed page layout.\n".to_string()
+            document::DOCX_MIME => {
+                let pages = document::docx_pages(bytes)?;
+                for (index, page) in pages.iter().enumerate() {
+                    std::fs::write(dir.join(format!("page-{:04}.txt", index + 1)), page)
+                        .map_err(io)?;
+                }
+                format!(
+                    "{} text sections, split at explicit Word page breaks. These are not rendered pages. Tables are plain text; images and formatting remain in the original DOCX.\n",
+                    pages.len()
+                )
+            }
+            _ => {
+                std::fs::write(dir.join(format!("document.{}", extension(mime))), bytes)
+                    .map_err(io)?;
+                "Single text document; no fixed page layout.\n".to_string()
+            }
         }
     };
     std::fs::write(
@@ -172,6 +194,7 @@ pub fn locate(root: &Path, session: &SessionId, id: &str) -> Result<(PathBuf, &'
     let dir = session_dir(root, session);
     FORMATS
         .iter()
+        .chain(crate::domain::office::FORMATS.iter())
         .map(|(mime, ext)| (dir.join(format!("{id}.{ext}")), *mime))
         .find(|(path, _)| path.is_file())
         .ok_or_else(|| Error::new(ErrorCode::NotFound, "image not found"))
@@ -210,6 +233,29 @@ mod tests {
 
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!("ataraxia-attach-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn workbook_exports_are_stored_with_the_original_and_deleted_with_the_chat() {
+        let root = root();
+        let session = SessionId::new();
+        let bytes = crate::domain::office::tests::xlsx();
+        let stored = store(&root, &session, &[upload("quarterly.xlsx", &bytes)]).unwrap();
+        let item = &stored[0];
+        assert!(item.path.join("sheets.json").is_file());
+        assert!(item.path.join("sheet-0001.csv").is_file());
+        assert!(item.path.join("sheet-0001-formulas.csv").is_file());
+        let (original, mime) = locate(&root, &session, &item.attachment.id).unwrap();
+        assert_eq!(mime, crate::domain::office::FORMATS[0].0);
+        assert_eq!(std::fs::read(original).unwrap(), bytes);
+        assert!(
+            std::fs::read_to_string(item.path.join("README.txt"))
+                .unwrap()
+                .contains("sheets.json")
+        );
+        forget(&root, &session);
+        assert!(!item.path.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn pdf_upload(pages: usize) -> ImageUpload {

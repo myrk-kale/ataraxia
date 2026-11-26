@@ -6,6 +6,17 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Office attachments: Excel XLSX/XLSM/XLS, OpenDocument ODS, CSV and TSV spreadsheets; PowerPoint
+  PPTX and OpenDocument ODP presentations; ODT/TXT documents and JSON/XML exports. Workbooks get
+  one UTF-8 CSV per sheet, an index of sheet names and positions, and formula files when readable.
+  Presentations get one text file per slide in presentation order. Originals are preserved.
+  Spreadsheet values are saved results, not recalculated; macros and external links are never run.
+  CSV/TSV imports handle UTF-8, UTF-16 and Windows-1252, including semicolon-separated exports.
+  The existing five-file and 20 MB document limits apply; workbooks are limited to 200 sheets and
+  one million cells, presentations to 200 slides, and expanded Office archives to 64 MB.
+
 ## [0.24.0] - 2026-11-26
 
 ### Added

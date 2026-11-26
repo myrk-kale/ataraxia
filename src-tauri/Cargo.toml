@@ -60,7 +60,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow = "1"
 base64 = "0.23.1"
+calamine = { version = "0.35", features = ["dates"] }
+cfb = "0.16"
 command-group = "5.0.1"
+csv = "1.4.0"
+encoding_rs = "0.8"
 ignore = "0.4"
 lopdf = { version = "0.42.0", default-features = false }
 parking_lot = "0.12.5"

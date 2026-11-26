@@ -25,7 +25,7 @@ describe("pickImages", () => {
       MAX_IMAGES,
     );
     expect(accepted.map((item) => item.name)).toEqual(["a.png", "b.webp", "d.pdf"]);
-    expect(problems).toEqual(["c.svg is not a PNG, JPEG, GIF, WebP, HTML, PDF, Markdown or DOCX file."]);
+    expect(problems).toEqual(["c.svg is not a supported image, document, spreadsheet or presentation."]);
   });
 
   it("refuses a picture over the size limit", () => {
@@ -87,6 +87,24 @@ describe("imagesFromClipboard", () => {
 });
 
 describe("toUploads", () => {
+  it.each([
+    ["book.XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["book.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"],
+    ["book.xls", "application/vnd.ms-excel"],
+    ["book.ods", "application/vnd.oasis.opendocument.spreadsheet"],
+    ["export.csv", "text/csv"],
+    ["export.tsv", "text/tab-separated-values"],
+    ["deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    ["deck.odp", "application/vnd.oasis.opendocument.presentation"],
+    ["report.odt", "application/vnd.oasis.opendocument.text"],
+    ["notes.txt", "text/plain"],
+    ["data.json", "application/json"],
+    ["data.xml", "application/xml"],
+  ])("accepts and uploads %s when the browser has no useful MIME", async (name, mime) => {
+    const f = file(name, "application/octet-stream");
+    expect(pickImages([f], 1).accepted).toEqual([f]);
+    expect((await toUploads([{ id: "office", file: f, preview: "" }]))[0]?.mime).toBe(mime);
+  });
   it("uses the document MIME for Markdown reported as plain text", async () => {
     const attachment = {
       id: "md",

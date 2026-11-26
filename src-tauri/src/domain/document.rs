@@ -21,7 +21,7 @@ pub fn mime(name: &str, bytes: &[u8]) -> Option<&'static str> {
         "docx" if bytes.starts_with(b"PK\x03\x04") => Some(DOCX_MIME),
         "md" | "markdown" => Some("text/markdown"),
         "html" | "htm" => Some("text/html"),
-        _ => None,
+        _ => super::office::mime(name, bytes),
     }
 }
 

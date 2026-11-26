@@ -1505,7 +1505,7 @@ export function ChatPanel({
                     aria-label="Attach files"
                     className="grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={!state.loaded || attachments.length >= MAX_IMAGES}
-                    title="Attach images, HTML, PDF, Markdown or DOCX (5 files; images up to 5 MB, documents up to 20 MB)"
+                    title="Attach images, documents, spreadsheets or presentations (5 files; images up to 5 MB, other files up to 20 MB)"
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
                   >

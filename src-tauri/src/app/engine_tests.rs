@@ -2554,6 +2554,51 @@ fn a_queued_message_keeps_its_pictures_until_its_turn() {
 
 // ---------------------------------------------------------------- schedules
 
+#[test]
+fn spreadsheets_are_validated_when_queued_and_keep_their_names_until_sent() {
+    use base64::Engine as _;
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let first = next_request(&w, None);
+    let queue = w
+        .engine
+        .enqueue(
+            w.session.id,
+            "read the workbook",
+            vec![ImageUpload {
+                name: "report.xlsx".into(),
+                mime: "application/octet-stream".into(),
+                data: base64::engine::general_purpose::STANDARD
+                    .encode(crate::domain::office::tests::xlsx()),
+            }],
+        )
+        .unwrap();
+    assert_eq!(queue.items[0].images, ["report.xlsx"]);
+    assert!(
+        w.engine
+            .enqueue(
+                w.session.id,
+                "bad",
+                vec![ImageUpload {
+                    name: "bad.xlsx".into(),
+                    mime: "application/zip".into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(b"PK\x03\x04broken")
+                }]
+            )
+            .is_err()
+    );
+    approve(&w, first);
+    next_request(&w, Some(first));
+    assert_eq!(
+        images_of_user_messages(&w),
+        [vec![], vec!["report.xlsx".to_string()]]
+    );
+    assert!(w.engine.queue(w.session.id).items.is_empty());
+    w.host.forget_session(&w.session.id);
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
 /// A turn that has finished: the fake agent asks for a permission first, so allow it.
 fn finish_turn(w: &World) {
     let request = next_request(w, None);
