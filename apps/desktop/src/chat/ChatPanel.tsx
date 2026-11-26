@@ -53,6 +53,7 @@ import { useSuggestion } from "./autocomplete";
 import { AsciiMark } from "./AsciiMark";
 import {
   type Attachment,
+  attachmentMime,
   IMAGE_ACCEPT,
   imagesFromClipboard,
   MAX_IMAGES,
@@ -178,6 +179,8 @@ export function ChatPanel({
   const completionRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [options, setOptions] = useState<SessionOptions | null>(null);
+  /** A model, effort or agent change still being applied. */
+  const [configuring, setConfiguring] = useState(false);
   const [repositoryMcpApproval, setRepositoryMcpApproval] = useState<RepositoryMcpApproval | null>(null);
   const [repositoryMcpApprovalOpen, setRepositoryMcpApprovalOpen] = useState(false);
   const [trustingRepositoryMcp, setTrustingRepositoryMcp] = useState(false);
@@ -201,7 +204,7 @@ export function ChatPanel({
   // What was sent to the queue and is not in the app's list yet.
   const [queuedHere, setQueuedHere] = useState<QueuedLocally[]>([]);
   const shownQueue = useMemo(() => withLocal(queue, queuedHere), [queue, queuedHere]);
-  // Pictures chosen for the next message (images only for now).
+  // Files chosen for the next message.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const attachmentsRef = useRef(attachments);
@@ -531,7 +534,7 @@ export function ChatPanel({
     const mine = pendingSends.current.get(waiting.id);
     images?.forEach((image, i) => {
       const url = mine?.urls[i];
-      if (url) {
+      if (url && image.mime.startsWith("image/")) {
         seedPicture(sessionId, image.id, url);
       }
     });
@@ -703,7 +706,7 @@ export function ChatPanel({
       const shown = sending.map((item, i) => {
         const id = `local:${pendingId}:${i}`;
         seedPicture(sessionId, id, item.preview);
-        return { id, name: item.file.name || "image", mime: item.file.type };
+        return { id, name: item.file.name || "image", mime: attachmentMime(item.file) };
       });
       pendingSends.current.set(pendingId, { previews: sending.map((item) => item.preview), urls: [] });
       dispatch({ type: "optimistic", id: pendingId, text, images: shown });
@@ -730,7 +733,9 @@ export function ChatPanel({
       if (pendingId) {
         const mine = pendingSends.current.get(pendingId);
         if (mine) {
-          mine.urls = images.map((image) => `data:${image.mime};base64,${image.data}`);
+          mine.urls = images.map((image) =>
+            image.mime.startsWith("image/") ? `data:${image.mime};base64,${image.data}` : "",
+          );
         }
         await agentPrompt(sessionId, text, images);
       } else {
@@ -827,13 +832,20 @@ export function ChatPanel({
   }
 
   async function configure(model: string | null, effort: string | null, agent: string | null) {
+    const before = session;
+    // Shown at once: a harness may take seconds to restart or to finish opening its session.
+    onSessionChange({ ...session, model, effort, agent });
+    setConfiguring(true);
     try {
       onSessionChange(await agentConfigureSession(sessionId, model, effort, agent));
       // Providers that read these at launch restart the agent; reload to show the divider.
       dispatch({ type: "loaded", snapshot: await agentGetSnapshot(sessionId) });
       await loadOptions();
     } catch (err) {
+      onSessionChange(before);
       dispatch({ type: "failed", message: errorText(err) });
+    } finally {
+      setConfiguring(false);
     }
   }
 
@@ -1380,8 +1392,8 @@ export function ChatPanel({
               <StatusDot status={state.status} />
               {activeSubagent ? null : (
               <SessionSettings
-                disabled={busy || !state.loaded}
-                disabledReason="Wait for the current turn to finish"
+                disabled={busy || !state.loaded || configuring}
+                disabledReason={configuring ? "Applying the change" : "Wait for the current turn to finish"}
                 agent={session.agent}
                 effort={session.effort}
                 model={session.model}
@@ -1490,10 +1502,10 @@ export function ChatPanel({
                     }}
                   />
                   <button
-                    aria-label="Attach images"
+                    aria-label="Attach files"
                     className="grid h-[29px] w-[29px] flex-none place-items-center rounded-cg-md text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={!state.loaded || attachments.length >= MAX_IMAGES}
-                    title="Attach images (PNG, JPEG, GIF or WebP), or paste them"
+                    title="Attach images, HTML, PDF, Markdown or DOCX (5 files; images up to 5 MB, documents up to 20 MB)"
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
                   >

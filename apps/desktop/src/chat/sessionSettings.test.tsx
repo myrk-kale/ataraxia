@@ -86,6 +86,14 @@ describe("SessionSettings", () => {
     expect(html).not.toContain(">High<");
   });
 
+  it("names the thinking switch Cursor's Claude models offer", () => {
+    const live = options({ efforts: ["off", "low", "max"] });
+    expect(render(provider({ dynamic: true }), { effort: "off" }, live)).toContain("No thinking");
+    expect(render(provider({ dynamic: true }), { effort: "on" }, options({ efforts: ["off", "on"] }))).toContain(
+      "Thinking",
+    );
+  });
+
   it("shows an agent picker only when the provider and session offer agents", () => {
     const agents = [{ id: "reviewer", label: "reviewer", description: "Reviews diffs" }];
     const withAgents = render(provider({ agents: true }), { agent: "reviewer" }, options({ agents }));

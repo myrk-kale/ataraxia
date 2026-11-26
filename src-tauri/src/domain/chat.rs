@@ -63,12 +63,12 @@ pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
     pub turn_id: Option<TurnId>,
-    /// Images the user attached to this message.
+    /// Files attached to this message. The `images` key is retained for saved transcripts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageAttachment>,
 }
 
-/// An image attached to a message. The picture itself is a file the app keeps, read by `id`.
+/// A stored image or document, read by `id`. Legacy name retained for the wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageAttachment {
     pub id: String,
@@ -76,7 +76,7 @@ pub struct ImageAttachment {
     pub mime: String,
 }
 
-/// An image as it arrives from the window, before it is checked and stored.
+/// A file as it arrives from the window, before it is checked and stored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageUpload {
     pub name: String,

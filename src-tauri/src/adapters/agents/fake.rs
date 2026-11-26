@@ -25,6 +25,7 @@ pub struct FakeBackend {
     live_settings: bool,
     exit_on_shutdown: bool,
     resumable: bool,
+    live_model: bool,
 }
 
 impl FakeBackend {
@@ -34,6 +35,7 @@ impl FakeBackend {
             live_settings: true,
             exit_on_shutdown: false,
             resumable: false,
+            live_model: false,
         }
     }
 
@@ -47,6 +49,12 @@ impl FakeBackend {
     /// Reports an error as it is shut down, the way a killed process reports its exit (tests).
     pub fn exiting_on_shutdown(mut self) -> Self {
         self.exit_on_shutdown = true;
+        self
+    }
+
+    /// Takes a new model in the running conversation, the way Cursor does (tests).
+    pub fn switching_model_live(mut self) -> Self {
+        self.live_model = true;
         self
     }
 
@@ -76,6 +84,7 @@ impl AgentBackend for FakeBackend {
             emit: ctx.emit,
             step_delay: self.step_delay,
             live_settings: self.live_settings,
+            live_model: self.live_model,
             exit_on_shutdown: self.exit_on_shutdown,
             read_only: ctx.read_only,
             state: Arc::new(Mutex::new(FakeState::default())),
@@ -101,6 +110,7 @@ struct FakeSession {
     emit: Emitter,
     step_delay: Duration,
     live_settings: bool,
+    live_model: bool,
     exit_on_shutdown: bool,
     read_only: bool,
     state: Arc<Mutex<FakeState>>,
@@ -122,6 +132,10 @@ impl BackendSession for FakeSession {
         _agent: Option<&str>,
     ) -> bool {
         self.live_settings
+    }
+
+    fn keeps_conversation_on_model_change(&self) -> bool {
+        self.live_model
     }
 
     fn message_subagent(

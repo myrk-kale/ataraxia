@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { imagesFromClipboard, MAX_IMAGE_BYTES, MAX_IMAGES, pickImages, toUploads } from "./attachments";
+import {
+  imagesFromClipboard,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES,
+  pickImages,
+  toUploads,
+} from "./attachments";
 
 function file(name: string, type: string, size = 10): File {
   return new File([new Uint8Array(size)], name, { type });
@@ -9,11 +16,16 @@ function file(name: string, type: string, size = 10): File {
 describe("pickImages", () => {
   it("takes the picture formats and says why it left anything else out", () => {
     const { accepted, problems } = pickImages(
-      [file("a.png", "image/png"), file("b.webp", "image/webp"), file("c.svg", "image/svg+xml"), file("d.pdf", "application/pdf")],
+      [
+        file("a.png", "image/png"),
+        file("b.webp", "image/webp"),
+        file("c.svg", "image/svg+xml"),
+        file("d.pdf", "application/pdf"),
+      ],
       MAX_IMAGES,
     );
-    expect(accepted.map((item) => item.name)).toEqual(["a.png", "b.webp"]);
-    expect(problems).toEqual(["c.svg is not a PNG, JPEG, GIF or WebP image.", "d.pdf is not a PNG, JPEG, GIF or WebP image."]);
+    expect(accepted.map((item) => item.name)).toEqual(["a.png", "b.webp", "d.pdf"]);
+    expect(problems).toEqual(["c.svg is not a PNG, JPEG, GIF, WebP, HTML, PDF, Markdown or DOCX file."]);
   });
 
   it("refuses a picture over the size limit", () => {
@@ -26,11 +38,24 @@ describe("pickImages", () => {
     const files = [file("1.png", "image/png"), file("2.png", "image/png"), file("3.png", "image/png")];
     const { accepted, problems } = pickImages(files, 2);
     expect(accepted).toHaveLength(2);
-    expect(problems).toEqual([`3.png was left out: a message takes ${MAX_IMAGES} images at most.`]);
+    expect(problems).toEqual([`3.png was left out: a message takes ${MAX_IMAGES} files at most.`]);
   });
 
   it("names a pasted picture that has no name", () => {
     expect(pickImages([file("", "image/gif", MAX_IMAGE_BYTES + 5)], 1).problems[0]).toMatch(/^A pasted image is over/);
+  });
+
+  it("accepts document extensions without a browser MIME and applies their own size limit", () => {
+    const documents = [
+      file("a.HTML", ""),
+      file("b.pdf", "application/pdf"),
+      file("c.md", "text/plain"),
+      file("d.docx", ""),
+    ];
+    expect(pickImages(documents, 5).accepted).toEqual(documents);
+    expect(pickImages([file("large.pdf", "application/pdf", MAX_DOCUMENT_BYTES + 1)], 1).problems).toEqual([
+      "large.pdf is over 20 MB.",
+    ]);
   });
 });
 
@@ -38,7 +63,11 @@ describe("imagesFromClipboard", () => {
   function clipboard(types: string[], files: File[]) {
     return {
       types,
-      items: files.map((item) => ({ kind: "file", type: item.type, getAsFile: () => item })),
+      items: files.map((item) => ({
+        kind: "file",
+        type: item.type,
+        getAsFile: () => item,
+      })),
     } as unknown as DataTransfer;
   }
 
@@ -58,13 +87,31 @@ describe("imagesFromClipboard", () => {
 });
 
 describe("toUploads", () => {
+  it("uses the document MIME for Markdown reported as plain text", async () => {
+    const attachment = {
+      id: "md",
+      file: new File(["# hi"], "hi.md", { type: "text/plain" }),
+      preview: "",
+    };
+    expect((await toUploads([attachment]))[0]?.mime).toBe("text/markdown");
+  });
   it("sends the bytes as base64 with the name and type", async () => {
-    const attachment = { id: "1", file: new File([new Uint8Array([104, 105])], "hi.png", { type: "image/png" }), preview: "blob:x" };
+    const attachment = {
+      id: "1",
+      file: new File([new Uint8Array([104, 105])], "hi.png", {
+        type: "image/png",
+      }),
+      preview: "blob:x",
+    };
     expect(await toUploads([attachment])).toEqual([{ name: "hi.png", mime: "image/png", data: "aGk=" }]);
   });
 
   it("gives a nameless picture a name", async () => {
-    const attachment = { id: "1", file: new File([new Uint8Array([1])], "", { type: "image/png" }), preview: "blob:x" };
+    const attachment = {
+      id: "1",
+      file: new File([new Uint8Array([1])], "", { type: "image/png" }),
+      preview: "blob:x",
+    };
     expect((await toUploads([attachment]))[0]?.name).toBe("image 1");
   });
 });

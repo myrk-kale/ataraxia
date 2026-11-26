@@ -7,10 +7,15 @@ import { effortAfterModelChange, effortsFor, modelChoices } from "./options";
 const DEFAULT = "";
 
 const EFFORT_LABELS: Record<string, string> = {
+  // A thinking switch (Cursor's Claude models).
+  off: "No thinking",
+  on: "Thinking",
+  minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
   xhigh: "Extra high",
+  "extra-high": "Extra high",
   max: "Max",
 };
 

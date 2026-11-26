@@ -6,6 +6,33 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- Chat attachments accept HTML, PDF, Markdown and DOCX alongside images. The harness receives a folder
+  with the original file's location and readable files: PDFs split into individual pages, DOCX text
+  split at explicit page breaks (not Word's visual pagination), and HTML/Markdown kept as text.
+  A message takes up to five files; images keep their 5 MB limit, documents take up to 20 MB and
+  PDF/DOCX documents up to 200 pages or explicit sections. Invalid documents are refused before sending.
+
+### Changed
+
+- Changing the model of a Cursor chat now happens in the running session in about a second and a half,
+  and the conversation goes on with the new model, as in Cursor's own app. Before, the agent restarted and
+  began a new conversation, which took about five seconds. The other harnesses still begin a new
+  conversation when the model changes.
+- The model, effort and agent pickers show the new choice as soon as it is picked, and stay locked
+  until it is applied.
+
+### Fixed
+
+- The effort picker of Cursor chats works with every model. Cursor names the levels differently for
+  each model and gives some Claude models a separate thinking switch. The picker used to show that
+  switch as "False/True" in place of the levels, and an effort such as "high" never reached the model.
+  It now lists "No thinking" and the levels, and picking a level turns thinking on. "Default" goes back
+  to the model's own level.
+- A read-only Cursor or OpenCode session (BTW, decisions, analysis) stays in its read-only mode when its
+  settings change or when it was saved with an agent that writes.
+
 ## [0.23.1] - 2026-11-26
 
 ### Changed

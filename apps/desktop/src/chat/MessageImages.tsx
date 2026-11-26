@@ -68,16 +68,25 @@ function Picture({ sessionId, image }: { sessionId: string; image: ImageAttachme
   );
 }
 
-/** The pictures of a user's message, above its words. */
+/** Images and document names attached to a user's message. */
 export function MessageImages({ sessionId, images }: { sessionId: string; images: ImageAttachment[] }) {
   if (images.length === 0) {
     return null;
   }
   return (
-    <div aria-label="Attached images" className="mb-2 flex flex-wrap items-start gap-2" role="group">
-      {images.map((image) => (
-        <Picture key={image.id} image={image} sessionId={sessionId} />
-      ))}
+    <div aria-label="Attached files" className="mb-2 flex flex-wrap items-start gap-2" role="group">
+      {images.map((image) =>
+        image.mime.startsWith("image/") ? (
+          <Picture key={image.id} image={image} sessionId={sessionId} />
+        ) : (
+          <span
+            key={image.id}
+            className="max-w-full break-all rounded-cg-sm border border-cg-line px-2 py-1 text-small text-cg-muted-strong"
+          >
+            {image.name}
+          </span>
+        ),
+      )}
     </div>
   );
 }

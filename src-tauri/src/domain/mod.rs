@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod browser;
 pub mod chat;
+pub mod document;
 pub mod error;
 pub mod ids;
 pub mod image;

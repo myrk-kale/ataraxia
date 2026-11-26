@@ -250,6 +250,11 @@ pub trait BackendSession: Send + Sync {
     ) -> bool {
         false
     }
+    /// True when a new model is taken in the running session and the conversation goes on with
+    /// it (Cursor, like its own app). Otherwise a model change begins a new conversation.
+    fn keeps_conversation_on_model_change(&self) -> bool {
+        false
+    }
     /// Sends a message to a subagent. Its answer arrives as `Subagent` events; for
     /// `SubagentRoute::MainTurn` the main agent also runs `turn_id` and ends it with `TurnDone`.
     fn message_subagent(

@@ -188,13 +188,20 @@ impl Dialect {
         self == Self::OpenCode && native_mcp(config)
     }
 
+    /// The modes in which the agent does not write.
+    fn read_only_modes(self) -> &'static [&'static str] {
+        match self {
+            Self::OpenCode => &["plan"],
+            Self::Cursor => &["plan", "ask"],
+        }
+    }
+
     /// The mode a session that only investigates runs in, among the ones the agent offers.
     fn read_only_mode(self, offered: &[ConfigValue]) -> Option<String> {
-        let wanted: &[&str] = match self {
-            Self::OpenCode => return Some("plan".into()),
-            Self::Cursor => &["plan", "ask"],
-        };
-        wanted
+        if self == Self::OpenCode {
+            return Some("plan".into());
+        }
+        self.read_only_modes()
             .iter()
             .find(|wanted| offered.iter().any(|value| value.value == **wanted))
             .map(|wanted| (*wanted).to_string())
@@ -239,6 +246,7 @@ pub(super) fn launch_acp(
         state: Mutex::new(AcpState::default()),
         opening: Mutex::new(Opening::Pending),
         opened: Condvar::new(),
+        read_only: ctx.read_only,
     });
     let handler_shared = Arc::clone(&shared);
     let mut client_capabilities = json!({
@@ -375,7 +383,7 @@ impl Opener {
             if let Ok(picked) = client.request("session/resume", params, Some(HANDSHAKE_TIMEOUT)) {
                 let _ = shared.acp_session_id.set(wanted.clone());
                 if let Some(options) = picked.get("configOptions") {
-                    shared.remember_config(parse_config_options(options), true);
+                    shared.remember_config(parse_config_options(options), Defaults::All);
                 }
                 resumed = true;
             }
@@ -392,32 +400,26 @@ impl Opener {
                 .ok_or_else(|| Error::new(ErrorCode::Agent, "session/new returned no sessionId"))?;
             let _ = shared.acp_session_id.set(session_id.to_string());
             if let Some(options) = created.get("configOptions") {
-                shared.remember_config(parse_config_options(options), true);
+                shared.remember_config(parse_config_options(options), Defaults::All);
             }
         }
-        let agent = match self.agent.as_deref() {
-            Some(agent) => Some(agent.to_string()),
-            None if self.read_only => match shared.dialect.read_only_mode(&shared.mode_values()) {
-                Some(mode) => Some(mode),
-                // Starting anyway would let a session that must not write do so.
-                None => {
-                    return Err(Error::new(
-                        ErrorCode::Unsupported,
-                        format!(
-                            "{} offers no read-only mode (plan or ask)",
-                            shared.dialect.name()
-                        ),
-                    ));
-                }
-            },
-            None => None,
-        };
+        // Starting anyway would let a session that must not write do so.
+        shared.mode_for(self.agent.as_deref())?;
         // Best effort: a stale saved model or agent must not stop the chat from opening.
         let _ = shared.apply(
             self.model.as_deref(),
             self.effort.as_deref(),
-            agent.as_deref(),
+            self.agent.as_deref(),
         );
+        if self.read_only && !shared.runs_read_only() {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "{} did not switch to a read-only mode",
+                    shared.dialect.name()
+                ),
+            ));
+        }
         Ok(resumed)
     }
 }
@@ -763,6 +765,82 @@ impl ConfigOption {
     fn is(&self, category: &str, id: &str) -> bool {
         self.category == category || (self.category.is_empty() && self.id == id)
     }
+
+    /// A thinking switch (`false`/`true`) rather than a list of levels.
+    fn is_switch(&self) -> bool {
+        self.values.len() == 2
+            && self
+                .values
+                .iter()
+                .all(|item| item.value == "false" || item.value == "true")
+    }
+
+    fn offers(&self, value: &str) -> bool {
+        self.values.iter().any(|item| item.value == value)
+    }
+}
+
+/// Effort choices for a thinking switch: `off` turns thinking off, `on` turns it on where the
+/// model has no levels (with levels, picking one turns it on).
+const THINKING_OFF: &str = "off";
+const THINKING_ON: &str = "on";
+
+/// How the session sets reasoning: a list of levels, a thinking switch, or both. Cursor names the
+/// levels differently per model (`effort`, `reasoning`, `reasoning_effort`) and gives some Claude
+/// models a `thinking` switch next to them, all under the `thought_level` category.
+struct Reasoning {
+    levels: Option<ConfigOption>,
+    switch: Option<ConfigOption>,
+}
+
+impl Reasoning {
+    fn of(config: &[ConfigOption]) -> Self {
+        let offered: Vec<&ConfigOption> = config
+            .iter()
+            .filter(|option| option.is("thought_level", "effort"))
+            .collect();
+        Self {
+            levels: offered
+                .iter()
+                .find(|option| !option.is_switch())
+                .map(|option| (*option).clone()),
+            switch: offered
+                .iter()
+                .find(|option| option.is_switch())
+                .map(|option| (*option).clone()),
+        }
+    }
+
+    /// What the person picks from, without the explicit `default` entry.
+    fn choices(&self) -> Vec<String> {
+        let mut choices = Vec::new();
+        if self.switch.is_some() {
+            choices.push(THINKING_OFF.to_string());
+        }
+        match &self.levels {
+            Some(levels) => choices.extend(
+                levels
+                    .values
+                    .iter()
+                    .map(|item| item.value.clone())
+                    .filter(|value| value != "default"),
+            ),
+            None if self.switch.is_some() => choices.push(THINKING_ON.to_string()),
+            None => {}
+        }
+        choices
+    }
+}
+
+/// Which current values become the defaults that `None` goes back to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Defaults {
+    /// The session just opened: all of them.
+    All,
+    /// The model changed: the options that depend on it start at the new model's own values.
+    OfModel,
+    /// Only options not seen before.
+    New,
 }
 
 fn parse_config_options(value: &Value) -> Vec<ConfigOption> {
@@ -832,6 +910,8 @@ struct AcpShared {
     state: Mutex<AcpState>,
     opening: Mutex<Opening>,
     opened: Condvar,
+    /// Only investigates: it never runs in a mode that writes.
+    read_only: bool,
 }
 
 /// Where opening the agent's session stands.
@@ -905,14 +985,57 @@ impl AcpShared {
         }
     }
 
-    fn remember_config(&self, options: Vec<ConfigOption>, first: bool) {
-        if first {
+    fn remember_config(&self, options: Vec<ConfigOption>, defaults: Defaults) {
+        {
             let mut initial = self.initial.lock();
             for option in &options {
-                initial.insert(option.id.clone(), option.current.clone());
+                let bound_to_model = !option.is("model", "model") && !option.is("mode", "mode");
+                if defaults == Defaults::All || (defaults == Defaults::OfModel && bound_to_model) {
+                    initial.insert(option.id.clone(), option.current.clone());
+                } else {
+                    initial
+                        .entry(option.id.clone())
+                        .or_insert_with(|| option.current.clone());
+                }
             }
         }
         *self.config.lock() = options;
+    }
+
+    /// The mode to run in for the one wanted (`None` is the default). A read-only session only
+    /// ever runs in a mode that does not write, whatever was chosen.
+    fn mode_for(&self, agent: Option<&str>) -> Result<Option<String>> {
+        if !self.read_only {
+            return Ok(agent.map(str::to_string));
+        }
+        if let Some(agent) = agent.filter(|agent| self.dialect.read_only_modes().contains(agent)) {
+            return Ok(Some(agent.to_string()));
+        }
+        self.dialect
+            .read_only_mode(&self.mode_values())
+            .map(Some)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "{} offers no read-only mode (plan or ask)",
+                        self.dialect.name()
+                    ),
+                )
+            })
+    }
+
+    /// False when the session reports a mode that writes.
+    fn runs_read_only(&self) -> bool {
+        self.config
+            .lock()
+            .iter()
+            .find(|option| option.is("mode", "mode"))
+            .is_none_or(|option| {
+                self.dialect
+                    .read_only_modes()
+                    .contains(&option.current.as_str())
+            })
     }
 
     /// The modes the agent offers, as last reported.
@@ -948,44 +1071,82 @@ impl AcpShared {
             Some(HANDSHAKE_TIMEOUT),
         )?;
         if let Some(options) = reply.get("configOptions") {
-            self.remember_config(parse_config_options(options), false);
+            let model = self
+                .option_id("model", "model")
+                .is_some_and(|model| model == config_id);
+            let defaults = if model {
+                Defaults::OfModel
+            } else {
+                Defaults::New
+            };
+            self.remember_config(parse_config_options(options), defaults);
         }
         Ok(())
     }
 
+    /// Sets an option to `target` (`None`: back to its default) unless it already has it.
+    fn set_to(&self, config_id: &str, target: Option<&str>) -> Result<()> {
+        let target = match target {
+            Some(value) => value.to_string(),
+            None => match self.initial.lock().get(config_id) {
+                Some(value) => value.clone(),
+                None => return Ok(()),
+            },
+        };
+        let current = self
+            .config
+            .lock()
+            .iter()
+            .find(|option| option.id == config_id)
+            .map(|option| option.current.clone());
+        if current.as_deref() == Some(target.as_str()) {
+            return Ok(());
+        }
+        self.set_config(config_id, &target)
+    }
+
     /// Moves the session to the wanted model, agent and effort; `None` means the default.
     fn apply(&self, model: Option<&str>, effort: Option<&str>, agent: Option<&str>) -> Result<()> {
-        // Model first: the effort levels on offer depend on it.
-        for (category, id, wanted) in [
-            ("model", "model", model),
-            ("mode", "mode", agent),
-            ("thought_level", "effort", effort),
-        ] {
-            let Some(config_id) = self.option_id(category, id) else {
-                continue;
-            };
-            let target = match wanted {
-                Some(value) => Some(value.to_string()),
-                // Back to default: the effort option has an explicit `default` value.
-                None if category == "thought_level" && self.dialect == Dialect::OpenCode => {
-                    Some("default".to_string())
-                }
-                None => self.initial.lock().get(&config_id).cloned(),
-            };
-            let Some(target) = target else {
-                continue;
-            };
-            let current = self
-                .config
-                .lock()
-                .iter()
-                .find(|option| option.id == config_id)
-                .map(|option| option.current.clone());
-            if current.as_deref() != Some(target.as_str()) {
-                self.set_config(&config_id, &target)?;
-            }
+        // Model first: the reasoning options on offer depend on it.
+        if let Some(config_id) = self.option_id("model", "model") {
+            self.set_to(&config_id, model)?;
         }
-        Ok(())
+        if let Some(config_id) = self.option_id("mode", "mode") {
+            let mode = self.mode_for(agent)?;
+            self.set_to(&config_id, mode.as_deref())?;
+        }
+        self.apply_effort(effort)
+    }
+
+    fn apply_effort(&self, effort: Option<&str>) -> Result<()> {
+        let reasoning = Reasoning::of(&self.config.lock());
+        let Some(effort) = effort else {
+            if let Some(switch) = &reasoning.switch {
+                self.set_to(&switch.id, None)?;
+            }
+            if let Some(levels) = &reasoning.levels {
+                // OpenCode's levels have an explicit `default` value.
+                let default = (self.dialect == Dialect::OpenCode).then_some("default");
+                self.set_to(&levels.id, default)?;
+            }
+            return Ok(());
+        };
+        match (&reasoning.switch, &reasoning.levels) {
+            (Some(switch), _) if effort == THINKING_OFF => self.set_to(&switch.id, Some("false")),
+            (Some(switch), None) if effort == THINKING_ON => self.set_to(&switch.id, Some("true")),
+            (switch, Some(levels)) if levels.offers(effort) => {
+                if let Some(switch) = switch {
+                    self.set_to(&switch.id, Some("true"))?;
+                }
+                // Turning thinking on may list the levels anew.
+                let levels = Reasoning::of(&self.config.lock())
+                    .levels
+                    .map_or_else(|| levels.id.clone(), |levels| levels.id);
+                self.set_to(&levels, Some(effort))
+            }
+            // A level this model does not have (left from another model): it keeps its own.
+            _ => Ok(()),
+        }
     }
 
     fn with_exit_info(&self, message: String) -> String {
@@ -1575,6 +1736,12 @@ impl BackendSession for AcpSession {
         self.shared.wait_open().is_ok() && self.shared.apply(model, effort, agent).is_ok()
     }
 
+    /// Cursor switches model in about a second and a half, against five or so for a new process
+    /// and session.
+    fn keeps_conversation_on_model_change(&self) -> bool {
+        self.shared.dialect == Dialect::Cursor
+    }
+
     fn options(&self) -> SessionOptions {
         // The agent lists them when its session opens.
         let _ = self.shared.wait_open();
@@ -1601,12 +1768,8 @@ impl BackendSession for AcpSession {
                 })
                 .collect(),
             default_model,
-            // Levels of the model in use, without the explicit `default` entry.
-            efforts: values("thought_level", "effort")
-                .into_iter()
-                .map(|item| item.value)
-                .filter(|value| value != "default")
-                .collect(),
+            // Levels of the model in use.
+            efforts: Reasoning::of(&config).choices(),
             agents: values("mode", "mode")
                 .into_iter()
                 .map(|item| AgentChoice {

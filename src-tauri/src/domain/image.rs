@@ -1,5 +1,4 @@
-//! Pictures a user attaches: what is accepted, judged by the bytes and not by the name or the type
-//! the sender claimed. Only a few picture formats are taken for now.
+//! Attachment limits and validation. The legacy image wire format also carries documents.
 
 use base64::Engine as _;
 
@@ -55,32 +54,44 @@ pub fn decode_uploads(uploads: &[ImageUpload]) -> Result<Vec<DecodedImage>> {
     if uploads.len() > MAX_IMAGES {
         return Err(Error::new(
             ErrorCode::Invalid,
-            format!("at most {MAX_IMAGES} images go with one message"),
+            format!("at most {MAX_IMAGES} files go with one message"),
         ));
     }
     let mut decoded = Vec::new();
     for (index, upload) in uploads.iter().enumerate() {
         let name = clean_name(&upload.name, &format!("image {}", index + 1));
+        if upload.data.len() > super::document::MAX_DOCUMENT_BYTES.div_ceil(3) * 4 {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                format!("{name} is over 20 MB"),
+            ));
+        }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(upload.data.trim())
             .map_err(|_| {
-                Error::new(
-                    ErrorCode::Invalid,
-                    format!("{name} is not valid image data"),
-                )
+                Error::new(ErrorCode::Invalid, format!("{name} is not valid file data"))
             })?;
-        if bytes.len() > MAX_IMAGE_BYTES {
+        let image_mime = sniff(&bytes);
+        let limit = if image_mime.is_some() {
+            MAX_IMAGE_BYTES
+        } else {
+            super::document::MAX_DOCUMENT_BYTES
+        };
+        if bytes.len() > limit {
             return Err(Error::new(
                 ErrorCode::Invalid,
-                format!("{name} is over {} MB", MAX_IMAGE_BYTES / 1024 / 1024),
+                format!("{name} is over {} MB", limit / 1024 / 1024),
             ));
         }
-        let mime = sniff(&bytes).ok_or_else(|| {
+        let mime = image_mime.or_else(|| super::document::mime(&upload.name, &bytes)).ok_or_else(|| {
             Error::new(
                 ErrorCode::Invalid,
-                format!("{name} is not a PNG, JPEG, GIF or WebP image"),
+                format!("{name} is not a PNG, JPEG, GIF or WebP image, HTML, PDF, Markdown or DOCX document"),
             )
         })?;
+        if image_mime.is_none() {
+            super::document::validate(mime, &bytes)?;
+        }
         decoded.push(DecodedImage { name, mime, bytes });
     }
     Ok(decoded)
