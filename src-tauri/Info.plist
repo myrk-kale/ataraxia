@@ -4,5 +4,14 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Ataraxia listens when you press the microphone button in the message field, to turn what you say into text on this computer.</string>
+  <!-- The built-in browser opens whatever the developer types, including http:// pages and dev
+       servers on this machine, which the system would otherwise refuse inside a web view. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
 </dict>
 </plist>

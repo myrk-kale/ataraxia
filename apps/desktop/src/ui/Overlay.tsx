@@ -19,6 +19,8 @@ export function Dialog({
   size = "md",
   wide = false,
   className = "",
+  dim = false,
+  dismissable = true,
   children,
 }: {
   isOpen: boolean;
@@ -30,11 +32,16 @@ export function Dialog({
   wide?: boolean;
   /** Extra classes for the dialog itself, for a panel that needs its own width. */
   className?: string;
+  /** Darkens everything behind it, for a dialog that is meant to hold the whole attention. */
+  dim?: boolean;
+  /** Whether a click outside closes it (Esc always does). */
+  dismissable?: boolean;
   children: ReactNode;
 }) {
   return (
     <Modal.Backdrop
-      isDismissable
+      className={dim ? "bg-black/65" : undefined}
+      isDismissable={dismissable}
       isOpen={isOpen}
       variant="transparent"
       onOpenChange={(open) => {

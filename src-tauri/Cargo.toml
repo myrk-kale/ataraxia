@@ -1,6 +1,6 @@
 [package]
 name = "ataraxia-ide"
-version = "0.20.2"
+version = "0.21.0"
 description = "Desktop environment for agent-assisted software development: chat with coding agents, review what they wrote, keep decisions and flows"
 authors = ["Kale"]
 edition = "2024"
@@ -63,6 +63,7 @@ base64 = "0.23.1"
 command-group = "5.0.1"
 ignore = "0.4"
 parking_lot = "0.12.5"
+png = "0.18"
 portable-pty = "0.9.0"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -70,7 +71,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 sysinfo = "=0.36.1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable", "devtools"] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
@@ -96,6 +97,13 @@ whisper-rs = "0.16"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 whisper-rs = { version = "0.16", features = ["metal"] }
+
+# A picture of a page: WebKit's own snapshot call, which tauri does not expose.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSValue", "NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 rustix = { version = "1.1", features = ["fs"] }

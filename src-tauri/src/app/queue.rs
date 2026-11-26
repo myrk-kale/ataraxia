@@ -25,6 +25,9 @@ pub(crate) struct QueueState {
     /// the user queued meanwhile. The reason is shown with the pause.
     hold: bool,
     reason: Option<String>,
+    /// The person pressed Pause: nothing goes out by itself, whatever ends well, until they
+    /// resume or ask for one by name.
+    user_hold: bool,
     /// The first message was asked for by name: it goes out when the running turn ends, however
     /// that turn ends.
     force: bool,
@@ -52,7 +55,9 @@ impl QueueState {
     pub(crate) fn view(&self) -> MessageQueue {
         MessageQueue {
             items: self.items.iter().map(Entry::view).collect(),
-            paused: self.paused,
+            // What the person held shows at once; what the agent asked to hold only when its
+            // turn has ended.
+            paused: self.paused || self.user_hold,
             reason: self.paused.then(|| self.reason.clone()).flatten(),
         }
     }
@@ -189,6 +194,42 @@ impl Engine {
         Ok(self.queue(session_id))
     }
 
+    /// The person stops the queue from going on by itself, or lets it go on again. Held, the
+    /// messages wait (also after a /compact or any other turn that ends well) until it is
+    /// resumed, a message is sent, or one is sent now. Resuming sends the next message at once
+    /// when the agent is free, else when the running turn ends.
+    pub fn queue_set_paused(&self, session_id: SessionId, paused: bool) -> Result<MessageQueue> {
+        if self.session(session_id)?.kind != SessionKind::Chat {
+            return Err(Error::new(ErrorCode::Invalid, "only chats have a queue"));
+        }
+        if paused {
+            let view = {
+                let mut queues = self.queues.lock();
+                let state = queues.entry(session_id).or_default();
+                state.user_hold = true;
+                state.view()
+            };
+            self.emit_queue(session_id, view);
+            return Ok(self.queue(session_id));
+        }
+        let view = {
+            let mut queues = self.queues.lock();
+            let Some(state) = queues.get_mut(&session_id) else {
+                return Ok(MessageQueue::default());
+            };
+            state.user_hold = false;
+            state.paused = false;
+            state.hold = false;
+            state.reason = None;
+            state.view()
+        };
+        self.emit_queue(session_id, view);
+        if !self.is_working(session_id) && !self.rate_waits.lock().contains_key(&session_id) {
+            self.queue_advance(session_id, true);
+        }
+        Ok(self.queue(session_id))
+    }
+
     /// Sends one queued message now: the running turn is stopped and this message goes next,
     /// ahead of the rest. With no turn running it simply goes out.
     pub fn queue_send_now(&self, session_id: SessionId, id: &str) -> Result<MessageQueue> {
@@ -210,6 +251,7 @@ impl Engine {
             state.force = true;
             state.paused = false;
             state.hold = false;
+            state.user_hold = false;
             state.reason = None;
             state.view()
         };
@@ -245,6 +287,10 @@ impl Engine {
             };
             if state.items.is_empty() {
                 queues.remove(&session_id);
+                return;
+            }
+            // The person held the queue: whatever ended, it waits for them.
+            if state.user_hold && !state.force {
                 return;
             }
             // The agent said something is left undone: the turn that said it ends here, and what
@@ -297,6 +343,7 @@ impl Engine {
                     state.force = false;
                     state.paused = false;
                     state.hold = false;
+                    state.user_hold = false;
                     state.reason = None;
                     if state.items.is_empty() {
                         queues.remove(&session_id);

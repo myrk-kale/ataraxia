@@ -200,6 +200,62 @@ describe("questions the agent asks", () => {
     });
   });
 
+  it("goes back to the question before and finds the answer as it was left", () => {
+    show(ask(single, multi));
+    expect(buttons().some((item) => item.textContent === "Back")).toBe(false);
+    act(() => row("Resume").click());
+    act(() => row("Tests").click());
+    act(() => buttons().find((item) => item.textContent === "Back")!.click());
+    expect(host.textContent).toContain("Question 1 of 2");
+    expect(row("Resume").getAttribute("aria-current")).toBe("true");
+    act(() => row("Hide").click());
+    expect(host.textContent).toContain("Question 2 of 2");
+    // What was ticked before going back is still ticked.
+    expect(row("Tests").getAttribute("aria-checked")).toBe("false");
+    act(() => row("Lint").click());
+    act(() => buttons().find((item) => item.textContent === "Send")!.click());
+    expect(resolve).toHaveBeenLastCalledWith(true, {
+      "Which approach?": "Hide",
+      "Which checks?": "Lint",
+    });
+  });
+
+  it("keeps what was ticked when going back and forth", () => {
+    show(ask(multi, single));
+    act(() => row("Tests").click());
+    act(() => buttons().find((item) => item.textContent === "Next")!.click());
+    act(() => buttons().find((item) => item.textContent === "Back")!.click());
+    expect(row("Tests").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("passes over a question without answering it and sends the others", () => {
+    show(ask(single, multi));
+    act(() => buttons().find((item) => item.textContent === "Skip")!.click());
+    expect(resolve).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Question 2 of 2");
+    act(() => row("Lint").click());
+    act(() => buttons().find((item) => item.textContent === "Send")!.click());
+    expect(resolve).toHaveBeenLastCalledWith(true, { "Which checks?": "Lint" });
+  });
+
+  it("declines the request when every question was passed over", () => {
+    show(ask(single, multi));
+    act(() => buttons().find((item) => item.textContent === "Skip")!.click());
+    act(() => buttons().find((item) => item.textContent === "Skip")!.click());
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenLastCalledWith(false);
+  });
+
+  it("drops an answer that was passed over after going back", () => {
+    show(ask(single, multi));
+    act(() => row("Resume").click());
+    act(() => buttons().find((item) => item.textContent === "Back")!.click());
+    act(() => buttons().find((item) => item.textContent === "Skip")!.click());
+    act(() => row("Lint").click());
+    act(() => buttons().find((item) => item.textContent === "Send")!.click());
+    expect(resolve).toHaveBeenLastCalledWith(true, { "Which checks?": "Lint" });
+  });
+
   it("is skipped with Esc or the Skip button, which declines it", () => {
     show(ask(single));
     const esc = press("Escape");

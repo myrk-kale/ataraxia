@@ -133,6 +133,18 @@ pub trait AgentRuntime: Send + Sync {
         effort: Option<String>,
         agent: Option<String>,
     ) -> Result<ChatSession>;
+    /// Chooses the profile (account) a chat starts its harness with (`None`: the default way). A
+    /// running process is replaced by one under the new profile at the next message.
+    fn set_profile(
+        &self,
+        _session_id: &SessionId,
+        _profile: Option<String>,
+    ) -> Result<ChatSession> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this runtime does not start harnesses under a profile",
+        ))
+    }
     /// Moves a chat to another harness. The transcript stays; the agent starts fresh.
     fn switch_provider(
         &self,
@@ -480,6 +492,18 @@ pub trait Store: Send + Sync {
         agent: Option<&str>,
         updated_at: &str,
     ) -> Result<()>;
+    /// Chooses the launch profile of a chat (`None`: the default way).
+    fn set_session_profile(
+        &self,
+        _id: SessionId,
+        _profile: Option<&str>,
+        _updated_at: &str,
+    ) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "this store cannot keep a profile for a chat",
+        ))
+    }
     /// Changes what a hidden session is for (a read-only BTW becomes a delegated change).
     fn update_session_kind(&self, _id: SessionId, _kind: SessionKind, _now: &str) -> Result<()> {
         Err(Error::new(
@@ -799,4 +823,70 @@ pub struct StartedTurn {
 /// implementation may keep state tied to the calling thread.
 pub trait SleepGuard: Send + Sync {
     fn hold(&self, awake: bool);
+}
+
+// ------------------------------------------------------------------ browser
+
+/// A tab to be created.
+#[derive(Debug, Clone)]
+pub struct TabSpec {
+    pub id: crate::domain::browser::TabId,
+    pub url: String,
+    pub profile: crate::domain::browser::Profile,
+    pub placement: crate::domain::browser::Placement,
+}
+
+/// A cookie as the webview's store has it, httpOnly ones included.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CookieInfo {
+    pub name: String,
+    pub value: String,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires: Option<String>,
+}
+
+/// What the built-in browser needs of the platform: pages in webviews it can place, navigate, run
+/// scripts in and photograph. The tauri adapter is the real one; tests use a fake.
+pub trait BrowserEngine: Send + Sync {
+    fn create(&self, spec: &TabSpec) -> Result<()>;
+    fn close(&self, id: crate::domain::browser::TabId) -> Result<()>;
+    fn navigate(&self, id: crate::domain::browser::TabId, url: &str) -> Result<()>;
+    fn place(
+        &self,
+        id: crate::domain::browser::TabId,
+        placement: crate::domain::browser::Placement,
+    ) -> Result<()>;
+    /// Runs a script in the page and answers with the JSON of its value. Never call it with a lock
+    /// held: the answer comes back through the platform's own event loop.
+    fn eval(
+        &self,
+        id: crate::domain::browser::TabId,
+        script: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String>;
+    /// A PNG of what the page shows now, or of the part of it inside `clip` (page coordinates).
+    fn screenshot(
+        &self,
+        id: crate::domain::browser::TabId,
+        clip: Option<crate::domain::browser::Rect>,
+    ) -> Result<Vec<u8>>;
+    fn devtools(&self, id: crate::domain::browser::TabId) -> Result<()>;
+    fn cookies(&self, id: crate::domain::browser::TabId, url: &str) -> Result<Vec<CookieInfo>>;
+    /// Forgets everything a profile has stored (cookies, storage, cache).
+    fn clear_data(&self, profile: crate::domain::browser::Profile) -> Result<()>;
+}
+
+/// What the platform tells the browser about its pages.
+pub trait EngineEvents: Send + Sync {
+    /// A page began loading (`finished` false) or finished.
+    fn page_load(&self, id: crate::domain::browser::TabId, url: &str, finished: bool);
+    fn title(&self, id: crate::domain::browser::TabId, title: &str);
+    /// A navigation is about to start; `false` refuses it.
+    fn navigating(&self, id: crate::domain::browser::TabId, url: &str) -> bool;
+    /// A page asked for a window of its own (`target=_blank`, `window.open`).
+    fn popup(&self, from: crate::domain::browser::TabId, url: &str);
 }

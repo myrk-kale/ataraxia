@@ -1,6 +1,7 @@
 //! Pure domain types. No I/O.
 
 pub mod agent;
+pub mod browser;
 pub mod chat;
 pub mod error;
 pub mod ids;

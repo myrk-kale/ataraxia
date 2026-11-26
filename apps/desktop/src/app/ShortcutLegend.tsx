@@ -3,7 +3,7 @@ import { Button } from "../ui/Button";
 import { Dialog, Key } from "../ui/Overlay";
 import { SHORTCUT_LEGEND } from "./shortcuts";
 
-export function ShortcutLegend({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+export function ShortcutLegend({ isOpen, onClose, onTour }: { isOpen: boolean; onClose: () => void; onTour?: () => void }) {
   return (
     <Dialog className="w-[min(640px,92vw)] max-w-none" isOpen={isOpen} label="Keyboard shortcuts" size="lg" onClose={onClose}>
       <div className="flex flex-col gap-4 p-6">
@@ -26,7 +26,14 @@ export function ShortcutLegend({ isOpen, onClose }: { isOpen: boolean; onClose: 
             </li>
           ))}
         </ul>
-        <p className="text-small text-cg-muted">Shortcuts never fire while you type, compose with an IME or edit code.</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-small text-cg-muted">Shortcuts never fire while you type, compose with an IME or edit code.</p>
+          {onTour ? (
+            <Button size="sm" variant="quiet" onClick={onTour}>
+              Replay the welcome tour
+            </Button>
+          ) : null}
+        </div>
       </div>
     </Dialog>
   );

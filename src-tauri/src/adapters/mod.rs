@@ -1,6 +1,7 @@
 //! Driven and driving adapters.
 
 pub mod agents;
+pub mod browser;
 pub mod fs;
 pub mod git;
 pub mod lsp;

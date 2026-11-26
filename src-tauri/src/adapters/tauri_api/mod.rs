@@ -1,6 +1,7 @@
 //! Tauri commands: the driving adapter at the UI edge.
 
 mod autocomplete;
+mod browser;
 mod events;
 mod insights;
 mod lsp;
@@ -27,6 +28,7 @@ use crate::domain::{
 use crate::ports::{PtyEnsureResponse, PtySpawnRequest};
 
 pub use autocomplete::*;
+pub use browser::*;
 pub use insights::*;
 pub use lsp::*;
 pub use memory::*;
@@ -347,7 +349,7 @@ fn change_profiles(
     Ok(profiles)
 }
 
-/// Every launch profile and which one each harness starts with.
+/// Every launch profile, and the one new chats of each harness start with.
 #[tauri::command]
 pub fn profiles_list(state: tauri::State<'_, AppState>) -> crate::domain::Profiles {
     let stored = state
@@ -378,17 +380,18 @@ pub fn profile_delete(
     })
 }
 
-/// Chooses the profile a harness starts with from now on (`None`: the default way). Chats
-/// already running switch at their next message.
-#[tauri::command]
-pub fn profile_set_active(
+/// Chooses the profile (account) one chat starts its harness with (`None`: the default way).
+/// The chat switches at its next message.
+#[tauri::command(async)]
+pub fn agent_set_profile(
     state: tauri::State<'_, AppState>,
-    provider: ProviderKind,
-    id: Option<String>,
-) -> std::result::Result<crate::domain::Profiles, String> {
-    change_profiles(&state, |profiles| {
-        profiles.set_active(provider, id.as_deref())
-    })
+    session_id: SessionId,
+    profile: Option<String>,
+) -> std::result::Result<ChatSession, String> {
+    state
+        .agent_runtime()
+        .set_profile(&session_id, profile)
+        .map_err(map_error)
 }
 
 /// What a profile's command would run, so the form can say so before anything is saved.
@@ -664,6 +667,19 @@ pub fn agent_queue_remove(
     id: String,
 ) -> std::result::Result<MessageQueue, String> {
     Ok(state.engine.queue_remove(session_id, &id))
+}
+
+/// Holds the chat's queue so it does not go on by itself, or lets it go on again.
+#[tauri::command(async)]
+pub fn agent_queue_set_paused(
+    state: tauri::State<'_, AppState>,
+    session_id: SessionId,
+    paused: bool,
+) -> std::result::Result<MessageQueue, String> {
+    state
+        .engine
+        .queue_set_paused(session_id, paused)
+        .map_err(map_error)
 }
 
 /// What the chat has scheduled to be sent to the agent later, soonest first.

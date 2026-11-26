@@ -487,6 +487,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),

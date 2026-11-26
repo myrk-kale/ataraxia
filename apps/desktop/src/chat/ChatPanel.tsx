@@ -16,12 +16,14 @@ import {
   agentCancel,
   agentCancelRateWait,
   agentConfigureSession,
+  agentSetProfile,
   agentEnqueue,
   agentGetOptions,
   agentGetSnapshot,
   agentMessageSubagent,
   agentPrompt,
   agentQueueRemove,
+  agentQueueSetPaused,
   agentQueueSendNow,
   agentRepositoryMcpApproval,
   agentResolvePermission,
@@ -63,7 +65,9 @@ import { useBackground } from "./background";
 import { Hero } from "./Hero";
 import { Loader } from "./Loader";
 import { seedPicture } from "./MessageImages";
+import { togglePet } from "../pet/store";
 import { ProfileMark } from "./ProfileMark";
+import { ProfileSelect } from "./ProfileSelect";
 import { QueuedMessages } from "./QueuedMessages";
 import { ScheduledTasks } from "./ScheduledTasks";
 import { SessionSettings } from "./SessionSettings";
@@ -558,8 +562,18 @@ export function ChatPanel({
           `/new — create a new chat and keep this one (${onNewSession ? "available" : "unavailable here"})`,
           `/compact${provider?.capabilities.compact_instructions ? " [instructions]" : ""} — compact this conversation (${provider?.capabilities.compact ? "available" : "unavailable"})`,
           `/stop — stop the current run (${busy ? "available" : "no run active"})`,
+          "/pet — show or hide the pet (available)",
         ].join("\n"),
       );
+      return;
+    }
+    if (commandName === "pet") {
+      if (text !== "/pet") {
+        setAttachNotice("Use /pet without arguments.");
+        return;
+      }
+      setDraft("");
+      setAttachNotice(togglePet() === "off" ? "The pet is tucked away. Type /pet to bring it back." : "The pet is back.");
       return;
     }
     if (commandName === "workspace") {
@@ -780,6 +794,12 @@ export function ChatPanel({
     );
   }
 
+  function setQueuePaused(paused: boolean) {
+    void agentQueueSetPaused(sessionId, paused).catch((err: unknown) =>
+      dispatch({ type: "failed", message: errorText(err) }),
+    );
+  }
+
   function removeQueued(id: string) {
     const text = shownQueue.items.find((item) => item.id === id)?.text ?? "";
     // With nothing typed in the field, taking a message out of the queue puts it back there to be
@@ -793,6 +813,15 @@ export function ChatPanel({
         }
       })
       .catch((err: unknown) => dispatch({ type: "failed", message: errorText(err) }));
+  }
+
+  async function chooseProfile(profile: string | null) {
+    try {
+      // The chat switches at its next message: nothing restarts until then, so nothing to reload.
+      onSessionChange(await agentSetProfile(sessionId, profile));
+    } catch (err) {
+      dispatch({ type: "failed", message: errorText(err) });
+    }
   }
 
   async function configure(model: string | null, effort: string | null, agent: string | null) {
@@ -959,7 +988,7 @@ export function ChatPanel({
       {meterSlot && !bare
         ? createPortal(
             <>
-              <UsageMeter label={providerLabel} provider={session.provider} />
+              <UsageMeter label={providerLabel} profileId={session.profile} provider={session.provider} />
               <ContextMeter usage={state.contextUsage} />
             </>,
             meterSlot,
@@ -1260,7 +1289,7 @@ export function ChatPanel({
                 void scheduleCancel(sessionId, id).catch(() => {});
               }}
             />
-            <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} />
+            <QueuedMessages queue={shownQueue} onRemove={removeQueued} onSendNow={sendQueuedNow} onSetPaused={setQueuePaused} />
           </>
         )}
         <div className="cg-field relative rounded-cg-lg bg-cg-tint px-4 py-3.5">
@@ -1330,9 +1359,20 @@ export function ChatPanel({
             <div className="flex min-w-0 items-center gap-4">
               {bare ? null : (
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <ProfileMark provider={session.provider} size={24} />
+                  <ProfileMark profileId={session.profile} provider={session.provider} size={24} />
                   {providerSelector ?? <span className="truncate text-ui font-semibold text-cg-ink">{MAIN_AGENT}</span>}
                 </div>
+              )}
+              {bare || activeSubagent ? null : (
+                <ProfileSelect
+                  disabled={busy || !state.loaded}
+                  disabledReason="Wait for the current turn to finish"
+                  provider={session.provider}
+                  value={session.profile}
+                  onChange={(profile) => {
+                    void chooseProfile(profile);
+                  }}
+                />
               )}
               <StatusDot status={state.status} />
               {activeSubagent ? null : (

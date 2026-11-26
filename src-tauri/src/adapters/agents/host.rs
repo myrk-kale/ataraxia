@@ -314,12 +314,36 @@ impl Inner {
         )
     }
 
-    /// How the active profile of `provider` starts it: its id and what it changes. Nothing
-    /// changes for the default. A profile whose program cannot be found is an error that says
-    /// which, so the chat shows why it did not start.
-    fn launch_for(&self, provider: ProviderKind) -> Result<(Option<String>, Option<Launch>)> {
+    /// Keeps the profile a chat chose as the one new chats of that harness start with.
+    fn remember_profile(&self, provider: ProviderKind, id: Option<&str>) {
+        let mut profiles = self.profiles();
+        if profiles.set_active(provider, id).is_err() {
+            return;
+        }
+        match profiles.to_json() {
+            Ok(json) => {
+                if let Err(error) = self.store.set_preference(PROFILES_KEY, &json) {
+                    eprintln!("ataraxia: could not remember the chosen profile: {error}");
+                }
+            }
+            Err(error) => eprintln!("ataraxia: could not remember the chosen profile: {error}"),
+        }
+    }
+
+    /// How the profile a chat chose starts `provider`: its id and what it changes. Nothing
+    /// changes for the default, nor for a profile that was deleted or belongs to another harness.
+    /// A profile whose program cannot be found is an error that says which, so the chat shows why
+    /// it did not start.
+    fn launch_for(
+        &self,
+        provider: ProviderKind,
+        chosen: Option<&str>,
+    ) -> Result<(Option<String>, Option<Launch>)> {
         let profiles = self.profiles();
-        let Some(profile) = profiles.active_for(provider) else {
+        let Some(profile) = chosen
+            .and_then(|id| profiles.get(id))
+            .filter(|profile| profile.provider == provider)
+        else {
             return Ok((None, None));
         };
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -1292,7 +1316,9 @@ impl AgentHost {
             .store
             .get_session(*session_id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
-        let (wanted, _) = self.inner.launch_for(session.provider)?;
+        let (wanted, _) = self
+            .inner
+            .launch_for(session.provider, session.profile.as_deref())?;
         if wanted == running_under {
             return Ok(());
         }
@@ -1466,10 +1492,17 @@ impl AgentRuntime for AgentHost {
                     // usual one being installed.
                     let by_profile = self
                         .inner
-                        .launch_for(item.kind)
-                        .ok()
-                        .and_then(|(_, launch)| launch)
-                        .is_some_and(|launch| launch.program.is_some());
+                        .profiles()
+                        .profiles
+                        .iter()
+                        .filter(|profile| profile.provider == item.kind)
+                        .any(|profile| {
+                            self.inner
+                                .launch_for(item.kind, Some(&profile.id))
+                                .ok()
+                                .and_then(|(_, launch)| launch)
+                                .is_some_and(|launch| launch.program.is_some())
+                        });
                     if !by_profile {
                         item.available = false;
                         item.detail = Some(reason);
@@ -1703,8 +1736,10 @@ impl AgentRuntime for AgentHost {
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
         let session_id = session.id;
         let provider = session.provider;
-        // The profile is read once, here: this process runs under it until it is restarted.
-        let (profile, launch) = self.inner.launch_for(provider)?;
+        // The chat's profile is read once, here: this process runs under it until it is restarted.
+        let (profile, launch) = self
+            .inner
+            .launch_for(provider, session.profile.as_deref())?;
         let usage_profile = profile.clone();
         let current = Arc::new(AtomicBool::new(true));
         let emit_current = Arc::clone(&current);
@@ -1900,6 +1935,48 @@ impl AgentRuntime for AgentHost {
             }
         }
         Ok(updated)
+    }
+
+    fn set_profile(&self, session_id: &SessionId, profile: Option<String>) -> Result<ChatSession> {
+        let session = self
+            .inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        let profile = profile
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        if let Some(id) = &profile {
+            let known = self
+                .inner
+                .profiles()
+                .get(id)
+                .is_some_and(|found| found.provider == session.provider);
+            if !known {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "that profile does not exist for this harness",
+                ));
+            }
+        }
+        if session.profile == profile {
+            return Ok(session);
+        }
+        self.inner
+            .store
+            .set_session_profile(*session_id, profile.as_deref(), &now_rfc3339()?)?;
+        // The process under the old profile is replaced at the next message (`follow_profile`);
+        // a turn in progress is never interrupted.
+        if session.kind == crate::domain::SessionKind::Chat {
+            // New chats of this harness start with the account chosen last, as they do with the
+            // model and the effort.
+            self.inner
+                .remember_profile(session.provider, profile.as_deref());
+        }
+        self.inner
+            .store
+            .get_session(*session_id)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))
     }
 
     fn switch_provider(
@@ -2424,6 +2501,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: crate::domain::SessionKind::Chat,
             parent_session_id: None,
             created_at: "t".into(),
@@ -2828,19 +2906,16 @@ mod tests {
         }
     }
 
-    fn store_profiles(h: &Harness, active: Option<&str>, command: &str) {
-        let active = match active {
-            Some(id) => format!(r#","active":{{"fake":"{id}"}}"#),
-            None => String::new(),
-        };
+    /// Stores one profile, `work`, with this command. A chat uses it once it has chosen it.
+    fn store_profiles(h: &Harness, command: &str) {
         let json = format!(
-            r##"{{"profiles":[{{"id":"work","provider":"fake","name":"Work","color":"#3b82f6","command":{command:?}}}]{active}}}"##
+            r##"{{"profiles":[{{"id":"work","provider":"fake","name":"Work","color":"#3b82f6","command":{command:?}}}]}}"##
         );
         h.store.set_preference(PROFILES_KEY, &json).expect("store");
     }
 
     #[test]
-    fn a_chat_follows_the_active_profile_and_restarts_under_a_new_one_on_the_next_message() {
+    fn a_chat_follows_the_profile_it_chose_and_restarts_under_a_new_one_on_the_next_message() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let emit = Arc::new(Mutex::new(None));
         let mut h = harness_with_backend(Arc::new(Launches {
@@ -2864,8 +2939,26 @@ mod tests {
         finish_turn(&h);
         assert_eq!(seen.lock().len(), 1, "the same process answers again");
 
-        // The person switches account: the next message goes out under the new profile.
-        store_profiles(&h, Some("work"), "ACCOUNT=work sh -x");
+        // A profile that is not stored, or is another harness's, cannot be chosen.
+        store_profiles(&h, "ACCOUNT=work sh -x");
+        let error = h
+            .host
+            .set_profile(&h.session.id, Some("nobody".into()))
+            .expect_err("no such profile");
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(seen.lock().len(), 1);
+
+        // The person switches this chat's account: the next message goes out under the new profile.
+        let chosen = h
+            .host
+            .set_profile(&h.session.id, Some("work".into()))
+            .expect("choose");
+        assert_eq!(chosen.profile.as_deref(), Some("work"));
+        assert_eq!(
+            seen.lock().len(),
+            1,
+            "nothing restarts until the next message"
+        );
         h.sink.events.lock().clear();
         h.host.prompt(&h.session.id, "second").expect("prompt");
         let launches = seen.lock().clone();
@@ -2904,7 +2997,7 @@ mod tests {
 
         // A profile that cannot start fails the message with the reason and leaves the process
         // that is running alone.
-        store_profiles(&h, Some("work"), "/nowhere/at/all --x");
+        store_profiles(&h, "/nowhere/at/all --x");
         let launched = seen.lock().len();
         let error = h
             .host
@@ -2923,7 +3016,8 @@ mod tests {
         );
 
         // Back to the default.
-        store_profiles(&h, None, "sh");
+        store_profiles(&h, "sh");
+        h.host.set_profile(&h.session.id, None).expect("default");
         h.host.prompt(&h.session.id, "fourth").expect("prompt");
         assert_eq!(seen.lock().last().cloned(), Some(None));
         let _ = std::fs::remove_dir_all(dir);
@@ -2936,13 +3030,21 @@ mod tests {
         let h = harness();
         // The demo backend is always available; ask about a provider whose usual program is
         // missing through the same rule the listing uses.
-        store_profiles(&h, Some("work"), "ACCOUNT=work sh");
-        let (id, launch) = h.host.inner.launch_for(ProviderKind::Fake).expect("launch");
+        store_profiles(&h, "ACCOUNT=work sh");
+        let (id, launch) = h
+            .host
+            .inner
+            .launch_for(ProviderKind::Fake, Some("work"))
+            .expect("launch");
         assert_eq!(id.as_deref(), Some("work"));
         assert!(launch.expect("launch").program.is_some());
         // Only settings: nothing replaces the usual program.
-        store_profiles(&h, Some("work"), "ACCOUNT=work");
-        let (_, launch) = h.host.inner.launch_for(ProviderKind::Fake).expect("launch");
+        store_profiles(&h, "ACCOUNT=work");
+        let (_, launch) = h
+            .host
+            .inner
+            .launch_for(ProviderKind::Fake, Some("work"))
+            .expect("launch");
         assert!(launch.expect("launch").program.is_none());
     }
 
@@ -3127,6 +3229,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: crate::domain::SessionKind::Chat,
             parent_session_id: None,
             created_at: "t".into(),

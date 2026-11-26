@@ -29,6 +29,7 @@ use crate::domain::{
     ArtifactId, ArtifactKind, CodeRef, Decision, DecisionId, DecisionKind, DecisionMessage,
     DecisionState, Error, ErrorCode, InsightEvent, Result,
 };
+use crate::files::FileServer;
 use crate::ports::{ApiAccess, ApiGateway, Database, Git, InsightSink};
 
 // ------------------------------------------------------------------ errors
@@ -134,6 +135,8 @@ pub enum Endpoint {
     PauseQueue,
     ListTasks,
     GetTask,
+    ShareFile,
+    UnshareFile,
 }
 
 pub struct Route {
@@ -272,6 +275,22 @@ pub const ROUTES: &[Route] = &[
         path: "/v1/queue/pause",
         status: 200,
         description: "Hold the developer's message queue because something you were asked to do is left undone (a blocker, a step you could not finish, a question that stops the work). The queue is held when your turn ends and stays held until the developer acts, so the next queued message does not run on top of the problem. Body: reason? (one short sentence of what is pending). Do not call it when the work is done.",
+        write: true,
+    },
+    Route {
+        endpoint: Endpoint::ShareFile,
+        method: "POST",
+        path: "/v1/shares",
+        status: 201,
+        description: "Put a file on offer at a local address so the chat can show it (in an <object>) and the developer can download it. Only a file inside this chat's own folders can be shared, never a secret-looking one or anything in .git. Body: path (absolute, or relative to the chat's working directory), name? (the name it is saved under). Answers with url, download_url, name, mime, size and a `markdown` ```object block to put in your reply. It lasts until the app is closed. See files.md.",
+        write: true,
+    },
+    Route {
+        endpoint: Endpoint::UnshareFile,
+        method: "DELETE",
+        path: "/v1/shares/{share_id}",
+        status: 200,
+        description: "Stop offering a file that was shared.",
         write: true,
     },
     Route {
@@ -425,6 +444,56 @@ pub trait Scheduling: Send + Sync {
     }
 }
 
+/// The built-in browser, as the tools an agent calls.
+pub trait Browsing: Send + Sync {
+    fn tools(&self) -> Vec<Value>;
+    /// Runs a browser tool for a chat; `None` when `name` is not one of them.
+    fn call(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: &Value,
+    ) -> Option<crate::app::browser_tools::ToolReply>;
+}
+
+impl Browsing for crate::app::browser::Browser {
+    fn tools(&self) -> Vec<Value> {
+        crate::app::browser_tools::browser_tools()
+    }
+
+    fn call(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: &Value,
+    ) -> Option<crate::app::browser_tools::ToolReply> {
+        crate::app::browser::Browser::call(self, session, name, args)
+    }
+}
+
+/// Files an agent can put on offer on the local file server.
+pub trait FileSharing: Send + Sync {
+    /// Offers a file. The path is already vetted: canonical, a file, and one the chat may publish.
+    fn share(&self, path: &std::path::Path, name: Option<&str>)
+    -> Result<crate::files::SharedFile>;
+    /// Stops offering it; whether the id was known.
+    fn unshare(&self, id: &str) -> bool;
+}
+
+impl FileSharing for crate::files::FileServer {
+    fn share(
+        &self,
+        path: &std::path::Path,
+        name: Option<&str>,
+    ) -> Result<crate::files::SharedFile> {
+        FileServer::share(self, path, name)
+    }
+
+    fn unshare(&self, id: &str) -> bool {
+        self.revoke(id)
+    }
+}
+
 /// What one token may do: read and write the data of one chat session.
 pub struct ApiService {
     db: Arc<dyn Database>,
@@ -433,6 +502,8 @@ pub struct ApiService {
     anchor: Option<Arc<dyn Anchor>>,
     code_graph: Option<Arc<dyn CodeGraph>>,
     scheduler: Option<Arc<dyn Scheduling>>,
+    files: Option<Arc<dyn FileSharing>>,
+    browser: Option<Arc<dyn Browsing>>,
     /// Tells the window what a write changed, so an open tab shows it without being reloaded.
     sink: Option<Arc<dyn InsightSink>>,
 }
@@ -446,8 +517,20 @@ impl ApiService {
             anchor: None,
             code_graph: None,
             scheduler: None,
+            files: None,
+            browser: None,
             sink: None,
         }
+    }
+
+    pub fn with_browser(mut self, browser: Option<Arc<dyn Browsing>>) -> Self {
+        self.browser = browser;
+        self
+    }
+
+    pub fn with_files(mut self, files: Option<Arc<dyn FileSharing>>) -> Self {
+        self.files = files;
+        self
     }
 
     pub fn with_sink(mut self, sink: Option<Arc<dyn InsightSink>>) -> Self {
@@ -723,6 +806,42 @@ impl ApiService {
                     .ok_or_else(|| not_found("task not found"))?;
                 Ok(json!(task))
             }
+            Endpoint::ShareFile => {
+                let session = self.session_arg(args)?;
+                let files = self
+                    .files
+                    .as_ref()
+                    .ok_or_else(|| ApiError::invalid("sharing files is not available here"))?;
+                let path = self.shareable_path(session, &arg_str(args, "path"))?;
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty());
+                let shared = files.share(&path, name)?;
+                Ok(json!({
+                    "id": shared.id,
+                    "name": shared.name,
+                    "mime": shared.mime,
+                    "size": shared.size,
+                    "url": shared.url,
+                    "download_url": shared.download_url,
+                    "markdown": object_block(&shared),
+                }))
+            }
+            Endpoint::UnshareFile => {
+                self.session_arg(args)?;
+                let id = arg_str(args, "share_id");
+                let files = self
+                    .files
+                    .as_ref()
+                    .ok_or_else(|| ApiError::invalid("sharing files is not available here"))?;
+                if files.unshare(&id) {
+                    Ok(json!({ "unshared": true }))
+                } else {
+                    Err(not_found("that file is not shared"))
+                }
+            }
             Endpoint::PauseQueue => {
                 let session = self.session_arg(args)?;
                 let reason = args.get("reason").and_then(Value::as_str);
@@ -730,6 +849,65 @@ impl ApiService {
                 Ok(json!({ "paused": true, "queued": queue.items.len() }))
             }
         }
+    }
+
+    /// The file a chat may put on the local server: inside one of its own folders (its working
+    /// directory and the other repositories of its workspace), as it is on disk now, and nothing
+    /// that looks secret or lives in `.git`. A relative path is read from the working directory.
+    fn shareable_path(&self, session: SessionId, given: &str) -> ApiResult<std::path::PathBuf> {
+        if given.is_empty() {
+            return Err(ApiError::invalid("`path` is required"));
+        }
+        let chat = self
+            .db
+            .get_session(session)?
+            .ok_or_else(|| not_found("session not found"))?;
+        let own = self
+            .db
+            .get_worktree(chat.worktree_id)?
+            .map(|worktree| worktree.path);
+        let mut roots: Vec<std::path::PathBuf> = own.iter().cloned().collect();
+        for id in self.db.session_worktrees(session)? {
+            if let Some(worktree) = self.db.get_worktree(id)? {
+                roots.push(worktree.path);
+            }
+        }
+        let roots: Vec<std::path::PathBuf> = roots
+            .iter()
+            .filter_map(|root| std::fs::canonicalize(root).ok())
+            .collect();
+        let wanted = std::path::Path::new(given);
+        let full = if wanted.is_absolute() {
+            wanted.to_path_buf()
+        } else {
+            own.ok_or_else(|| ApiError::invalid("this chat has no working directory"))?
+                .join(wanted)
+        };
+        let real = std::fs::canonicalize(&full)
+            .map_err(|_| not_found("there is no such file in this chat's folders"))?;
+        let inside = roots.iter().any(|root| real.starts_with(root));
+        if !inside {
+            return Err(ApiError::forbidden(
+                "only a file inside this chat's own folders can be shared",
+            ));
+        }
+        let in_git = real
+            .components()
+            .any(|part| part.as_os_str() == std::ffi::OsStr::new(".git"));
+        // `looks_secret` reads a path with `/`: it is given the name, whatever the platform's separator.
+        let name = real
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if in_git || crate::app::btw::looks_secret(&name) {
+            return Err(ApiError::forbidden(
+                "that file looks like a secret (or is part of .git) and is not shared",
+            ));
+        }
+        if !real.is_file() {
+            return Err(ApiError::invalid("only a file can be shared"));
+        }
+        Ok(real)
     }
 
     fn scheduler(&self) -> ApiResult<&Arc<dyn Scheduling>> {
@@ -1071,6 +1249,16 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
 }
 
+/// The ```object block that shows a shared file in the chat, ready to put in a reply.
+fn object_block(shared: &crate::files::SharedFile) -> String {
+    let block = json!({
+        "url": shared.url,
+        "title": shared.name,
+        "type": shared.mime.split(';').next().unwrap_or(shared.mime),
+    });
+    format!("```object\n{block}\n```")
+}
+
 fn new_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -1082,6 +1270,8 @@ struct ServerInner {
     anchor: std::sync::OnceLock<Arc<dyn Anchor>>,
     code_graph: std::sync::OnceLock<Arc<dyn CodeGraph>>,
     scheduler: std::sync::OnceLock<Arc<dyn Scheduling>>,
+    files: std::sync::OnceLock<Arc<dyn FileSharing>>,
+    browser: std::sync::OnceLock<Arc<dyn Browsing>>,
     sink: std::sync::OnceLock<Arc<dyn InsightSink>>,
     port: u16,
     stop: AtomicBool,
@@ -1137,6 +1327,8 @@ impl ApiServer {
             anchor: std::sync::OnceLock::new(),
             code_graph: std::sync::OnceLock::new(),
             scheduler: std::sync::OnceLock::new(),
+            files: std::sync::OnceLock::new(),
+            browser: std::sync::OnceLock::new(),
             sink: std::sync::OnceLock::new(),
             port,
             stop: AtomicBool::new(false),
@@ -1167,6 +1359,16 @@ impl ApiServer {
     /// Lets agents schedule messages to themselves.
     pub fn set_scheduler(&self, scheduler: Arc<dyn Scheduling>) {
         let _ = self.inner.scheduler.set(scheduler);
+    }
+
+    /// Lets agents drive the built-in browser.
+    pub fn set_browser(&self, browser: Arc<dyn Browsing>) {
+        let _ = self.inner.browser.set(browser);
+    }
+
+    /// Lets agents put files on the local file server.
+    pub fn set_files(&self, files: Arc<dyn FileSharing>) {
+        let _ = self.inner.files.set(files);
     }
 
     pub fn port(&self) -> u16 {
@@ -1569,6 +1771,8 @@ fn respond(
     let mut service = ApiService::new(Arc::clone(&inner.db), session, write)
         .with_anchor(inner.anchor.get().cloned())
         .with_scheduler(inner.scheduler.get().cloned())
+        .with_files(inner.files.get().cloned())
+        .with_browser(inner.browser.get().cloned())
         .with_sink(inner.sink.get().cloned());
     service.code_graph = inner.code_graph.get().cloned();
     let target = head.target.clone();
@@ -1727,6 +1931,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),
@@ -2433,6 +2638,139 @@ mod tests {
         )
     }
 
+    /// A browser that answers a snapshot with text and a screenshot with a picture.
+    struct FakeBrowser(Mutex<Vec<(SessionId, String)>>);
+
+    impl Browsing for FakeBrowser {
+        fn tools(&self) -> Vec<Value> {
+            crate::app::browser_tools::browser_tools()
+        }
+
+        fn call(
+            &self,
+            session: SessionId,
+            name: &str,
+            _args: &Value,
+        ) -> Option<crate::app::browser_tools::ToolReply> {
+            use crate::app::browser_tools::{Content, ToolReply};
+            if !crate::app::browser_tools::is_browser_tool(name) {
+                return None;
+            }
+            self.0.lock().push((session, name.to_string()));
+            Some(match name {
+                "browser_screenshot" => ToolReply {
+                    content: vec![
+                        Content::Image {
+                            data: "iVBORw0KGgo=".into(),
+                            mime: "image/png".into(),
+                        },
+                        Content::Text("tab 1 1280x800px".into()),
+                    ],
+                    is_error: false,
+                },
+                "browser_eval" => ToolReply::error("the page did not answer"),
+                _ => ToolReply::text("Page \"A\" https://a.test/\n[e1] button \"Go\""),
+            })
+        }
+    }
+
+    #[test]
+    fn the_browser_tools_are_listed_for_a_chat_that_may_write_and_answer_with_text_or_a_picture() {
+        let (db, a, ..) = seeded();
+        let server = start(&db);
+        let browser = Arc::new(FakeBrowser(Mutex::new(Vec::new())));
+        server.set_browser(browser.clone());
+        let write = server.issue_token(a, true).token;
+        let read_only = server.issue_token(a, false).token;
+        let names = |token: &str| -> Vec<String> {
+            let answer = rpc(&server, token, 1, "tools/list", json!({}));
+            answer.body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        for wanted in [
+            "browser_tabs",
+            "browser_snapshot",
+            "browser_act",
+            "browser_screenshot",
+            "browser_eval",
+            "browser_console",
+            "browser_network",
+            "browser_inspect",
+        ] {
+            assert!(names(&write).iter().any(|name| name == wanted), "{wanted}");
+            // A read-only session (a BTW question) has no browser at all.
+            assert!(
+                !names(&read_only).iter().any(|name| name == wanted),
+                "{wanted}"
+            );
+        }
+        let init = rpc(&server, &write, 2, "initialize", json!({}));
+        assert!(
+            init.body["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("browser_snapshot")
+        );
+        let init = rpc(&server, &read_only, 2, "initialize", json!({}));
+        assert!(
+            !init.body["result"]["instructions"]
+                .as_str()
+                .unwrap_or("")
+                .contains("browser_snapshot")
+        );
+
+        let (text, failed) = tool_call(&server, &write, "browser_snapshot", json!({}));
+        assert!(!failed);
+        assert!(text.as_str().unwrap().contains("[e1] button \"Go\""));
+        let picture = rpc(
+            &server,
+            &write,
+            3,
+            "tools/call",
+            json!({"name": "browser_screenshot", "arguments": {}}),
+        );
+        let content = picture.body["result"]["content"].as_array().unwrap();
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"})
+        );
+        assert_eq!(content[1]["type"], "text");
+        let (message, failed) =
+            tool_call(&server, &write, "browser_eval", json!({"expression": "1"}));
+        assert!(failed && message == Value::String("the page did not answer".into()));
+        // Every call is made for the chat the token belongs to.
+        assert!(browser.0.lock().iter().all(|(session, _)| *session == a));
+        assert_eq!(browser.0.lock().len(), 3);
+
+        // A read-only token is refused, and the browser never hears of it.
+        let (message, failed) = tool_call(&server, &read_only, "browser_snapshot", json!({}));
+        assert!(
+            failed && message.as_str().unwrap().contains("read-only"),
+            "{message}"
+        );
+        assert_eq!(browser.0.lock().len(), 3);
+    }
+
+    #[test]
+    fn without_a_browser_the_tools_are_not_offered_and_a_call_is_refused() {
+        let (db, a, ..) = seeded();
+        let server = start(&db);
+        let write = server.issue_token(a, true).token;
+        let answer = rpc(&server, &write, 1, "tools/list", json!({}));
+        let listed = answer.body["result"]["tools"].as_array().unwrap();
+        assert!(
+            !listed
+                .iter()
+                .any(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
+        );
+        let (message, failed) = tool_call(&server, &write, "browser_tabs", json!({}));
+        assert!(failed && message.as_str().unwrap().contains("not available"));
+    }
+
     #[test]
     fn the_code_graph_uses_the_current_worktree_even_when_memory_is_off() {
         use crate::adapters::{
@@ -3027,6 +3365,93 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_puts_a_file_of_its_chat_on_the_local_file_server_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("ataraxia-share-{}", Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("ataraxia-outside-{}", Uuid::new_v4()));
+        for dir in [root.join("out"), root.join(".git"), outside.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let outside = outside.canonicalize().unwrap();
+        std::fs::write(root.join("out/report.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(root.join(".env"), "KEY=1").unwrap();
+        std::fs::write(root.join(".git/config"), "[core]").unwrap();
+        std::fs::write(outside.join("notes.txt"), "elsewhere").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("notes.txt"), root.join("link.txt")).unwrap();
+
+        let (db, a, ..) = seeded_at(root.clone());
+        let server = start(&db);
+        let files = crate::files::FileServer::start().unwrap();
+        server.set_files(files.clone());
+        let write = server.issue_token(a, true).token;
+        let read_only = server.issue_token(a, false).token;
+        let share = |token: &str, path: &str| {
+            req("POST", "/v1/shares", Some(token))
+                .with(json!({ "path": path }))
+                .go(&server)
+        };
+
+        // A file inside the chat's folder, named relative to it or in full.
+        let shared = share(&write, "out/report.html");
+        assert_eq!(shared.status, 201, "{:?}", shared.body);
+        assert_eq!(shared.body["name"], "report.html");
+        assert_eq!(shared.body["mime"], "text/html; charset=utf-8");
+        assert_eq!(shared.body["size"], 11);
+        let url = shared.body["url"].as_str().unwrap();
+        assert!(url.starts_with(&format!("http://127.0.0.1:{}/f/", files.port())));
+        assert!(
+            shared.body["download_url"]
+                .as_str()
+                .unwrap()
+                .ends_with("?download=1")
+        );
+        let block = shared.body["markdown"].as_str().unwrap();
+        assert!(
+            block.starts_with("```object\n{") && block.ends_with("}\n```"),
+            "{block}"
+        );
+        assert!(block.contains(url));
+        let again = share(&write, &root.join("out/report.html").display().to_string());
+        assert_eq!(again.body["url"], shared.body["url"]);
+
+        // Nothing outside the chat's folders, nothing secret, nothing in .git, no folder.
+        let outside_file = outside.join("notes.txt").display().to_string();
+        assert_eq!(share(&write, &outside_file).status, 403);
+        #[cfg(unix)]
+        assert_eq!(share(&write, "/etc/hosts").status, 403);
+        #[cfg(unix)]
+        assert_eq!(
+            share(&write, "link.txt").status,
+            403,
+            "a link out is not followed"
+        );
+        assert_eq!(share(&write, ".env").status, 403);
+        assert_eq!(share(&write, ".git/config").status, 403);
+        assert_eq!(share(&write, "out").status, 400);
+        assert_eq!(share(&write, "out/missing.txt").status, 404);
+        assert_eq!(
+            req("POST", "/v1/shares", Some(write.as_str()))
+                .with(json!({}))
+                .go(&server)
+                .status,
+            400
+        );
+
+        // A hidden, read-only session cannot publish anything.
+        assert_eq!(share(&read_only, "out/report.html").status, 403);
+
+        // Stopping an offer.
+        let id = shared.body["id"].as_str().unwrap();
+        let gone = req("DELETE", &format!("/v1/shares/{id}"), Some(write.as_str())).go(&server);
+        assert_eq!(gone.status, 200, "{:?}", gone.body);
+        let again = req("DELETE", &format!("/v1/shares/{id}"), Some(write.as_str())).go(&server);
+        assert_eq!(again.status, 404);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
     fn an_agent_schedules_a_message_to_itself_over_the_api() {
         let (db, a, ..) = seeded();
         let server = start(&db);
@@ -3071,7 +3496,7 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body["version"], 1);
         let endpoints = answer.body["endpoints"].as_array().unwrap();
-        assert_eq!(endpoints.len(), 16);
+        assert_eq!(endpoints.len(), 18);
         assert!(
             endpoints
                 .iter()
@@ -3098,6 +3523,8 @@ mod tests {
         assert!(has("POST", "/v1/comments", true));
         assert!(has("PUT", "/v1/priority", true));
         assert!(has("POST", "/v1/flows", true));
+        assert!(has("POST", "/v1/shares", true));
+        assert!(has("DELETE", "/v1/shares/{share_id}", true));
         assert!(has("GET", "/v1/tasks", false));
         assert!(has("GET", "/v1/tasks/{number}", false));
     }

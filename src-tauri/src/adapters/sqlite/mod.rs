@@ -330,7 +330,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
                             created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id, workspace_id
+                            kind, parent_session_id, workspace_id, profile
                      FROM chat_sessions
                      WHERE workspace_id = ?1 AND kind = 'chat'
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -384,8 +384,8 @@ impl Store for SqliteStore {
                 "INSERT INTO chat_sessions
                    (id, repository_id, worktree_id, provider, title, status,
                     created_at, updated_at, last_opened_at, model, effort, agent,
-                    kind, parent_session_id, workspace_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    kind, parent_session_id, workspace_id, profile)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     session.id.0.to_string(),
                     session.repository_id.0.to_string(),
@@ -401,7 +401,8 @@ impl Store for SqliteStore {
                     session.agent,
                     session.kind.as_str(),
                     session.parent_session_id.map(|id| id.0.to_string()),
-                    session.workspace_id.map(|id| id.0.to_string())
+                    session.workspace_id.map(|id| id.0.to_string()),
+                    session.profile
                 ],
             )
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
@@ -415,7 +416,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT id, repository_id, worktree_id, provider, title, status,
                             created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id, workspace_id
+                            kind, parent_session_id, workspace_id, profile
                      FROM chat_sessions
                      WHERE repository_id = ?1 AND kind = 'chat'
                      ORDER BY COALESCE(last_opened_at, updated_at) DESC",
@@ -433,7 +434,7 @@ impl Store for SqliteStore {
             conn.query_row(
                 "SELECT id, repository_id, worktree_id, provider, title, status,
                         created_at, updated_at, last_opened_at, model, effort, agent,
-                            kind, parent_session_id, workspace_id
+                            kind, parent_session_id, workspace_id, profile
                  FROM chat_sessions WHERE id = ?1",
                 params![id.0.to_string()],
                 map_session,
@@ -530,6 +531,26 @@ impl Store for SqliteStore {
         })
     }
 
+    fn set_session_profile(
+        &self,
+        id: SessionId,
+        profile: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE chat_sessions SET profile = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id.0.to_string(), profile, updated_at],
+                )
+                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?;
+            if updated == 0 {
+                return Err(Error::new(ErrorCode::NotFound, "session not found"));
+            }
+            Ok(())
+        })
+    }
+
     fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>> {
         self.with_conn(|conn| {
             conn.query_row(
@@ -561,11 +582,12 @@ impl Store for SqliteStore {
         updated_at: &str,
     ) -> Result<()> {
         self.with_conn(|conn| {
-            // Model, effort and agent names are provider-specific, so they reset with it.
+            // Model, effort, agent names and profiles are provider-specific, so they reset with it.
             let updated = conn
                 .execute(
                     "UPDATE chat_sessions
                      SET provider = ?2, model = NULL, effort = NULL, agent = NULL, agent_ref = NULL,
+                         profile = NULL,
                          updated_at = ?3
                      WHERE id = ?1",
                     params![id.0.to_string(), provider.as_str(), updated_at],
@@ -968,6 +990,7 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatSession> {
             Some(value) => Some(parse_workspace_id(&value)?),
             None => None,
         },
+        profile: row.get(15)?,
     })
 }
 
@@ -1049,6 +1072,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),
@@ -1061,6 +1085,92 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Chat 1");
         assert!(listed[0].last_opened_at.is_some());
+    }
+
+    #[test]
+    fn a_chat_keeps_the_profile_it_chose_and_the_old_active_ones_are_carried_over() {
+        let store = SqliteStore::open_in_memory().expect("open");
+        let now = now_rfc3339().expect("now");
+        let repo = Repository {
+            id: RepositoryId::new(),
+            root: PathBuf::from("/tmp/profiles"),
+            name: "profiles".into(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_repository(&repo).expect("repo");
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            repository_id: repo.id,
+            path: PathBuf::from("/tmp/profiles"),
+            branch: None,
+            head: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.upsert_worktree(&worktree).expect("worktree");
+        let make = |provider, profile: Option<&str>| ChatSession {
+            id: SessionId::new(),
+            workspace_id: None,
+            repository_id: repo.id,
+            worktree_id: worktree.id,
+            provider,
+            title: "Chat".into(),
+            status: SessionStatus::Idle,
+            model: None,
+            effort: None,
+            agent: None,
+            profile: profile.map(str::to_string),
+            kind: SessionKind::Chat,
+            parent_session_id: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_opened_at: None,
+        };
+        let plain = make(ProviderKind::Claude, None);
+        let chosen = make(ProviderKind::Claude, Some("home"));
+        let other = make(ProviderKind::Codex, None);
+        for session in [&plain, &chosen, &other] {
+            store.create_session(session).expect("create");
+        }
+
+        // Before profiles were per chat, "work" was active for Claude: its chats carry on under it,
+        // the one that already chose keeps its own, and another harness is not touched.
+        store
+            .set_preference(
+                crate::domain::PROFILES_KEY,
+                r#"{"profiles":[],"active":{"claude":"work"}}"#,
+            )
+            .expect("pref");
+        store
+            .with_conn(|conn| {
+                migrations::carry_active_profiles(conn)
+                    .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+            })
+            .expect("carry");
+        let profile = |id: SessionId| store.get_session(id).expect("get").expect("there").profile;
+        assert_eq!(profile(plain.id).as_deref(), Some("work"));
+        assert_eq!(profile(chosen.id).as_deref(), Some("home"));
+        assert_eq!(profile(other.id), None);
+
+        // Choosing another, or the default, is stored; switching harness resets it.
+        store
+            .set_session_profile(plain.id, Some("home"), &now)
+            .expect("set");
+        assert_eq!(profile(plain.id).as_deref(), Some("home"));
+        store
+            .set_session_profile(plain.id, None, &now)
+            .expect("default");
+        assert_eq!(profile(plain.id), None);
+        store
+            .update_session_provider(chosen.id, ProviderKind::Codex, &now)
+            .expect("switch");
+        assert_eq!(profile(chosen.id), None);
+        assert!(
+            store
+                .set_session_profile(SessionId::new(), None, &now)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1096,6 +1206,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),
@@ -1173,6 +1284,7 @@ mod tests {
             model: None,
             effort: None,
             agent: None,
+            profile: None,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),

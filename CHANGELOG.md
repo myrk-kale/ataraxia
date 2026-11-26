@@ -6,6 +6,48 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-26
+
+### Added
+
+- Questions from the agent can be passed over with Skip (the others are still sent) and taken back with Back,
+  which keeps what was answered. Skipping every question declines the request, as before.
+- The message queue has Pause and Resume. A paused queue sends nothing by itself, also after a `/compact`;
+  by default it carries on when the compaction ends.
+- Agents can put a file of the chat (inside its own folders, never a secret or anything in `.git`) on a local
+  file server with `POST /v1/shares`. The chat shows it in an `<object>` from a fenced `object` block, with
+  Open and Download buttons; the app's CSP allows `object-src` and `frame-src` for `http://127.0.0.1:*` only,
+  and served pages are sandboxed without scripts. The guide has a new `files.md`.
+- A built-in browser (Browser space, `Ctrl/Cmd+Shift+L`): tabs, address bar, developer tools (console and
+  network, kept across navigations) and the system's inspector. Agents drive it through eight `browser_*` MCP
+  tools: they read a page as text with refs, act with a visible virtual mouse, take screenshots, read the
+  page's HTTP calls (to automate through them instead of clicking) and debug web apps. Agent tabs use their own
+  cookie store, a tab of yours is shared only when you say so, and a switch turns agents off. The guide gains
+  `browser.md`, `browser-network.md` and `browser-debug.md`.
+- A welcome tour opens in the middle of the screen, over everything dimmed, the first time the app starts
+  after this version, for new and long-time users alike. Ten short slides, with screenshots and drawings,
+  say what each part is for and the problem it solves: the flow of a session, chat, the review queue,
+  decisions, flow diagrams, BTW, the browser, memory and tasks, themes and shortcuts. It goes with the arrow
+  keys, can be skipped at any slide, and can be replayed from the keyboard shortcuts dialog.
+- A companion (the pet): a small animated character that floats over the app, in any space, and shows what
+  your agents are doing across every chat: working, needs you, done, or stopped with an error (the most pressing
+  one wins), in a speech bubble that opens that chat. Drag it anywhere and it stays there; click it for its menu,
+  move it with the arrow keys, or send it back to its corner with Esc. Settings > Companion picks five species
+  drawn in code (drop, cat, bunny, robot, ghost), a colour, an accessory, a name and a size, or your own
+  picture, and previews each state; Mini keeps only the status. `/pet` in a chat shows or hides it. It is still
+  with reduced motion. The idea comes from the pets in OpenAI's Codex app.
+
+
+### Changed
+- Prioritizing the review queue with a subagent is now a labelled button at the top of the queue, with what it
+  does written under it, instead of a small icon next to the refresh button. While it runs it says what it is
+  doing, how long it has been going, that you can keep reviewing, and has a Cancel that leaves the queue as it
+  was. A failure is written where the button is, not only in a toast, and a second triage cannot start on the
+  same queue.
+- The agent profile is chosen per chat, in a Profile picker next to the provider, instead of once for the whole
+  agent. The settings only add, edit and delete profiles. Chats that ran under the profile in use keep it.
+- A BTW update makes the main agent only say it understood; it acts once the developer asks for it.
+
 ## [0.20.2] - 2026-11-25
 
 ### Fixed
@@ -47,6 +89,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Ataraxia updates itself. A few seconds after it opens, and every six hours, it looks for a newer release;
   when there is one, a card offers it with what is new, and "Update and restart" downloads it, checks its
   signature, installs it and opens the app again. "Later" leaves it for the next time the app opens. It works
@@ -62,6 +105,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Cursor is a fourth chat agent, next to Claude Code, Codex and OpenCode. It runs as `cursor-agent acp`:
   streaming, tool cards, permission requests for shell commands, plans, questions the agent puts to
   you, and the models, reasoning efforts and modes (agent, plan, ask) Cursor reports. A chat that only
@@ -73,6 +117,7 @@ are the section of this file for its version.
 ## [0.18.0] - 2026-11-23
 
 ### Added
+
 
 - Any folder can be opened, not only git repositories. A folder that is not a repository gets one
   (`git init`) when git is available; when it is not, or the folder cannot take it, the folder opens
@@ -92,6 +137,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Settings > Power chooses what stays on while there is work in progress: the computer and the
   screen (the default), the computer only, or nothing. The choice is saved and applies within a
   few seconds, without a restart.
@@ -110,6 +156,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Every agent can explore the chat's worktrees with `code_graph`, a read-only Tree-sitter tool on
   the Ataraxia MCP server. It finds declarations, calls and imports with file and line locations,
   including local edits and new files. Agents start with the graph and can still use grep for text
@@ -125,6 +172,7 @@ are the section of this file for its version.
 ## [0.15.0] - 2026-11-21
 
 ### Added
+
 
 - A chat in a workspace knows about the workspace's other conversations and can look into them,
   read-only, through three new tools of the `ataraxia` MCP server: `chats_list`, `chats_search`
@@ -188,6 +236,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Agent memory: Claude Code, Codex and OpenCode now share one memory that outlives any chat. Every
   chat gets an `ataraxia` MCP server with `memory_search`, `memory_get`, `memory_create`,
   `memory_update`, `memory_delete`, `memory_link`, `memory_unlink` and `memory_merge`. The agent is
@@ -222,6 +271,7 @@ are the section of this file for its version.
 ## [0.13.0] - 2026-11-18
 
 ### Added
+
 
 - Global search opens with `Ctrl/Cmd+B` or the search button. Search conversations, artifacts,
   review comments and tasks, with filters for type, workspace and repository. The local SQLite
@@ -277,6 +327,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Tasks, a screen of your own list. Type a title and press Enter and the task exists; click its card to
   add notes, mark it ready for development, tick it done or delete it. Every task has a number that is
   never reused: say `#12` in a chat and the agent fetches task 12 from Ataraxia's API (`GET /v1/tasks/12`,
@@ -316,6 +367,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - The code editor understands the tools of the repository. Linters and checkers it uses (ruff, mypy,
   flake8, eslint, biome) run when a file is opened and saved, and what they find is underlined with
   its message. Language servers it has installed (pyright, typescript-language-server,
@@ -350,6 +402,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - Keep the system from sleeping while an agent is working, a message is queued, a schedule is
   waiting to fire or a usage-limit wait is pending, in any workspace.
 - Autocomplete in the chat composer now suggests whole phrases and names from the code (found by
@@ -370,6 +423,7 @@ are the section of this file for its version.
 ## [0.9.0] - 2026-11-17
 
 ### Added
+
 
 - Stream reasoning and context usage from supported coding agents, with a copy action for each
   interaction and a confirmation when conversation compaction finishes.
@@ -394,6 +448,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - The chat's `/` picker now offers the active provider's commands, Ataraxia skills and configured
   MCP servers in one list.
 - BTW conversations stay available as subagents for follow-up messages. Their chips can be hidden
@@ -415,6 +470,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - One `/` command catalog and `@` file picker across Claude Code, Codex and OpenCode. File mentions
   expand `*`, `**` and `?` globs; the commands are `/help`, `/new`, `/compact` and `/stop`.
 - Portable user and repository `AGENTS.md`, skills and MCP servers supplied by Ataraxia to every
@@ -435,6 +491,7 @@ are the section of this file for its version.
 ## [0.6.0] - 2026-11-16
 
 ### Added
+
 
 - Flowcharts with `subgraph ... end` are drawn as text too, with a titled frame round the nodes of
   each subgraph; subgraphs can be nested up to three deep. Each is laid out on its own and placed as
@@ -478,6 +535,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - A chat picks its conversation up again. Reopening a chat under the same model now goes on with
   what the agent already knows, so the "agent starts fresh" notice no longer shows. Claude Code
   resumes its session, Codex its thread and OpenCode its session; when the harness no longer has it,
@@ -518,6 +576,7 @@ are the section of this file for its version.
 ## [0.4.0] - 2026-11-14
 
 ### Added
+
 
 - Message queue. While the agent works, Enter (or the Queue button) puts what you type in a queue
   above the composer instead of refusing it, and the messages go out one after another as each turn
@@ -634,6 +693,7 @@ are the section of this file for its version.
 
 ### Added
 
+
 - The empty chat shows the A of ATARAXIA as slow, animated ASCII art behind the title. When the chat
   begins the A rises away and the drifting field of characters stays behind the conversation. It is
   faint behind the words, follows the cursor with a soft light, stops while the window is hidden and
@@ -651,6 +711,7 @@ are the section of this file for its version.
 ## [0.2.0] - 2026-11-13
 
 ### Added
+
 
 - Workspaces: a named set of repositories. The agent of every chat in a workspace can read and change
   all of them, while the app still looks at one repository at a time. The workspace selector replaces
@@ -671,6 +732,7 @@ are the section of this file for its version.
 ## [0.1.1] - 2026-11-13
 
 ### Added
+
 
 - macOS: a Homebrew cask (`brew install --cask myrk-kale/tap/ataraxia`) that puts `Ataraxia.app` in
   Applications. The release now carries the app as `….app.tar.gz`; the formula still installs the bare
@@ -710,6 +772,7 @@ are the section of this file for its version.
 First release.
 
 ### Added
+
 
 - **Chat** with Claude Code, Codex and OpenCode through one agent host: streaming, tool cards,
   permissions, cancel, a persisted transcript, subagent conversations, and switching the agent

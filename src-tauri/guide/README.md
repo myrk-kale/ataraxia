@@ -17,9 +17,9 @@ exception is memory, which has its own tools (below).
 Only after the developer says yes to your closing question, or asks you for decisions, a flow,
 review comments or a priority change. Do not read it before, and do not read all of it: read this
 page, then only the topic you need, and always `api.md` before the first call. The exception is
-`schedule.md`, `tasks.md` and `svg.md`: read them when you need to come back to something later,
-the developer names a task, or you are about to draw an SVG, even if nobody asked for decisions or
-a flow.
+`schedule.md`, `tasks.md`, `svg.md` and `files.md`: read them when you need to come back to
+something later, the developer names a task, you are about to draw an SVG, or you have a file to
+hand over, even if nobody asked for decisions or a flow.
 
 ## Topics
 
@@ -38,6 +38,14 @@ a flow.
   search for and when, what is worth saving, the kinds, the links, and how to settle a conflict.
   Read it the first time you save a memory. Unlike the rest, memory is yours to keep: you do not
   ask the developer before saving one.
+- `files.md`: how to show a file you made (a PDF, an HTML page, an image) in the chat, in an
+  `<object>`, and let the developer download it, through the local file server. Read it when you
+  have such a file to hand over, without waiting for a yes to anything.
+- `browser.md`: how to use the built-in browser with the `browser_*` tools: the open, snapshot,
+  act loop, waiting, forms, screenshots and safety. `browser-network.md` shows how to find the HTTP
+  call behind a page and automate through it instead of clicking; `browser-debug.md` how to debug a
+  web app from its console, requests and elements. Read them when you have a web page to work with,
+  without waiting for a yes to anything.
 - `queue.md`: how to hold the developer's message queue when something you were asked to do is left
   undone. The preamble already says when; read it for the details.
 - `api.md`: the environment variables, the authentication, every endpoint with its fields, the

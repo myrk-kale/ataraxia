@@ -3,7 +3,10 @@ export type BtwReportEntry = { asked: string; kind: string; summary: string };
 const HEADER = /^\[BTW report[^\]]*\]\s*/;
 const ENTRY = /^\d+\.\s+Asked \(([^)]*)\):\s*([^\n]*)\n?([\s\S]*)$/;
 const UPDATE_HEADER = /^\[BTW subagent update[^\]]*\]\s*/;
-const UPDATE_INSTRUCTIONS = /\nIf the reply suggests a change or any other action, ask the developer what they want before acting on it\.$/;
+// What the main agent is told to do with the update: today to say it understood and wait for the
+// developer, earlier to ask before acting. Both are hidden, so chats from before still read well.
+const UPDATE_INSTRUCTIONS =
+  /\n(?:Reply only with a short acknowledgement that you understood[^\n]*(?:\n[^\n]*)*|If the reply suggests a change or any other action, ask the developer what they want before acting on it\.)$/;
 
 /**
  * Automatic BTW updates arrive as user messages. They are not text the developer typed, so they

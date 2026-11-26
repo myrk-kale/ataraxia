@@ -1,4 +1,4 @@
-import { BookOpen, Braces, Check, CircleAlert, FilePlus, FolderPlus, GitCompareArrows, ListFilter, Loader2, Lock, RefreshCw, Undo2, WrapText } from "lucide-react";
+import { BookOpen, Braces, Check, CircleAlert, FilePlus, FolderPlus, GitCompareArrows, Lock, RefreshCw, WrapText } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -33,6 +33,7 @@ import {
   codeReview,
   reviewResetPriority,
   reviewTriage,
+  reviewTriageCancel,
   reviewUntriage,
   codeSetReviewMark,
   codeTree,
@@ -69,6 +70,7 @@ import {
   unitQueue,
 } from "./model";
 import { ShownRow } from "./ShownRow";
+import { TriageBar } from "./TriageBar";
 import { createSyncScheduler } from "./sync";
 
 // Monaco is large and Code may never be opened: load it with the space, not with the app.
@@ -204,7 +206,10 @@ export function CodeSpace({
   const [compareProblem, setCompareProblem] = useState<string | null>(null);
   const [activeUnit, setActiveUnit] = useState<string | null>(null);
   // The review triage: a subagent orders the queue and leaves out what needs no person's eyes.
-  const [triaging, setTriaging] = useState(false);
+  // When it began, while it runs: the bar says how long it has been going.
+  const [triageStartedAt, setTriageStartedAt] = useState<number | null>(null);
+  const triaging = triageStartedAt !== null;
+  const [triageError, setTriageError] = useState<string | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
   const [triageNote, setTriageNote] = useState<string | null>(null);
   const editor = useRef<EditorHandle>(null);
@@ -418,20 +423,31 @@ export function CodeSpace({
     if (!sessionId || !checkpoint || triaging) {
       return;
     }
-    setTriaging(true);
+    setTriageStartedAt(Date.now());
     setTriageNote(null);
+    setTriageError(null);
     try {
       const outcome = await reviewTriage(sessionId, checkpoint.id);
-      setTriageNote(
-        outcome.skipped > 0
-          ? `Reordered ${outcome.reordered}, left out ${outcome.skipped} that need no review.`
-          : `Reordered ${outcome.reordered}. Everything still needs a look.`,
-      );
-      await openTarget(true);
+      if (outcome.cancelled) {
+        setTriageNote("Cancelled. The queue is as it was.");
+      } else {
+        setTriageNote(
+          outcome.skipped > 0
+            ? `Reordered ${outcome.reordered}, left out ${outcome.skipped} that need no review.`
+            : `Reordered ${outcome.reordered}. Everything still needs a look.`,
+        );
+        await openTarget(true);
+      }
     } catch (err) {
-      onError(errorText(err));
+      setTriageError(`The triage did not finish: ${errorText(err)}`);
     } finally {
-      setTriaging(false);
+      setTriageStartedAt(null);
+    }
+  }
+
+  function cancelTriage() {
+    if (checkpoint) {
+      void reviewTriageCancel(checkpoint.id).catch((err: unknown) => onError(errorText(err)));
     }
   }
 
@@ -1196,23 +1212,6 @@ export function CodeSpace({
 
   const state = marks.get(doc?.path ?? "");
   const canTriage = mode === "components" && session && checkpoint && priority && files.length > 0;
-  const triageAction = canTriage ? (
-    <div className="flex flex-none items-center gap-1">
-      <span className="sr-only" role="status">{triaging ? "Triaging with a subagent" : ""}</span>
-      <Tip label="Triage with a subagent. Orders the queue and skips changes that need no review, while keeping your priorities.">
-        <Button aria-label="Triage with a subagent" disabled={triaging} variant="icon" onClick={() => void triage()}>
-          {triaging ? <Loader2 aria-hidden="true" className="motion-safe:animate-spin" size={14} /> : <ListFilter aria-hidden="true" size={14} />}
-        </Button>
-      </Tip>
-      {skippedCount > 0 && !triaging ? (
-        <Tip label="Put back the order the code gives, with nothing left out">
-          <Button aria-label="Undo the triage" variant="icon" onClick={() => void untriage()}>
-            <Undo2 aria-hidden="true" size={14} />
-          </Button>
-        </Tip>
-      ) : null}
-    </div>
-  ) : null;
 
   return (
     <div className="flex h-full min-h-0">
@@ -1252,7 +1251,6 @@ export function CodeSpace({
             <div className="flex items-center justify-between gap-2 px-1.5 text-small text-cg-muted-strong">
               <span>{checkpoint ? `Checkpoint #${checkpoint.seq}` : "Checkpoint from search"}</span>
               <Button variant="quiet" onClick={onCloseSearchCheckpoint}>Back to comparison</Button>
-              {triageAction}
             </div>
           ) : mode !== "tree" && session && onReferenceChange ? (
             <ReferenceSelect
@@ -1274,17 +1272,21 @@ export function CodeSpace({
               refreshHint={reference ? "Compare again with the working tree as it is now" : "Record the working tree as a new checkpoint"}
               text={shownLabel(checkpoint, reference, worktree?.branch ?? null)}
               onRefresh={() => void refreshCheckpoint()}
-            >
-              {triageAction}
-            </ShownRow>
+            />
           ) : null}
         </div>
-        {canTriage && (triageNote || skippedCount > 0) ? (
-          <TriageResult
+        {canTriage ? (
+          <TriageBar
+            count={priority?.units?.length ?? 0}
+            error={triageError}
             note={triageNote}
             showSkipped={showSkipped}
             skipped={skippedCount}
+            startedAt={triageStartedAt}
+            onCancel={cancelTriage}
             onShowSkipped={setShowSkipped}
+            onStart={() => void triage()}
+            onUndo={() => void untriage()}
           />
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody()}</div>
@@ -1611,38 +1613,6 @@ export function CodeSpace({
         onClose={() => setCommenting(false)}
         onSubmit={addComment}
       />
-    </div>
-  );
-}
-
-function TriageResult({
-  skipped,
-  showSkipped,
-  note,
-  onShowSkipped,
-}: {
-  skipped: number;
-  showSkipped: boolean;
-  note: string | null;
-  onShowSkipped: (show: boolean) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5 px-3 pb-2">
-      {note ? (
-        <p aria-live="polite" className="px-1 text-small text-cg-muted-strong">
-          {note}
-        </p>
-      ) : null}
-      {skipped > 0 ? (
-        <button
-          aria-pressed={showSkipped}
-          className="self-start rounded-cg-sm px-1 text-small text-cg-muted-strong underline-offset-2 hover:text-cg-ink hover:underline"
-          type="button"
-          onClick={() => onShowSkipped(!showSkipped)}
-        >
-          {showSkipped ? `Hide the ${skipped} left out` : `${skipped} left out by the triage · show`}
-        </button>
-      ) : null}
     </div>
   );
 }

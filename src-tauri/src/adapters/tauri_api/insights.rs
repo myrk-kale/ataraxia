@@ -546,6 +546,15 @@ pub fn review_triage(
         .map_err(map_error)
 }
 
+/// Stops the triage that is running on a checkpoint; whether there was one.
+#[tauri::command(async)]
+pub fn review_triage_cancel(
+    state: tauri::State<'_, AppState>,
+    checkpoint_id: CheckpointId,
+) -> bool {
+    state.engine.review_triage_cancel(checkpoint_id)
+}
+
 /// Takes the triage's order back: the queue is the computed one again.
 #[tauri::command(async)]
 pub fn review_untriage(state: tauri::State<'_, AppState>, checkpoint_id: CheckpointId) -> Res<()> {

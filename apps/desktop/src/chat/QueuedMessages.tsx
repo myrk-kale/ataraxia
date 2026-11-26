@@ -1,31 +1,49 @@
-import { CornerDownRight, X } from "lucide-react";
+import { CornerDownRight, Pause, Play, X } from "lucide-react";
 import type { MessageQueue } from "../lib/agent";
 
 /**
  * Messages typed while the agent was working, in the order they will be sent. Each can be sent
- * at once (which stops the running turn) or taken back out.
+ * at once (which stops the running turn) or taken back out, and the queue as a whole can be held
+ * so it does not go on by itself (after a /compact, say) and let go on again.
  */
 export function QueuedMessages({
   queue,
   onSendNow,
   onRemove,
+  onSetPaused,
 }: {
   queue: MessageQueue;
   onSendNow: (id: string) => void;
   onRemove: (id: string) => void;
+  onSetPaused: (paused: boolean) => void;
 }) {
   if (queue.items.length === 0) {
     return null;
   }
   return (
     <section aria-label="Queued messages" className="mb-2 flex flex-col gap-1.5">
-      <p className="px-1 text-small text-cg-muted">
-        {queue.paused
-          ? queue.reason
-            ? `Paused by the agent: ${queue.reason.replace(/[.!?\s]+$/, "")}. Send a message, or send one of these now, to carry on.`
-            : "Paused because the last turn stopped. Send one now to carry on."
-          : `Queued (${queue.items.length}). Sent one after another when the agent finishes.`}
-      </p>
+      <div className="flex items-center justify-between gap-3 px-1">
+        <p className="text-small text-cg-muted">
+          {queue.paused
+            ? queue.reason
+              ? `Paused by the agent: ${queue.reason.replace(/[.!?\s]+$/, "")}. Resume, or send one of these now, to carry on.`
+              : "Paused: nothing is sent until you resume or send one now."
+            : `Queued (${queue.items.length}). Sent one after another when the agent finishes.`}
+        </p>
+        <button
+          className="flex flex-none items-center gap-1 rounded-cg-sm px-2 py-1 text-small text-cg-muted-strong hover:bg-cg-line hover:text-cg-ink"
+          title={
+            queue.paused
+              ? "Let the queue go on: the next message is sent when the agent is free"
+              : "Hold the queue: nothing is sent by itself, not even after a /compact"
+          }
+          type="button"
+          onClick={() => onSetPaused(!queue.paused)}
+        >
+          {queue.paused ? <Play aria-hidden="true" size={12} /> : <Pause aria-hidden="true" size={12} />}
+          {queue.paused ? "Resume" : "Pause"}
+        </button>
+      </div>
       <ol className="flex max-h-[30vh] flex-col gap-1 overflow-y-auto">
         {queue.items.map((item, index) => (
           <li

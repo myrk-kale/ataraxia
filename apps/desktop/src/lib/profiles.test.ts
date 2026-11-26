@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROFILE_COLORS, activeProfile, nextColor, profilesOf, type Profiles } from "./profiles";
+import { PROFILE_COLORS, chosenProfile, nextColor, profilesOf, type Profiles } from "./profiles";
 
 const book: Profiles = {
   profiles: [
@@ -16,15 +16,16 @@ describe("profiles", () => {
     expect(profilesOf(book, "opencode")).toEqual([]);
   });
 
-  it("finds the one in use, per harness", () => {
-    expect(activeProfile(book, "claude")?.name).toBe("Home");
-    expect(activeProfile(book, "codex")).toBeNull();
+  it("finds the one a chat chose", () => {
+    expect(chosenProfile(book, "claude", "b")?.name).toBe("Home");
+    expect(chosenProfile(book, "claude", null)).toBeNull();
+    expect(chosenProfile(book, "claude", undefined)).toBeNull();
   });
 
-  it("treats an active id that no longer exists as the default", () => {
-    expect(activeProfile({ ...book, active: { claude: "gone" } }, "claude")).toBeNull();
+  it("treats a chosen id that no longer exists as the default", () => {
+    expect(chosenProfile(book, "claude", "gone")).toBeNull();
     // An id of another harness's profile is not this one's.
-    expect(activeProfile({ ...book, active: { claude: "c" } }, "claude")).toBeNull();
+    expect(chosenProfile(book, "claude", "c")).toBeNull();
   });
 
   it("offers the first colour not used yet, and wraps when all are", () => {

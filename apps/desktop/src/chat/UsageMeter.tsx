@@ -1,6 +1,6 @@
 import { TriangleAlert } from "lucide-react";
 import { useId, useRef, useState } from "react";
-import { useActiveProfile, type HarnessProfile } from "../lib/profiles";
+import { useChatProfile, type HarnessProfile } from "../lib/profiles";
 import type { ProviderUsage } from "../lib/usage";
 import type { ProviderKind } from "../lib/workspace";
 import { useNowSeconds, useProviderUsage } from "./useProviderUsage";
@@ -193,8 +193,17 @@ export function UsageView({
  * The five-hour and weekly limits of the provider the chat runs on, small, next to its name.
  * Providers that report no limits (or have not yet) show nothing.
  */
-export function UsageMeter({ provider, label }: { provider: ProviderKind; label: string }) {
-  const profile = useActiveProfile(provider);
+export function UsageMeter({
+  provider,
+  profileId,
+  label,
+}: {
+  provider: ProviderKind;
+  /** The profile (account) the chat runs under, whose limits these are. */
+  profileId: string | null | undefined;
+  label: string;
+}) {
+  const profile = useChatProfile(provider, profileId);
   const usage = useProviderUsage(provider, profile?.id ?? null);
   const tick = useNowSeconds();
   if (!usage || usage.windows.length === 0) {

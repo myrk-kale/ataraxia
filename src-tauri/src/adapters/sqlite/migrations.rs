@@ -35,10 +35,35 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../../migrations/015_decision_turn.sql"),
     ),
     (16, include_str!("../../../migrations/016_memory.sql")),
+    (
+        17,
+        include_str!("../../../migrations/017_session_profile.sql"),
+    ),
 ];
 
 fn io(error: rusqlite::Error) -> Error {
     Error::new(ErrorCode::Io, error.to_string())
+}
+
+/// Before profiles were chosen per chat, one was "active" for each harness and every chat of it
+/// ran under that one. Those chats keep running under it: each gets the active profile of its
+/// harness. Anything unreadable in the stored profiles counts as none, as it does everywhere.
+pub(super) fn carry_active_profiles(conn: &Connection) -> rusqlite::Result<()> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_state WHERE key = ?1",
+            [crate::domain::PROFILES_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    let profiles = crate::domain::Profiles::parse(stored.as_deref());
+    for (provider, id) in &profiles.active {
+        conn.execute(
+            "UPDATE chat_sessions SET profile = ?2 WHERE provider = ?1 AND profile IS NULL",
+            rusqlite::params![provider, id],
+        )?;
+    }
+    Ok(())
 }
 
 /// Applies every pending migration, each in its own transaction with its version row.
@@ -68,6 +93,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         tx.execute_batch(sql).map_err(io)?;
         if *version == 14 {
             super::search::install_triggers(&tx).map_err(io)?;
+        }
+        if *version == 17 {
+            carry_active_profiles(&tx).map_err(io)?;
         }
         tx.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",

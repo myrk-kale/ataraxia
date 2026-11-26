@@ -112,6 +112,7 @@ fn world_on(provider: ProviderKind, backend: Arc<dyn AgentBackend>) -> World {
         model: None,
         effort: None,
         agent: None,
+        profile: None,
         kind: SessionKind::Chat,
         parent_session_id: None,
         created_at: now.clone(),
@@ -257,6 +258,57 @@ fn a_finished_turn_becomes_a_checkpoint_with_a_review_queue_and_decisions_wait_t
         w.db.list_sessions(w.session.repository_id).unwrap().len(),
         1
     );
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+/// A triage that the developer stops leaves the queue as it was and says it was stopped; a second one
+/// cannot start on the same queue while the first runs, and one that is not running cannot be stopped.
+#[test]
+fn a_triage_can_be_stopped_while_it_runs_and_never_runs_twice_on_one_queue() {
+    // A slow agent, so the triage is still running when it is stopped.
+    let w = world_on(
+        ProviderKind::Fake,
+        Arc::new(FakeBackend::new(Duration::from_millis(700))),
+    );
+    agent_turn_editing(&w, "README.md", "# demo\nline two changed\nline three\n");
+    let checkpoint = wait_for("checkpoint", || {
+        w.db.latest_checkpoint(w.session.id).unwrap()
+    });
+    assert!(
+        !w.engine.review_triage_cancel(checkpoint.id),
+        "nothing to stop yet"
+    );
+
+    let engine = w.engine.clone();
+    let (session, id) = (w.session.id, checkpoint.id);
+    let running = std::thread::spawn(move || engine.review_triage(session, Some(id)));
+    wait_for("the triage to start", || {
+        w.engine
+            .triages
+            .lock()
+            .contains_key(&checkpoint.id)
+            .then_some(())
+    });
+    let second = w
+        .engine
+        .review_triage(w.session.id, Some(checkpoint.id))
+        .unwrap_err();
+    assert_eq!(
+        second.code,
+        crate::domain::ErrorCode::Conflict,
+        "{}",
+        second.message
+    );
+
+    assert!(w.engine.review_triage_cancel(checkpoint.id));
+    let outcome = running.join().unwrap().unwrap();
+    assert!(outcome.cancelled);
+    assert_eq!((outcome.reordered, outcome.skipped), (0, 0));
+    assert!(outcome.examined >= 1);
+    // It is over: it can be started again, and the queue is still the computed one.
+    assert!(w.engine.triages.lock().is_empty());
+    assert!(!w.engine.review_triage_cancel(checkpoint.id));
+    assert!(w.db.list_unit_priorities(checkpoint.id).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 
@@ -2224,6 +2276,54 @@ fn a_queued_message_is_sent_once_however_many_callers_reach_the_queue_together()
         let times = user_texts(&w).iter().filter(|item| **item == text).count();
         assert_eq!(times, 1, "{text} was sent {times} times");
     }
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+/// The person holds the queue (after a /compact, say): the turn ends well and nothing is sent
+/// until they let it go on.
+#[test]
+fn a_queue_the_person_holds_waits_after_a_turn_that_ended_well_until_it_is_resumed() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "busy").unwrap();
+    let busy = next_request(&w, None);
+    w.engine.enqueue(w.session.id, "later", Vec::new()).unwrap();
+
+    // Held while the turn runs, it already shows as paused.
+    let held = w.engine.queue_set_paused(w.session.id, true).unwrap();
+    assert!(held.paused);
+    assert_eq!(held.reason, None);
+    approve(&w, busy);
+    wait_for("the turn to end", || {
+        (!w.engine.is_working(w.session.id)).then_some(())
+    });
+    assert_eq!(queued_texts(&w), ["later"], "nothing goes out by itself");
+    assert!(w.engine.queue(w.session.id).paused);
+    assert_eq!(user_texts(&w), ["busy"]);
+
+    // Resumed with the agent free, the message goes out at once.
+    let resumed = w.engine.queue_set_paused(w.session.id, false).unwrap();
+    assert!(!resumed.paused);
+    let sent = next_request(&w, Some(busy));
+    assert_eq!(user_texts(&w), ["busy", "later"]);
+    approve(&w, sent);
+    assert!(w.engine.queue(w.session.id).items.is_empty());
+    let _ = std::fs::remove_dir_all(&w.repo);
+}
+
+#[test]
+fn resuming_a_queue_that_is_not_held_changes_nothing_and_an_empty_queue_has_nothing_to_hold() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    assert!(
+        w.engine
+            .queue_set_paused(w.session.id, false)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let held = w.engine.queue_set_paused(w.session.id, true).unwrap();
+    assert!(held.items.is_empty());
     let _ = std::fs::remove_dir_all(&w.repo);
 }
 

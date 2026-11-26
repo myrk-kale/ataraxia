@@ -6,6 +6,7 @@ export type ShortcutAction =
   | { type: "btw"; private: boolean }
   | { type: "tasks" }
   | { type: "memory" }
+  | { type: "browser" }
   | { type: "search" }
   | { type: "branch" }
   | { type: "artifacts" }
@@ -127,6 +128,10 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (mod && event.shiftKey && !event.altKey && key === "g" && !inEditor && !event.repeat) {
     return { type: "memory" };
   }
+  // The built-in browser, from anywhere but the editor (Monaco's select-all-occurrences).
+  if (mod && event.shiftKey && !event.altKey && key === "l" && !inEditor && !event.repeat) {
+    return { type: "browser" };
+  }
   // Go to a branch from a link or a name, from anywhere (not inside the editor, where Monaco has its own).
   if (mod && event.shiftKey && !event.altKey && key === "b" && !inEditor && !event.repeat) {
     return { type: "branch" };
@@ -184,6 +189,7 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Ctrl/⌘", "Shift", "K"], label: "Private BTW: nothing of it is sent to the main chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "T"], label: "Tasks panel", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "Shift", "G"], label: "Memory graph: what the agents remember", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "Shift", "L"], label: "Browser: open it, or go back to the chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "B"], label: "Global search", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "Shift", "B"], label: "Go to a branch by name or URL", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },

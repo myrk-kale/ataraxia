@@ -362,6 +362,11 @@ export function agentConfigureSession(
   return invoke<ChatSession>("agent_configure_session", { sessionId, model, effort, agent });
 }
 
+/** Chooses the profile (account) a chat starts its harness with; it takes effect at the next message. */
+export function agentSetProfile(sessionId: SessionId, profile: string | null) {
+  return invoke<ChatSession>("agent_set_profile", { sessionId, profile });
+}
+
 export function agentSwitchProvider(sessionId: SessionId, provider: ProviderKind) {
   return invoke<ChatSession>("agent_switch_provider", { sessionId, provider });
 }
@@ -439,6 +444,14 @@ export function agentEnqueue(sessionId: SessionId, text: string, images: ImageUp
 
 export function agentQueueRemove(sessionId: SessionId, id: string) {
   return invoke<MessageQueue>("agent_queue_remove", { sessionId, id });
+}
+
+/**
+ * Holds the queue so it does not go on by itself (after a /compact, say), or lets it go on again.
+ * Resuming sends the next message when the agent is free.
+ */
+export function agentQueueSetPaused(sessionId: SessionId, paused: boolean) {
+  return invoke<MessageQueue>("agent_queue_set_paused", { sessionId, paused });
 }
 
 /** Stops the running turn and sends this message next, ahead of the others. */
