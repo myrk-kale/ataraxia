@@ -10,6 +10,7 @@ pub mod adapters;
 pub mod api;
 pub mod app;
 pub mod domain;
+pub mod files;
 pub mod ports;
 
 use adapters::tauri_api;
@@ -70,14 +71,33 @@ pub fn run() {
             tauri_api::agent_prompt,
             tauri_api::agent_attachment,
             tauri_api::agent_queue,
+            tauri_api::browser_state,
+            tauri_api::browser_open,
+            tauri_api::browser_close,
+            tauri_api::browser_activate,
+            tauri_api::browser_navigate,
+            tauri_api::browser_go,
+            tauri_api::browser_stop,
+            tauri_api::browser_set_bounds,
+            tauri_api::browser_set_visible,
+            tauri_api::browser_set_agent_control,
+            tauri_api::browser_set_agents_allowed,
+            tauri_api::browser_logs,
+            tauri_api::browser_clear_logs,
+            tauri_api::browser_request_as,
+            tauri_api::browser_count_requests,
+            tauri_api::browser_devtools,
+            tauri_api::browser_screenshot,
+            tauri_api::browser_clear_data,
             tauri_api::agent_usage,
             tauri_api::profiles_list,
             tauri_api::profile_save,
             tauri_api::profile_delete,
-            tauri_api::profile_set_active,
+            tauri_api::agent_set_profile,
             tauri_api::profile_check,
             tauri_api::agent_enqueue,
             tauri_api::agent_queue_remove,
+            tauri_api::agent_queue_set_paused,
             tauri_api::schedule_list,
             tauri_api::schedule_cancel,
             tauri_api::agent_queue_send_now,
@@ -122,6 +142,7 @@ pub fn run() {
             tauri_api::decisions_generate,
             tauri_api::review_reset_priority,
             tauri_api::review_triage,
+            tauri_api::review_triage_cancel,
             tauri_api::review_untriage,
             tauri_api::artifacts_delete_all,
             tauri_api::decision_create,

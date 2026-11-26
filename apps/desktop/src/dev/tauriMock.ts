@@ -314,6 +314,33 @@ let profileBook: { profiles: { id: string; provider: string; name: string; color
 // Like the app, each agent event goes out with its number. `?dup=1` delivers every event twice,
 // as a listener left over from a hot reload would; `?noseq=1` leaves the numbers off, as before.
 let agentSeq = 0;
+type DevTab = { id: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon: string | null; profile: "user" | "agent"; agentControl: boolean; errors: number; failedRequests: number; loadError: string | null };
+let devTabCounter = 0;
+const devTab = (url: string, over: Partial<DevTab> = {}): DevTab => ({ id: ++devTabCounter, url, title: url === "about:blank" ? "" : url.replace(/^https?:\/\//, ""), loading: false, canGoBack: false, canGoForward: false, favicon: null, profile: "user", agentControl: false, errors: 0, failedRequests: 0, loadError: null, ...over });
+const browserMode = new URLSearchParams(window.location.search).get("browser");
+const devTabs: DevTab[] = browserMode === "tabs"
+  ? [devTab("https://shop.test/", { title: "Shop demo", errors: 3, failedRequests: 2, canGoBack: true }), devTab("https://docs.test/guide", { title: "Guide", profile: "agent", agentControl: true }), devTab("http://localhost:3000/", { title: "My app", agentControl: true })]
+  : [];
+let devActive: number | null = devTabs[0]?.id ?? null;
+let devAgentsAllowed = true;
+const devLogs = {
+  console: browserMode === "tabs" ? [
+    { seq: 1, level: "log", text: 'page booted {"version":3}', t: Date.now() - 9000, page: "" },
+    { seq: 2, level: "warn", text: "Deprecated API used", t: Date.now() - 7000, page: "" },
+    { seq: 3, level: "error", text: "login failed 401", t: Date.now() - 5000, page: "" },
+  ] : [],
+  errors: browserMode === "tabs" ? [{ seq: 4, kind: "exception", message: "TypeError: null is not an object (evaluating 'null.x')", t: Date.now() - 3000, page: "", source: "app.js", line: 24, column: 47, stack: "@https://shop.test/app.js:24:47" }] : [],
+  net: browserMode === "tabs" ? [
+    { id: "a", kind: "fetch", method: "POST", url: "https://shop.test/api/login", page: "https://shop.test/", t: 0, status: 401, statusText: "Unauthorized", done: true, duration: 13, reqHeaders: { "content-type": "application/json", "x-csrf-token": "csrf-xyz" }, reqBody: '{"email":"bad@example.com","password":"wrong"}', resHeaders: { "content-type": "application/json" }, resBody: '{"error":"bad credentials"}', resTruncated: false, resSize: 27, mime: "application/json", frames: [], seq: 5, initiator: "at submit (app.js:14:9)" },
+    { id: "b", kind: "fetch", method: "GET", url: "https://shop.test/api/orders?page=1", page: "https://shop.test/", t: 0, status: 200, done: true, duration: 40, reqHeaders: {}, resHeaders: { "content-type": "application/json" }, resBody: '{"orders":[{"id":1001,"customer":"Ana"}]}', resTruncated: false, resSize: 121, mime: "application/json", frames: [], seq: 6 },
+    { id: "c", kind: "fetch", method: "GET", url: "https://shop.test/api/missing", page: "https://shop.test/", t: 0, status: 404, done: true, duration: 3, reqHeaders: {}, resHeaders: {}, resTruncated: false, resSize: 21, mime: "application/json", frames: [], seq: 7 },
+    { id: "d", kind: "resource", method: "GET", url: "https://shop.test/app.js", page: "https://shop.test/", t: 0, status: 200, done: true, duration: 20, reqHeaders: {}, resHeaders: {}, resTruncated: false, resSize: 1600, mime: "script", frames: [], seq: 8 },
+  ] : [],
+  mark: 8,
+};
+function browserState() { return { tabs: devTabs, active: devActive, agentsAllowed: devAgentsAllowed }; }
+function announceBrowser() { emit("browser://event", { type: "tabs", tabs: devTabs, active: devActive }); }
+
 function emit(event: string, payload: unknown) {
   const query = new URLSearchParams(window.location.search);
   const body =
@@ -405,12 +432,14 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       profileBook = { profiles: profileBook.profiles.filter((p) => p.id !== id), active: Object.fromEntries(Object.entries(profileBook.active).filter(([, v]) => v !== id)) };
       return profileBook;
     }
-    case "profile_set_active": {
-      const provider = args?.provider as string; const id = args?.id as string | null;
+    case "agent_set_profile": {
+      const target = snapshot.sessions.find((item) => item.id === args?.sessionId) ?? session;
+      const id = (args?.profile as string | null) ?? null;
+      (target as { profile?: string | null }).profile = id;
       const active = { ...profileBook.active };
-      if (id) active[provider] = id; else delete active[provider];
+      if (id) active[target.provider as string] = id; else delete active[target.provider as string];
       profileBook = { ...profileBook, active };
-      return profileBook;
+      return target;
     }
     case "profile_check": {
       const command = String(args?.command ?? "").trim();
@@ -663,6 +692,41 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       }
       return view();
     }
+    // The built-in browser: tabs and logs kept in memory, so its chrome can be reviewed here.
+    case "browser_state": return browserState();
+    case "browser_open": {
+      const tab = devTab(String(args?.url ?? "") || "about:blank");
+      devTabs.push(tab);
+      devActive = tab.id;
+      announceBrowser();
+      return tab;
+    }
+    case "browser_close": {
+      const at = devTabs.findIndex((tab) => tab.id === args?.id);
+      if (at >= 0) devTabs.splice(at, 1);
+      if (devActive === args?.id) devActive = devTabs.at(-1)?.id ?? null;
+      announceBrowser();
+      return null;
+    }
+    case "browser_activate": devActive = args?.id as number; announceBrowser(); return null;
+    case "browser_navigate": {
+      const tab = devTabs.find((item) => item.id === args?.id);
+      if (tab) { tab.url = /^https?:/.test(String(args?.input)) ? String(args?.input) : `https://${args?.input}`; tab.title = tab.url.replace(/^https?:\/\//, ""); tab.canGoBack = true; }
+      announceBrowser();
+      return tab?.url ?? "";
+    }
+    case "browser_set_agent_control": {
+      const tab = devTabs.find((item) => item.id === args?.id);
+      if (tab) tab.agentControl = Boolean(args?.allowed);
+      announceBrowser();
+      return null;
+    }
+    case "browser_set_agents_allowed": devAgentsAllowed = Boolean(args?.allowed); announceBrowser(); return null;
+    case "browser_logs": return devLogs;
+    case "browser_clear_logs": devLogs.console = []; devLogs.errors = []; devLogs.net = []; return null;
+    case "browser_request_as": return `curl 'https://shop.test/api/login' \\\n  -X POST`;
+    case "browser_go": case "browser_stop": case "browser_set_bounds": case "browser_set_visible": case "browser_devtools": case "browser_clear_data": return null;
+    case "browser_screenshot": return "";
     case "plugin:event|listen": {
       const target = args as { event: string; handler: number } | undefined;
       if (target) {
@@ -729,6 +793,16 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
       const queue = stateOf(sessionId);
       queue.items = queue.items.filter((item) => item.id !== args?.id);
       announceQueue(sessionId);
+      return queueOf(sessionId);
+    }
+    case "agent_queue_set_paused": {
+      const sessionId = (args?.sessionId as string) ?? "s1";
+      const queue = stateOf(sessionId);
+      queue.paused = Boolean(args?.paused);
+      announceQueue(sessionId);
+      if (!queue.paused && !turns.has(sessionId)) {
+        advanceQueue(sessionId, true);
+      }
       return queueOf(sessionId);
     }
     case "agent_queue_send_now": {

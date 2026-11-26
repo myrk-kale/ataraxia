@@ -369,6 +369,22 @@ impl Store for FakeStore {
         Ok(())
     }
 
+    fn set_session_profile(
+        &self,
+        id: SessionId,
+        profile: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let session = sessions
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "session not found"))?;
+        session.profile = profile.map(str::to_string);
+        session.updated_at = updated_at.to_string();
+        Ok(())
+    }
+
     fn session_agent_ref(&self, id: SessionId) -> Result<Option<String>> {
         Ok(self.agent_refs.lock().expect("refs").get(&id).cloned())
     }
@@ -398,6 +414,7 @@ impl Store for FakeStore {
         session.model = None;
         session.effort = None;
         session.agent = None;
+        session.profile = None;
         session.updated_at = updated_at.to_string();
         Ok(())
     }

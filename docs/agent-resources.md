@@ -8,7 +8,7 @@ provider's authentication remains available.
 
 `@` searches files from the active workspace. It accepts `*`, `**`, and `?` glob wildcards and
 expands matching files when the message is sent. `/` contains only Ataraxia's `/help`, `/new`,
-`/compact [instructions]`, and `/stop` commands; unsupported compaction options are reported for
+`/compact [instructions]`, `/stop` and `/pet` (shows or hides the companion) commands; unsupported compaction options are reported for
 the active agent.
 
 ## Skills

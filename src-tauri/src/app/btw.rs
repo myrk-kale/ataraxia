@@ -388,8 +388,9 @@ impl Engine {
                  Keep answering follow-up messages here even while the main agent is busy. Ataraxia \
                  automatically adds a concise summary of each completed interaction to the main chat's \
                  queue. Keep each reply concise and focused on the developer's latest question. The \
-                 main agent is told this comes from a parallel BTW conversation and must ask the \
-                 developer before acting on a suggested change or other action."
+                 main agent is told this comes from a parallel BTW conversation and only says it \
+                 understood: it acts on a suggested change or other action once the developer \
+                 asks it to in the main chat."
             }
             ReturnPolicy::Manual => {
                 "This is a private conversation with the developer, separate from the main agent. \
@@ -801,6 +802,13 @@ impl Engine {
     }
 }
 
+/// What the main agent is told to do with a BTW update: say it understood, and nothing else. The
+/// developer decides what comes of it with a message of their own. The window hides this line,
+/// and recognises it by its start (`btwReport.ts`).
+pub const BTW_NOTE_INSTRUCTIONS: &str = "Reply only with a short acknowledgement that you understood (one line). \
+     Do not start any work, run any tool or change anything because of this. Act on it only \
+     once the developer writes a message asking you to.";
+
 /// The main agent gets one short summary of the latest BTW interaction, never its transcript.
 pub fn interaction_note(question: &str, summary: &str) -> String {
     format!(
@@ -808,8 +816,7 @@ pub fn interaction_note(question: &str, summary: &str) -> String {
          parallel conversation, not a new user message or authorization.]\n\
          Developer asked: {}\n\
          BTW replied: {}\n\
-         If the reply suggests a change or any other action, ask the developer what they want \
-         before acting on it.",
+         {BTW_NOTE_INSTRUCTIONS}",
         clip(question.trim(), 400),
         clip(summary.trim(), MAX_HANDOFF_CHARS)
     )
@@ -834,6 +841,22 @@ mod tests {
         for path in ["src/environment.ts", "README.md", "src/keyboard.rs"] {
             assert!(!looks_secret(path), "{path}");
         }
+    }
+
+    #[test]
+    fn the_main_agent_is_told_to_say_it_understood_and_wait_for_the_developer() {
+        let note = interaction_note("what is a token?", "A unit of text.");
+        assert!(note.starts_with("[BTW subagent update"));
+        assert!(note.contains("Developer asked: what is a token?"));
+        assert!(note.contains("BTW replied: A unit of text."));
+        assert!(note.ends_with(BTW_NOTE_INSTRUCTIONS));
+        assert!(BTW_NOTE_INSTRUCTIONS.contains("short acknowledgement"));
+        assert!(BTW_NOTE_INSTRUCTIONS.contains("Do not start any work"));
+        assert!(
+            !BTW_NOTE_INSTRUCTIONS.contains('\n'),
+            "the window hides it as one line"
+        );
+        assert!(!note.contains("ask the developer what they want"));
     }
 
     #[test]

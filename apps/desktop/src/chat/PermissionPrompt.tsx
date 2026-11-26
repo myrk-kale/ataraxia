@@ -101,23 +101,40 @@ function Approval({ pending, onResolve }: { pending: PendingPermission; onResolv
   );
 }
 
-/** One question: its options, a line for another answer, and, if several may be picked, a button. */
+/** What was picked and written for one question, kept so going back finds it as it was left. */
+type Draft = { picked: string[]; written: string };
+
+/** The answer as the agent receives it. */
+function answerOf(draft: Draft): string {
+  return (draft.written ? [...draft.picked, draft.written] : draft.picked).join(", ");
+}
+
+/**
+ * One question: its options, a line for another answer, and, if several may be picked, a button.
+ * It can be passed without an answer, and, after the first, taken back to the one before.
+ */
 function Question({
   question,
   position,
   total,
+  initial,
   onAnswer,
   onSkip,
+  onBack,
+  onDismiss,
 }: {
   question: PermissionQuestion;
   position: number;
   total: number;
-  onAnswer: (answer: string) => void;
+  initial: Draft | undefined;
+  onAnswer: (draft: Draft) => void;
   onSkip: () => void;
+  onBack: (() => void) | null;
+  onDismiss: () => void;
 }) {
-  const keys = useRowKeys(onSkip);
-  const [chosen, setChosen] = useState<string[]>([]);
-  const [other, setOther] = useState("");
+  const keys = useRowKeys(onDismiss);
+  const [chosen, setChosen] = useState<string[]>(initial?.picked ?? []);
+  const [other, setOther] = useState(initial?.written ?? "");
   const written = other.trim();
   const multi = question.multiSelect;
 
@@ -128,15 +145,14 @@ function Question({
     const picked = question.options
       .map((option) => option.label)
       .filter((label) => chosen.includes(label));
-    const answer = (written ? [...picked, written] : picked).join(", ");
-    if (answer) {
-      onAnswer(answer);
+    if (picked.length > 0 || written) {
+      onAnswer({ picked, written });
     }
   }
 
   function choose(label: string) {
     if (!multi) {
-      onAnswer(label);
+      onAnswer({ picked: [label], written: "" });
       return;
     }
     setChosen((all) => (all.includes(label) ? all.filter((item) => item !== label) : [...all, label]));
@@ -162,6 +178,7 @@ function Question({
           <button
             key={option.label}
             aria-checked={multi ? chosen.includes(option.label) : undefined}
+            aria-current={!multi && chosen.includes(option.label) ? "true" : undefined}
             className={ROW}
             data-number={index + 1}
             data-row
@@ -183,7 +200,14 @@ function Question({
               </span>
             ) : null}
             <span className="min-w-0">
-              <span className="block font-medium">{option.label}</span>
+              <span className="block font-medium">
+                {option.label}
+                {!multi && chosen.includes(option.label) ? (
+                  <span aria-hidden="true" className="ml-1.5 text-cg-primary">
+                    ✓
+                  </span>
+                ) : null}
+              </span>
               {option.description ? (
                 <span className="block text-small text-cg-muted-strong">{option.description}</span>
               ) : null}
@@ -207,7 +231,7 @@ function Question({
                 if (multi) {
                   send();
                 } else {
-                  onAnswer(written);
+                  onAnswer({ picked: [], written });
                 }
               }
             }}
@@ -216,9 +240,14 @@ function Question({
       </div>
       <div className="mt-2.5 flex items-center justify-between gap-3 px-2.5">
         <p className="text-small text-cg-muted">
-          ↑↓ to move · {multi ? "Space to tick" : "Enter to choose"} · Esc to skip
+          ↑↓ to move · {multi ? "Space to tick" : "Enter to choose"} · Esc to dismiss
         </p>
         <div className="flex gap-2">
+          {onBack ? (
+            <Button size="sm" onClick={onBack}>
+              Back
+            </Button>
+          ) : null}
           <Button size="sm" onClick={onSkip}>
             Skip
           </Button>
@@ -238,7 +267,11 @@ function Question({
   );
 }
 
-/** Goes through the agent's questions one at a time; the answers go back together. */
+/**
+ * Goes through the agent's questions one at a time; the answers go back together. A question can
+ * be passed over and the one before taken back to, keeping what was answered. Declining every
+ * question, or reaching the end with none answered, declines the request.
+ */
 function Questions({
   questions,
   onResolve,
@@ -247,25 +280,48 @@ function Questions({
   onResolve: Resolve;
 }) {
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Keyed by position: two questions may be worded alike. A passed question has no entry.
+  const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const question = questions[step];
+
+  function finish(all: Record<number, Draft>) {
+    const answers: Record<string, string> = {};
+    questions.forEach((item, index) => {
+      const draft = all[index];
+      if (draft) {
+        answers[item.question] = answerOf(draft);
+      }
+    });
+    if (Object.keys(answers).length > 0) {
+      onResolve(true, answers);
+    } else {
+      onResolve(false);
+    }
+  }
+
+  function advance(all: Record<number, Draft>) {
+    setDrafts(all);
+    if (step + 1 < questions.length) {
+      setStep(step + 1);
+    } else {
+      finish(all);
+    }
+  }
 
   return (
     <Question
       key={step}
+      initial={drafts[step]}
       position={step + 1}
       question={question}
       total={questions.length}
-      onAnswer={(answer) => {
-        const next = { ...answers, [question.question]: answer };
-        if (step + 1 < questions.length) {
-          setAnswers(next);
-          setStep(step + 1);
-        } else {
-          onResolve(true, next);
-        }
+      onAnswer={(draft) => advance({ ...drafts, [step]: draft })}
+      onBack={step > 0 ? () => setStep(step - 1) : null}
+      onDismiss={() => onResolve(false)}
+      onSkip={() => {
+        const { [step]: _passed, ...rest } = drafts;
+        advance(rest);
       }}
-      onSkip={() => onResolve(false)}
     />
   );
 }

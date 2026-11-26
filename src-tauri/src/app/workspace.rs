@@ -1158,6 +1158,16 @@ impl<'a> WorkspaceService<'a> {
                 self.remembered_setting(&provider.effort_preference_key()),
             ),
         };
+        // And the account last chosen for its harness, if that profile still exists.
+        let profile = crate::domain::Profiles::parse(
+            self.store
+                .get_preference(crate::domain::PROFILES_KEY)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+        .active_for(provider)
+        .map(|found| found.id.clone());
         // A chat that was given a title keeps it; the others are named once they have begun.
         let named = title
             .as_deref()
@@ -1175,6 +1185,7 @@ impl<'a> WorkspaceService<'a> {
             model,
             effort,
             agent: None,
+            profile,
             kind: SessionKind::Chat,
             parent_session_id: None,
             created_at: now.clone(),

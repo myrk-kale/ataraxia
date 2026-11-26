@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { PROVIDER_LABELS } from "../lib/agent";
 import type { ProviderKind } from "../lib/workspace";
 import { Button } from "../ui/Button";
@@ -7,6 +7,7 @@ import { Dialog, Toggle } from "../ui/Overlay";
 import { play, useSound } from "./sound/sound";
 import { AppearanceSettings, SettingRow } from "./appearance/AppearanceSettings";
 import { ProfileSettings } from "./ProfileSettings";
+import { PetSettings } from "../pet/PetSettings";
 import { AutocompletePanel } from "./AutocompleteSettings";
 import { VoicePanel } from "./VoiceSettings";
 import { WakePanel } from "./WakeSettings";
@@ -17,6 +18,7 @@ import type { RepositoryId, WorkspaceId } from "../lib/workspace";
 
 const TABS = [
   { id: "appearance", label: "Appearance" },
+  { id: "pet", label: "Companion" },
   { id: "profiles", label: "Agent profiles" },
   { id: "resources", label: "Skills & MCP" },
   { id: "memory", label: "Memory" },
@@ -27,10 +29,11 @@ const TABS = [
   { id: "privacy", label: "Privacy" },
 ] as const;
 
-type TabId = (typeof TABS)[number]["id"];
+export type TabId = (typeof TABS)[number]["id"];
 
 export function SettingsDialog({
   isOpen,
+  openTab,
   provider,
   workspace = null,
   repository = null,
@@ -39,6 +42,8 @@ export function SettingsDialog({
   onClose,
 }: {
   isOpen: boolean;
+  /** The section to open on, when it is asked for from elsewhere (the companion's own menu). */
+  openTab?: TabId | null;
   provider: ProviderKind | null;
   /** The workspace and repository the app is looking at: the scopes the skills manager can edit besides global. */
   workspace?: { id: WorkspaceId; name: string } | null;
@@ -50,6 +55,11 @@ export function SettingsDialog({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("appearance");
+  useEffect(() => {
+    if (isOpen && openTab) {
+      setTab(openTab);
+    }
+  }, [isOpen, openTab]);
   const sound = useSound();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -115,6 +125,8 @@ export function SettingsDialog({
             role="tabpanel"
           >
             {tab === "appearance" ? <AppearanceSettings /> : null}
+
+            {tab === "pet" ? <PetSettings /> : null}
 
             {tab === "profiles" ? <ProfileSettings /> : null}
 

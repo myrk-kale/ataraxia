@@ -36,7 +36,10 @@ pub struct Engine {
     pub(crate) runtime: Arc<dyn AgentRuntime>,
     pub(crate) sink: Arc<dyn InsightSink>,
     /// Hidden sessions somebody is waiting on, woken when their turn ends.
-    waiters: Mutex<HashMap<SessionId, mpsc::Sender<bool>>>,
+    pub(crate) waiters: Mutex<HashMap<SessionId, mpsc::Sender<bool>>>,
+    /// Review triages running now, by checkpoint: the hidden session that does the work, and
+    /// whether the developer cancelled it.
+    pub(crate) triages: Mutex<HashMap<crate::domain::ids::CheckpointId, (SessionId, bool)>>,
     /// Discussions currently waiting for the agent, so a second question cannot overlap.
     pub(crate) busy: Mutex<std::collections::HashSet<String>>,
     /// Messages waiting for the agent of each chat to finish.
@@ -84,6 +87,7 @@ impl Engine {
             runtime,
             sink,
             waiters: Mutex::new(HashMap::new()),
+            triages: Mutex::new(HashMap::new()),
             busy: Mutex::new(std::collections::HashSet::new()),
             queues: Mutex::new(HashMap::new()),
             rate_waits: Mutex::new(HashMap::new()),
@@ -558,6 +562,11 @@ impl Engine {
             model,
             effort: None,
             agent: None,
+            // A helper runs under the account of its chat, unless it is on another harness.
+            profile: match provider {
+                Some(other) if other != parent.provider => None,
+                _ => parent.profile.clone(),
+            },
             kind,
             parent_session_id: Some(parent.id),
             created_at: now.clone(),

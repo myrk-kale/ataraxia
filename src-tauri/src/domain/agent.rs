@@ -204,6 +204,7 @@ pub fn ataraxia_commands() -> Vec<SlashCommand> {
             Some("[instructions]"),
         ),
         ("stop", "Stop the current run", None),
+        ("pet", "Show or hide the pet", None),
     ]
     .into_iter()
     .map(|(name, description, hint)| SlashCommand {

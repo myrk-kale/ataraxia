@@ -55,6 +55,8 @@ export type ChatSession = {
   model: string | null;
   effort: string | null;
   agent: string | null;
+  /** Launch profile (account) the chat starts its harness with; `null` is the default way. */
+  profile?: string | null;
   /** `chat` for the user's chats; hidden children (BTW, discussions) use other kinds. */
   kind?: "chat" | "btw" | "delegate" | "decision" | "analysis";
   parent_session_id?: SessionId | null;

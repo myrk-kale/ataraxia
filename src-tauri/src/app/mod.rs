@@ -4,6 +4,8 @@ pub mod actions;
 pub mod analysis;
 pub mod artifacts;
 pub mod autocomplete;
+pub mod browser;
+pub mod browser_tools;
 pub mod btw;
 pub mod code_graph;
 pub mod decisions;

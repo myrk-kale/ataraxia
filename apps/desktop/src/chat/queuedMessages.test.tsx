@@ -9,7 +9,7 @@ const ITEMS = [
 
 function render(items = ITEMS, paused = false) {
   return renderToStaticMarkup(
-    <QueuedMessages queue={{ items, paused }} onRemove={() => {}} onSendNow={() => {}} />,
+    <QueuedMessages queue={{ items, paused }} onRemove={() => {}} onSendNow={() => {}} onSetPaused={() => {}} />,
   );
 }
 
@@ -35,7 +35,7 @@ describe("QueuedMessages", () => {
 
   it("says why nothing is going out when the queue is paused", () => {
     const html = render(ITEMS, true);
-    expect(html).toContain("Paused because the last turn stopped");
+    expect(html).toContain("Paused: nothing is sent until you resume");
     expect(html).not.toContain("Queued (2)");
   });
 
@@ -45,10 +45,11 @@ describe("QueuedMessages", () => {
         queue={{ items: ITEMS, paused: true, reason: "The deploy needs a token." }}
         onRemove={() => {}}
         onSendNow={() => {}}
+        onSetPaused={() => {}}
       />,
     );
-    expect(html).toContain("Paused by the agent: The deploy needs a token. Send a message");
-    expect(html).not.toContain("last turn stopped");
+    expect(html).toContain("Paused by the agent: The deploy needs a token. Resume");
+    expect(html).not.toContain("nothing is sent until you resume");
   });
 
   it("shows a message that is still being added, but does not let it be sent or removed yet", () => {
@@ -57,11 +58,18 @@ describe("QueuedMessages", () => {
         queue={{ items: [{ id: "pending:1", text: "just sent", images: [], pending: true }], paused: false }}
         onRemove={() => {}}
         onSendNow={() => {}}
+        onSetPaused={() => {}}
       />,
     );
     expect(html).toContain("just sent");
     expect(html.match(/disabled=""/g)).toHaveLength(2);
     expect(html).toContain("Being added to the queue");
+  });
+
+  it("offers to hold a queue that is going on, and to resume one that is held", () => {
+    expect(render()).toContain(">Pause<");
+    expect(render()).toContain("not even after a /compact");
+    expect(render(ITEMS, true)).toContain(">Resume<");
   });
 
   it("lets a message the app has listed be sent and removed", () => {

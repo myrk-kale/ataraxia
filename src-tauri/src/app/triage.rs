@@ -24,6 +24,12 @@ pub struct TriageOutcome {
     pub skipped: usize,
     /// Entries of the answer that named no component of the queue.
     pub ignored: usize,
+    /// The developer stopped it: nothing was changed.
+    #[serde(default)]
+    pub cancelled: bool,
+    /// How many components the subagent was shown.
+    #[serde(default)]
+    pub examined: usize,
 }
 
 /// One verdict of the subagent on one component.
@@ -167,8 +173,34 @@ impl Engine {
             ));
         }
         let hidden = self.hidden_session(&session, SessionKind::Analysis, "Review triage")?;
-        let answer = self.ask_and_wait(&hidden, &triage_prompt(&computed))?;
-        let verdicts = parse_triage(&answer)?;
+        {
+            let mut running = self.triages.lock();
+            if running.contains_key(&checkpoint.id) {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "a triage of this queue is already running",
+                ));
+            }
+            running.insert(checkpoint.id, (hidden.id, false));
+        }
+        let examined = computed.units.len().min(MAX_UNITS);
+        let asked = self.ask_and_wait(&hidden, &triage_prompt(&computed));
+        let cancelled = self
+            .triages
+            .lock()
+            .remove(&checkpoint.id)
+            .is_some_and(|(_, cancelled)| cancelled);
+        if cancelled {
+            // Whatever the subagent said or failed with, the developer asked for it to stop.
+            return Ok(TriageOutcome {
+                reordered: 0,
+                skipped: 0,
+                ignored: 0,
+                cancelled: true,
+                examined,
+            });
+        }
+        let verdicts = parse_triage(&asked?)?;
 
         let existing = self.db.list_unit_priorities(checkpoint.id)?;
         // The developer's own priorities win: the triage never overwrites them.
@@ -186,6 +218,8 @@ impl Engine {
             reordered: 0,
             skipped: 0,
             ignored: 0,
+            cancelled: false,
+            examined,
         };
         for verdict in verdicts {
             let Ok(unit) = actions::find_unit(&computed, &verdict.path, &verdict.unit) else {
@@ -221,6 +255,28 @@ impl Engine {
             checkpoint_id: checkpoint.id,
         });
         Ok(outcome)
+    }
+
+    /// Stops the triage running on a checkpoint. Returns whether there was one. The queue is left
+    /// as it was.
+    pub fn review_triage_cancel(&self, checkpoint_id: CheckpointId) -> bool {
+        let session = {
+            let mut running = self.triages.lock();
+            match running.get_mut(&checkpoint_id) {
+                Some((session, cancelled)) => {
+                    *cancelled = true;
+                    *session
+                }
+                None => return false,
+            }
+        };
+        // Wakes whoever waits for the answer, then stops the subagent itself.
+        if let Some(waiter) = self.waiters.lock().remove(&session) {
+            let _ = waiter.send(false);
+        }
+        let _ = self.runtime.cancel(&session, None);
+        self.runtime.stop_session(&session);
+        true
     }
 
     /// Takes back everything the triage set on a checkpoint: the queue is the computed one again.

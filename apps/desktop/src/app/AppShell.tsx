@@ -29,6 +29,12 @@ import { ChatPanel } from "../chat/ChatPanel";
 import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsReview } from "../decisions/DecisionsReview";
 import { FlowSpace } from "../flow/FlowSpace";
+import { BrowserNotice } from "../browser/BrowserNotice";
+import { Onboarding } from "../onboarding/Onboarding";
+import { Companion } from "../pet/Companion";
+import type { TabId as SettingsTab } from "./SettingsDialog";
+import { shouldShowOnboarding } from "../onboarding/store";
+import { BrowserSpace } from "../browser/BrowserSpace";
 import { TasksDrawer } from "../tasks/TasksDrawer";
 import { MemoryGraph } from "../memory/MemoryGraph";
 import { btwList, codeRepoChanges, type BtwTask, type RepoChanges } from "../lib/insights";
@@ -190,6 +196,25 @@ export function AppShell() {
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  // The welcome tour: shown once, after the opening animation, to everybody who has not seen it.
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    if (!shouldShowOnboarding()) {
+      return;
+    }
+    const root = document.documentElement;
+    const open = () => {
+      if (!root.hasAttribute("data-intro-running")) {
+        setTourOpen(true);
+        observer.disconnect();
+      }
+    };
+    const observer = new MutationObserver(open);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-intro-running"] });
+    open();
+    return () => observer.disconnect();
+  }, []);
   // The workspace dialog: a new workspace, or the one on screen.
   const [workspaceDialog, setWorkspaceDialog] = useState<"new" | "edit" | null>(null);
   const [codeRequest, setCodeRequest] = useState<{ path: string; line: number | null; endLine: number | null; n: number; checkpointId?: string } | null>(null);
@@ -205,6 +230,10 @@ export function AppShell() {
     flow: flowBridge.current,
   };
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
+  const companionChats = useMemo(
+    () => [...workspace.sessions.filter((item) => !drafts.has(item.id)), ...(workspace.other_sessions ?? [])].map((item) => ({ id: item.id, title: item.title })),
+    [workspace.sessions, workspace.other_sessions, drafts],
+  );
   const [boot, setBoot] = useState<LoadState>({ kind: "loading" });
   const [providers, setProviders] = useState<ProviderDescriptor[] | null>(null);
   const [preferredProvider, setPreferredProvider] = useState<ProviderKind | null>(readStoredProvider);
@@ -264,6 +293,7 @@ export function AppShell() {
     decisionsOpen ||
     legendOpen ||
     settingsOpen ||
+    tourOpen ||
     mcpOpen ||
     goToBranchOpen;
   // A dialog a view opens by itself (a diagram full screen) owns the keyboard as well.
@@ -296,6 +326,9 @@ export function AppShell() {
           break;
         case "memory":
           setMemoryOpen((open) => !open);
+          break;
+        case "browser":
+          setSpace((current) => (current === "browser" ? "chat" : "browser"));
           break;
         case "search":
           setSearchOpen(true);
@@ -1154,6 +1187,13 @@ export function AppShell() {
             </ErrorBoundary>
           </div>
         ) : null}
+        {visited.has("browser") ? (
+          <div className={space === "browser" ? "h-full" : "hidden"}>
+            <ErrorBoundary label="Browser">
+              <BrowserSpace overlayOpen={overlayOpen} visible={space === "browser"} onError={setError} />
+            </ErrorBoundary>
+          </div>
+        ) : null}
         {visited.has("flow") ? (
           <div className={space === "flow" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Flow">
@@ -1270,14 +1310,41 @@ export function AppShell() {
           onOpen={openSearchResult}
         />
       ) : null}
-      <ShortcutLegend isOpen={legendOpen} onClose={() => setLegendOpen(false)} />
+      <ShortcutLegend
+        isOpen={legendOpen}
+        onClose={() => setLegendOpen(false)}
+        onTour={() => {
+          setLegendOpen(false);
+          setTourOpen(true);
+        }}
+      />
+      <Onboarding isOpen={tourOpen} onClose={() => setTourOpen(false)} />
+      <Companion
+        chats={companionChats}
+        viewing={space === "chat" ? workspace.selected_session_id : null}
+        onCustomize={() => {
+          setSettingsTab("pet");
+          setSettingsOpen(true);
+        }}
+        onOpenChat={(id) => {
+          void runWorkspace(async () => {
+            const snapshot = await workspaceOpenSession(id);
+            setSpace("chat");
+            return snapshot;
+          });
+        }}
+      />
       <SettingsDialog
         isOpen={settingsOpen}
+        openTab={settingsTab}
         provider={selectedSession?.provider ?? null}
         repository={selectedRepository ? { id: selectedRepository.id, name: selectedRepository.name } : null}
         workspace={inWorkspace ? { id: inWorkspace.workspace.id, name: inWorkspace.workspace.name } : null}
         workspaces={memoryWorkspaces}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          setSettingsTab(null);
+        }}
         onOpenMemoryGraph={() => setMemoryOpen(true)}
       />
       <McpServersDialog
@@ -1310,6 +1377,7 @@ export function AppShell() {
       />
       <UpdatePrompt />
       <Toast message={error} onDismiss={() => setError(null)} />
+      <BrowserNotice inBrowser={space === "browser"} onWatch={() => setSpace("browser")} />
     </div>
   );
 }

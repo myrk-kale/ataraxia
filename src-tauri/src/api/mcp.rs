@@ -428,6 +428,10 @@ impl ApiService {
         if self.chats_workspace().is_some() {
             listed.extend(chat_tools());
         }
+        // Driving a browser has effects outside Ataraxia, so only a chat that may write has it.
+        if let (true, Some(browser)) = (self.allow_write, &self.browser) {
+            listed.extend(browser.tools());
+        }
         listed
     }
 
@@ -442,6 +446,9 @@ impl ApiService {
         if self.chats_workspace().is_some() {
             parts.push(CHATS_INSTRUCTIONS);
         }
+        if self.allow_write && self.browser.is_some() {
+            parts.push(crate::app::browser_tools::BROWSER_INSTRUCTIONS);
+        }
         parts.join("\n\n")
     }
 
@@ -452,6 +459,9 @@ impl ApiService {
             .filter(|args| args.is_object())
             .cloned()
             .unwrap_or_else(|| Value::Object(Map::new()));
+        if crate::app::browser_tools::is_browser_tool(name) {
+            return self.call_browser_tool(name, &args);
+        }
         let write = tools()
             .iter()
             .find(|tool| tool["name"] == name)
@@ -470,6 +480,56 @@ impl ApiService {
                 "isError": true
             }),
         }
+    }
+
+    /// A browser tool: answered with text, and a picture when it took one.
+    fn call_browser_tool(&self, name: &str, args: &Value) -> Value {
+        use crate::app::browser_tools::Content;
+        let refused = |message: &str| json!({ "content": [{ "type": "text", "text": message }], "isError": true });
+        let Some(browser) = self.browser.as_ref() else {
+            return refused("the browser is not available");
+        };
+        if !self.allow_write {
+            let outcome: ApiResult<Value> = Err(super::ApiError::forbidden(
+                "this session may not drive the browser",
+            ));
+            self.audit(&format!("MCP {name}"), false, &outcome);
+            return refused("this session is read-only and may not drive the browser");
+        }
+        let Some(reply) = browser.call(self.scope, name, args) else {
+            return refused(&format!("there is no tool {name}"));
+        };
+        let write = !matches!(
+            name,
+            "browser_snapshot"
+                | "browser_screenshot"
+                | "browser_console"
+                | "browser_network"
+                | "browser_inspect"
+        );
+        let text = reply.as_text();
+        // The audit trail keeps what was asked and how it went, never a picture or a page's text.
+        let outcome: ApiResult<Value> = if reply.is_error {
+            Err(super::ApiError::invalid(
+                text.chars().take(200).collect::<String>(),
+            ))
+        } else {
+            Ok(
+                json!({ "tool": name, "args": args.to_string().chars().take(200).collect::<String>() }),
+            )
+        };
+        self.audit(&format!("MCP {name}"), write, &outcome);
+        let content: Vec<Value> = reply
+            .content
+            .iter()
+            .map(|part| match part {
+                Content::Text(text) => json!({ "type": "text", "text": text }),
+                Content::Image { data, mime } => {
+                    json!({ "type": "image", "data": data, "mimeType": mime })
+                }
+            })
+            .collect();
+        json!({ "content": content, "isError": reply.is_error })
     }
 
     fn run_tool(&self, name: &str, args: &Value, write: bool) -> ApiResult<Value> {

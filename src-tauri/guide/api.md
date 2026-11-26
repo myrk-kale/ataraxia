@@ -64,6 +64,8 @@ out. `{...}` in a path is an id taken from an earlier response.
 | `POST /v1/schedules` | yes | be sent a message later: `prompt` (required), `in_minutes` or `at`, `every_minutes`; see `schedule.md` |
 | `DELETE /v1/schedules/{schedule_id}` | yes | cancels a schedule (the id or its first characters) |
 | `POST /v1/queue/pause` | yes | holds the developer's message queue because something is left undone: `reason` (optional); see `queue.md` |
+| `POST /v1/shares` | yes | puts a file of this chat on the local file server so the chat can show it and the developer download it: `path` (required), `name`; see `files.md` |
+| `DELETE /v1/shares/{share_id}` | yes | stops offering a shared file |
 | `PUT /v1/priority` | yes | changes or resets a component's priority |
 | `POST /v1/flows` | yes | draws a diagram |
 

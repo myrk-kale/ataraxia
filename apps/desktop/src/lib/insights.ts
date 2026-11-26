@@ -513,10 +513,12 @@ export const codeCompare = (
   repositoryId: RepositoryId | null = null,
 ) => invoke<Checkpoint>("code_compare", { sessionId, base, head, mergeBase, repositoryId });
 
-export type TriageOutcome = { reordered: number; skipped: number; ignored: number };
+export type TriageOutcome = { reordered: number; skipped: number; ignored: number; cancelled?: boolean; examined?: number };
 /** A read-only subagent orders the review queue and leaves out what needs no person's eyes. */
 export const reviewTriage = (sessionId: SessionId, checkpointId: CheckpointId | null) =>
   invoke<TriageOutcome>("review_triage", { sessionId, checkpointId });
+/** Stops the triage running on a checkpoint; whether there was one. The queue stays as it was. */
+export const reviewTriageCancel = (checkpointId: CheckpointId) => invoke<boolean>("review_triage_cancel", { checkpointId });
 /** Takes the triage's order back: the queue is the computed one again. */
 export const reviewUntriage = (checkpointId: CheckpointId) => invoke<void>("review_untriage", { checkpointId });
 

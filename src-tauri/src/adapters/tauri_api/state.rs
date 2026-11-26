@@ -33,6 +33,8 @@ pub struct AppState {
     pub speech: Arc<crate::adapters::speech::Recognizer>,
     /// Keeps the machine (and, as Settings says, the display) on while there is work.
     pub sleep_guard: Arc<crate::adapters::sleep::SystemSleepGuard>,
+    /// The built-in browser: the window's tabs, which agents may also drive.
+    pub browser: Arc<crate::app::browser::Browser>,
 }
 
 pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
@@ -92,7 +94,31 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
         api.set_code_graph(Arc::clone(&engine) as Arc<dyn crate::api::CodeGraph>);
         api.set_scheduler(Arc::clone(&engine) as Arc<dyn crate::api::Scheduling>);
+        // Without its own server the files simply cannot be offered: the rest of the app works.
+        match crate::files::FileServer::start() {
+            Ok(files) => api.set_files(files as Arc<dyn crate::api::FileSharing>),
+            Err(error) => eprintln!("ataraxia: no file server: {error}"),
+        }
         api.set_sink(tauri_sink.clone() as Arc<dyn crate::ports::InsightSink>);
+    }
+    let browser_engine = crate::adapters::browser::TauriEngine::new(app.clone());
+    let browser = crate::app::browser::Browser::new(
+        browser_engine.clone(),
+        crate::adapters::browser::TauriEngine::emit(app),
+    );
+    browser_engine.set_events(browser.clone());
+    browser.start_pump();
+    if store
+        .get_preference(super::browser::PREF_AGENTS_ALLOWED)
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "0")
+    {
+        browser.set_agents_allowed(false);
+    }
+    if let Some(api) = &api {
+        api.set_browser(browser.clone() as Arc<dyn crate::api::Browsing>);
+        debug_access(api);
     }
     engine.ensure_builtin_presets()?;
     engine.recover();
@@ -116,8 +142,28 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         api,
         speech: crate::adapters::speech::Recognizer::new(data_dir.join("models")),
         sleep_guard,
+        browser,
     })
 }
+
+/// In a debug build, `ATARAXIA_DEBUG_API_FILE=<path>` writes the address and a write token of the
+/// local API there, for a chat that is not any agent's: how the browser is driven from a script
+/// while the app runs (`curl` against `/mcp`). A release build has no such door.
+#[cfg(debug_assertions)]
+fn debug_access(api: &Arc<ApiServer>) {
+    let Some(path) = std::env::var_os("ATARAXIA_DEBUG_API_FILE") else {
+        return;
+    };
+    let session = crate::domain::ids::SessionId::new();
+    let access = api.issue_token(session, true);
+    let body = serde_json::json!({ "url": access.url, "token": access.token, "session": session.0.to_string() });
+    if let Err(error) = std::fs::write(&path, body.to_string()) {
+        eprintln!("ataraxia: could not write the debug API file: {error}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_access(_api: &Arc<ApiServer>) {}
 
 impl AppState {
     pub fn pty_host(&self) -> &dyn PtyHost {

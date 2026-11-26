@@ -8,7 +8,6 @@ import {
   nextColor,
   profilesOf,
   saveProfile,
-  setActiveProfile,
   useProfiles,
   type HarnessProfile,
   type ProfileCheck,
@@ -213,60 +212,33 @@ function ProfileForm({
   );
 }
 
-function Choice({
-  group,
-  checked,
+/** One profile in the list: its colour, name and command, and what can be done to it. */
+function Entry({
   title,
   detail,
   swatch,
-  mono = false,
-  onChoose,
   actions,
 }: {
-  group: string;
-  checked: boolean;
   title: string;
   detail: string;
-  swatch?: string;
-  /** The detail is a command, so it is set in the code face. */
-  mono?: boolean;
-  onChoose: () => void;
+  swatch: string;
   actions?: React.ReactNode;
 }) {
   return (
-    <div
-      className={`flex items-center gap-3 rounded-cg-md border px-3 py-2.5 ${
-        checked ? "border-cg-line-strong bg-cg-tint" : "border-transparent hover:bg-cg-tint"
-      }`}
-    >
-      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
-        <input
-          checked={checked}
-          className="h-3.5 w-3.5 flex-none cursor-pointer accent-[var(--cg-ink)]"
-          name={group}
-          type="radio"
-          onChange={onChoose}
-        />
-        {swatch ? (
-          <span aria-hidden="true" className="h-3 w-3 flex-none rounded-full" style={{ background: swatch }} />
-        ) : null}
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="flex items-center gap-2 text-ui font-medium text-cg-ink">
-            {title}
-            {checked ? <span className="text-small font-normal text-cg-muted-strong">In use</span> : null}
-          </span>
-          <span className={`truncate text-small text-cg-muted-strong ${mono ? "font-mono" : ""}`}>{detail}</span>
-        </span>
-      </label>
+    <li className="flex items-center gap-3 rounded-cg-md px-3 py-2.5 hover:bg-cg-tint">
+      <span aria-hidden="true" className="h-3 w-3 flex-none rounded-full" style={{ background: swatch }} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="text-ui font-medium text-cg-ink">{title}</span>
+        <span className="truncate font-mono text-small text-cg-muted-strong">{detail}</span>
+      </span>
       {actions}
-    </div>
+    </li>
   );
 }
 
 function HarnessSection({ provider }: { provider: ProviderKind }) {
   const all = useProfiles();
   const profiles = profilesOf(all, provider);
-  const activeId = all.active[provider] ?? null;
   const group = useId();
   // `new` is the form for a profile that does not exist yet; an id is the form for that one.
   const [editing, setEditing] = useState<"new" | string | null>(null);
@@ -275,31 +247,18 @@ function HarnessSection({ provider }: { provider: ProviderKind }) {
   const label = PROVIDER_LABELS[provider];
   const editingProfile = editing && editing !== "new" ? (profiles.find((item) => item.id === editing) ?? null) : null;
 
-  async function choose(id: string | null) {
-    setProblem(null);
-    try {
-      await setActiveProfile(provider, id);
-    } catch (reason) {
-      setProblem(String(reason));
-    }
-  }
-
   return (
     <section aria-labelledby={`${group}-title`} className="border-b border-cg-line py-5 first:pt-0 last:border-b-0">
       <h4 className="mb-2 flex items-center gap-2 text-ui font-semibold text-cg-ink" id={`${group}-title`}>
         <ProviderMark provider={provider} size={18} />
         {label}
       </h4>
-      <div aria-labelledby={`${group}-title`} className="grid gap-1" role="radiogroup">
-        <Choice
-          checked={activeId === null}
-          detail="Starts it the way it is installed"
-          group={group}
-          title="Default"
-          onChoose={() => void choose(null)}
-        />
+      {profiles.length === 0 ? (
+        <p className="px-3 text-small text-cg-muted-strong">No profile yet: it starts the way it is installed.</p>
+      ) : (
+      <ul aria-labelledby={`${group}-title`} className="grid gap-1">
         {profiles.map((profile) => (
-          <Choice
+          <Entry
             key={profile.id}
             actions={
               confirming === profile.id ? (
@@ -337,16 +296,13 @@ function HarnessSection({ provider }: { provider: ProviderKind }) {
                 </span>
               )
             }
-            checked={activeId === profile.id}
             detail={profile.command}
-            group={group}
-            mono
             swatch={profile.color}
             title={profile.name}
-            onChoose={() => void choose(profile.id)}
           />
         ))}
-      </div>
+      </ul>
+      )}
       {problem ? (
         <p className="mt-2 text-small text-cg-del-fg" role="alert">
           {problem}
@@ -372,17 +328,19 @@ function HarnessSection({ provider }: { provider: ProviderKind }) {
 
 /**
  * The ways each harness can be started. A profile is a command (usually the settings that point
- * the harness at another account) with a name and a colour; the one in use is chosen here, and
- * shows as a glow behind the harness's mark in the chat.
+ * the harness at another account) with a name and a colour. They are added and edited here and
+ * chosen for each chat, next to its provider and model; the one a chat uses shows as a glow
+ * behind the harness's mark.
  */
 export function ProfileSettings() {
   return (
     <div>
       <p className="mb-5 text-small leading-5 text-cg-muted-strong">
-        A profile is a way of starting an agent, usually another account. The one in use starts
-        every new chat, and a chat that is already open switches to it at its next message (the new
-        agent is told where the conversation so far is kept). The profile in use shows as a glow
-        behind the agent&apos;s mark; hover it for the name.
+        A profile is a way of starting an agent, usually another account. Add them here and choose
+        one for each chat in the chat&apos;s own picker, next to the provider and model. The chat
+        switches at its next message (the new agent is told where the conversation so far is kept),
+        and a new chat starts with the profile last chosen for its agent. The profile a chat uses
+        shows as a glow behind the agent&apos;s mark; hover it for the name.
       </p>
       {HARNESSES.map((provider) => (
         <HarnessSection key={provider} provider={provider} />

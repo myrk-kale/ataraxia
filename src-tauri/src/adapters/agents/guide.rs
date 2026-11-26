@@ -18,6 +18,16 @@ const FILES: &[(&str, &str)] = &[
     ("schedule.md", include_str!("../../../guide/schedule.md")),
     ("tasks.md", include_str!("../../../guide/tasks.md")),
     ("queue.md", include_str!("../../../guide/queue.md")),
+    ("files.md", include_str!("../../../guide/files.md")),
+    ("browser.md", include_str!("../../../guide/browser.md")),
+    (
+        "browser-network.md",
+        include_str!("../../../guide/browser-network.md"),
+    ),
+    (
+        "browser-debug.md",
+        include_str!("../../../guide/browser-debug.md"),
+    ),
     ("memory.md", include_str!("../../../guide/memory.md")),
     ("api.md", include_str!("../../../guide/api.md")),
 ];
@@ -61,6 +71,8 @@ fn base_preamble(index: &Path) -> String {
          - When explaining structure, relations or three or more things compared, or when asked for an SVG or mind map, add an SVG in a ```svg code block (the chat shows an image). Before your first in a chat, read {} (how, and when not).\n\
          - To come back to something later (a deploy still running, a retry in minutes), do not use cron, wakeup or /loop tools: they are off. {} says how.\n\
          - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
+         - A file for the developer to see or download: share it on Ataraxia's file server; {} says how.\n\
+         - For web pages (reading, acting, their HTTP calls, debugging) use the browser_* tools, never a browser of your own; read {} first.\n\
          - Use the local HTTP API from bash with curl as the guide explains, with $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment.\n\
          - {}\n\
          - The developer keeps numbered tasks in Ataraxia. When they name one (\"#12\", \"task 12\"), fetch it with `curl -sS \"$ATARAXIA_API_URL/v1/tasks/12\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\"` and work from its title and notes; {} has details. Do not guess a task from its number.\n\
@@ -69,6 +81,8 @@ fn base_preamble(index: &Path) -> String {
         index.with_file_name("svg.md").display(),
         index.with_file_name("schedule.md").display(),
         index.with_file_name("queue.md").display(),
+        index.with_file_name("files.md").display(),
+        index.with_file_name("browser.md").display(),
         crate::api::CODE_GRAPH_INSTRUCTIONS,
         index.with_file_name("tasks.md").display()
     )
@@ -244,10 +258,36 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_playbooks_name_only_tools_that_exist_and_the_prompt_points_at_them() {
+        let tools: Vec<String> = crate::app::browser_tools::browser_tools()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect();
+        let mut used = 0;
+        for (name, text) in FILES.iter().filter(|(name, _)| name.starts_with("browser")) {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if word.starts_with("browser_") && word != "browser_" {
+                    used += 1;
+                    assert!(
+                        tools.iter().any(|tool| tool == word),
+                        "{name} names {word}, which is not a tool"
+                    );
+                }
+            }
+        }
+        assert!(used > 15, "the playbooks should use the tools: {used}");
+        for tool in &tools {
+            assert!(FILES.iter().any(|(name, text)| name.starts_with("browser") && text.contains(tool.as_str())), "{tool} is in no playbook");
+        }
+        let prompt = preamble(Path::new("/data/guide/README.md"), true);
+        assert!(prompt.contains("/data/guide/browser.md") && prompt.contains("browser_*"));
+    }
+
+    #[test]
     fn the_prompt_stays_short() {
         let text = preamble(Path::new("/data/guide/README.md"), true);
         assert!(
-            text.split_whitespace().count() < 660,
+            text.split_whitespace().count() < 700,
             "{} words",
             text.split_whitespace().count()
         );

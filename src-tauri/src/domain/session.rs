@@ -109,6 +109,9 @@ pub struct ChatSession {
     /// Named agent the chat runs as (a Claude/OpenCode agent definition); `None` = default.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Launch profile (an account) the chat starts its harness with; `None` = the default way.
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub kind: SessionKind,
     /// The chat this hidden session belongs to.

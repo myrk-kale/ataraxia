@@ -1,16 +1,24 @@
 import type { ProviderKind } from "../lib/workspace";
-import { useActiveProfile, type HarnessProfile } from "../lib/profiles";
+import { useChatProfile, type HarnessProfile } from "../lib/profiles";
 import { Tip } from "../ui/Overlay";
 import { ProviderMark } from "./ProviderMark";
 
 /**
- * A harness's mark, with a soft blur of the active profile's colour behind it when one is
- * chosen, and the profile's name on hover. The default way of starting has no glow and nothing
+ * A harness's mark, with a soft blur of the colour of the profile the chat chose behind it, and the profile's name on hover. The default way of starting has no glow and nothing
  * to say, so with no profile this is the plain mark. The colour is only a quick sign: the name
  * is also read out, shown in the usage details and listed in the settings.
  */
-export function ProfileMark({ provider, size = 24 }: { provider: ProviderKind; size?: number }) {
-  return <ProfileMarkView profile={useActiveProfile(provider)} provider={provider} size={size} />;
+export function ProfileMark({
+  provider,
+  profileId,
+  size = 24,
+}: {
+  provider: ProviderKind;
+  /** The profile the chat chose; `null` is the default way. */
+  profileId: string | null | undefined;
+  size?: number;
+}) {
+  return <ProfileMarkView profile={useChatProfile(provider, profileId)} provider={provider} size={size} />;
 }
 
 /** The mark for a given profile (or none), without reading the app's state. */

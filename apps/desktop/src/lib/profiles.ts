@@ -16,7 +16,7 @@ export type HarnessProfile = {
 
 export type Profiles = {
   profiles: HarnessProfile[];
-  /** Harness to the id of the profile it starts with; a harness not listed starts the default way. */
+  /** Harness to the id of the profile new chats of it start with (the one chosen last). */
   active: Record<string, string>;
 };
 
@@ -44,9 +44,12 @@ export function profilesOf(all: Profiles, provider: ProviderKind): HarnessProfil
   return all.profiles.filter((profile) => profile.provider === provider);
 }
 
-/** The profile a harness starts with now; `null` is the default way. */
-export function activeProfile(all: Profiles, provider: ProviderKind): HarnessProfile | null {
-  const id = all.active[provider];
+/** The profile a chat chose; `null` is the default way (also for one that was deleted since). */
+export function chosenProfile(
+  all: Profiles,
+  provider: ProviderKind,
+  id: string | null | undefined,
+): HarnessProfile | null {
   return (id && profilesOf(all, provider).find((profile) => profile.id === id)) || null;
 }
 
@@ -81,11 +84,6 @@ export async function deleteProfile(id: string): Promise<void> {
   publish(await invoke<Profiles>("profile_delete", { id }));
 }
 
-/** Chooses what a harness starts with (`null`: the default). Running chats switch at their next message. */
-export async function setActiveProfile(provider: ProviderKind, id: string | null): Promise<void> {
-  publish(await invoke<Profiles>("profile_set_active", { provider, id }));
-}
-
 export function checkProfile(command: string) {
   return invoke<ProfileCheck>("profile_check", { command });
 }
@@ -107,7 +105,7 @@ export function useProfiles(): Profiles {
   return useSyncExternalStore(subscribe, () => current);
 }
 
-/** The profile the harness starts with now, or `null` for the default way. */
-export function useActiveProfile(provider: ProviderKind): HarnessProfile | null {
-  return activeProfile(useProfiles(), provider);
+/** The profile a chat runs under, or `null` for the default way. */
+export function useChatProfile(provider: ProviderKind, id: string | null | undefined): HarnessProfile | null {
+  return chosenProfile(useProfiles(), provider, id);
 }
