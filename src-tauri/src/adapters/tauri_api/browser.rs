@@ -207,3 +207,31 @@ pub fn browser_screenshot(state: tauri::State<'_, AppState>, id: TabId) -> Res<S
 pub fn browser_clear_data(state: tauri::State<'_, AppState>, profile: Profile) -> Res<()> {
     state.browser.clear_data(profile).map_err(map_error)
 }
+
+#[tauri::command(async)]
+pub fn browser_history(
+    state: tauri::State<'_, AppState>,
+    workspace_id: crate::domain::ids::WorkspaceId,
+) -> Res<Vec<crate::app::browser_history::HistoryEntry>> {
+    state
+        .browser
+        .history
+        .as_ref()
+        .ok_or_else(|| "Browser history is unavailable".to_string())?
+        .list(workspace_id)
+        .map_err(map_error)
+}
+
+#[tauri::command(async)]
+pub fn browser_clear_history(
+    state: tauri::State<'_, AppState>,
+    workspace_id: crate::domain::ids::WorkspaceId,
+) -> Res<()> {
+    state
+        .browser
+        .history
+        .as_ref()
+        .ok_or_else(|| "Browser history is unavailable".to_string())?
+        .clear(workspace_id)
+        .map_err(map_error)
+}

@@ -4,6 +4,7 @@ import {
   Bot,
   Bug,
   Globe,
+  History,
   LoaderCircle,
   MoreHorizontal,
   Plus,
@@ -31,6 +32,7 @@ import {
 } from "../lib/browser";
 import { Button } from "../ui/Button";
 import { Tip } from "../ui/Overlay";
+import { BrowserHistoryPanel } from "./BrowserHistoryPanel";
 import { DebugPanel } from "./DebugPanel";
 import { displayAddress, START_PAGES, tabLabel } from "./model";
 import { useSomethingOver, useViewport } from "./useViewport";
@@ -186,10 +188,12 @@ function useSnapshot(tab: number | null, live: boolean, loading: boolean): strin
 export function BrowserSpace({
   visible,
   overlayOpen,
+  workspaceId = null,
   onError,
 }: {
   /** This space is the one on screen. */
   visible: boolean;
+  workspaceId?: string | null;
   /** A dialog or panel of the interface is open over everything. */
   overlayOpen: boolean;
   onError: (message: string) => void;
@@ -200,6 +204,13 @@ export function BrowserSpace({
   const [debugOpen, setDebugOpen] = useState(() => window.localStorage.getItem(OPEN_KEY) === "1");
   const [debugHeight, setDebugHeight] = useState(() => readNumber(HEIGHT_KEY, 280));
   const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyButton = useRef<HTMLButtonElement>(null);
+
+  function closeHistory(): void {
+    setHistoryOpen(false);
+    historyButton.current?.focus();
+  }
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
   const address = useRef<HTMLInputElement>(null);
@@ -208,7 +219,7 @@ export function BrowserSpace({
 
   const showStart = !active || active.url === "about:blank";
   const over = useSomethingOver(visible);
-  const hidden = showStart || over || overlayOpen || menuOpen;
+  const hidden = showStart || over || overlayOpen || menuOpen || (historyOpen && !!workspaceId);
   useViewport(viewport, visible, hidden);
   const picture = useSnapshot(active?.id ?? null, visible && !hidden, active?.loading ?? false);
 
@@ -351,6 +362,11 @@ export function BrowserSpace({
             </Tip>
           )
         ) : null}
+        <Tip label="Workspace history">
+          <Button ref={historyButton} aria-label="Browsing history" aria-expanded={historyOpen && !!workspaceId} disabled={!workspaceId} variant="icon" onClick={() => setHistoryOpen((open) => !open)}>
+            <History aria-hidden="true" size={15} />
+          </Button>
+        </Tip>
         <Tip label="Console and network">
           <Button aria-label="Developer tools" aria-pressed={debugOpen} disabled={!active || showStart} variant="icon" onClick={() => setDebugOpen((open) => !open)}>
             <span className="relative grid place-items-center">
@@ -443,6 +459,7 @@ export function BrowserSpace({
           <img alt="" aria-hidden="true" className="absolute inset-0 h-full w-full object-cover object-top" src={picture} />
         ) : null}
         {!showStart && hidden && !picture ? <div className="absolute inset-0 grid place-items-center text-small text-cg-muted">Paused while something is open over it</div> : null}
+        {historyOpen && workspaceId ? <BrowserHistoryPanel key={workspaceId} workspaceId={workspaceId} onClose={closeHistory} /> : null}
       </div>
       {debugOpen && active && !showStart ? <DebugPanel height={debugHeight} tab={active} onClose={() => setDebugOpen(false)} onResize={setDebugHeight} /> : null}
     </div>

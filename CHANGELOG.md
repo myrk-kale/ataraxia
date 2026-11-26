@@ -6,6 +6,25 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-26
+
+### Added
+
+- A compact, draggable picture-in-picture preview in the chat shows live captures of the latest tab
+  opened by an agent. It appears when the tab is created, stays between tool calls, and can be dismissed
+  or opened in the full Browser. When the latest tab closes, the preview follows the previous open tab.
+- Browsing history is saved per workspace, with the 500 most recent pages, search by title or address,
+  reopening in a new tab, and clearing with confirmation. Agent tabs keep the workspace of their chat,
+  including while another workspace is selected; history survives app restarts.
+
+### Changed
+
+- Development builds show the welcome tour on every start; release builds keep the existing saved choice.
+
+### Fixed
+
+- Hidden menus, dialogs and descendants of closed popovers no longer leave the built-in browser paused.
+
 ## [0.22.0] - 2026-11-26
 
 ### Changed

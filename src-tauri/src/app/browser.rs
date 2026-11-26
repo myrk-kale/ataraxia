@@ -23,11 +23,12 @@ use std::time::{Duration, Instant};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
 
+use super::browser_history::BrowserHistory;
 use crate::domain::browser::{
     BrowserEvent, BrowserTab, DEFAULT_VIEW, Drain, History, Logs, Move, Placement, Profile, Rect,
     TabId, agent_may_open, normalize_url,
 };
-use crate::domain::ids::SessionId;
+use crate::domain::ids::{SessionId, WorkspaceId};
 use crate::domain::{Error, ErrorCode, Result};
 use crate::ports::{BrowserEngine, CookieInfo, EngineEvents, TabSpec};
 
@@ -55,6 +56,8 @@ pub enum Outcome {
 
 struct Tab {
     info: BrowserTab,
+    workspace: Option<WorkspaceId>,
+    recorded_url: Option<String>,
     history: History,
     logs: Logs,
     /// Where the page is drawn now, so the platform is only told about a change.
@@ -84,6 +87,7 @@ struct State {
 
 pub struct Browser {
     engine: Arc<dyn BrowserEngine>,
+    pub history: Option<Arc<BrowserHistory>>,
     emit: Emit,
     state: Mutex<State>,
     /// Signalled when a tab finishes loading or goes away.
@@ -95,8 +99,17 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(engine: Arc<dyn BrowserEngine>, emit: Emit) -> Arc<Self> {
+        Self::with_history(engine, emit, None)
+    }
+
+    pub fn with_history(
+        engine: Arc<dyn BrowserEngine>,
+        emit: Emit,
+        history: Option<Arc<BrowserHistory>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             engine,
+            history,
             emit,
             state: Mutex::new(State {
                 tabs: BTreeMap::new(),
@@ -187,6 +200,32 @@ impl Browser {
         profile: Profile,
         by_agent: bool,
     ) -> Result<BrowserTab> {
+        let workspace = self
+            .history
+            .as_ref()
+            .map(|history| history.workspace(None))
+            .transpose()?
+            .flatten();
+        self.open_in_workspace(input, profile, by_agent, workspace)
+    }
+
+    pub fn open_for_session(&self, input: Option<&str>, session: SessionId) -> Result<BrowserTab> {
+        let workspace = self
+            .history
+            .as_ref()
+            .map(|history| history.workspace(Some(session)))
+            .transpose()?
+            .flatten();
+        self.open_in_workspace(input, Profile::Agent, true, workspace)
+    }
+
+    fn open_in_workspace(
+        &self,
+        input: Option<&str>,
+        profile: Profile,
+        by_agent: bool,
+        workspace: Option<WorkspaceId>,
+    ) -> Result<BrowserTab> {
         let url = match input.map(str::trim).filter(|text| !text.is_empty()) {
             Some(text) => normalize_url(text)?,
             None => "about:blank".to_string(),
@@ -207,6 +246,8 @@ impl Browser {
             state.tabs.insert(
                 id,
                 Tab {
+                    workspace,
+                    recorded_url: None,
                     info: BrowserTab {
                         id,
                         url: url.clone(),
@@ -604,6 +645,7 @@ impl Browser {
             changed
         };
         if changed {
+            self.record_history(id);
             self.changed.notify_all();
             self.announce();
         }
@@ -919,6 +961,32 @@ impl Browser {
         notes
     }
 
+    fn record_history(&self, id: TabId) {
+        let Some(history) = &self.history else {
+            return;
+        };
+        let record = {
+            let state = self.state.lock();
+            state.tabs.get(&id).and_then(|tab| {
+                let workspace = tab.workspace?;
+                if tab.info.loading {
+                    return None;
+                }
+                let navigation = tab.recorded_url.as_deref() != Some(&tab.info.url);
+                Some((workspace, tab.info.clone(), navigation))
+            })
+        };
+        if let Some((workspace, tab, navigation)) = record {
+            if let Err(error) = history.observe(workspace, &tab, navigation) {
+                eprintln!("ataraxia: could not save browser history: {error}");
+            } else if let Some(current) = self.state.lock().tabs.get_mut(&id) {
+                if current.info.url == tab.url {
+                    current.recorded_url = Some(tab.url);
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_load_give_up(&self, wait: Duration) {
         self.give_up_ms
@@ -957,6 +1025,7 @@ impl EngineEvents for Browser {
         if finished {
             self.changed.notify_all();
         }
+        self.record_history(id);
         self.announce();
     }
 
@@ -971,6 +1040,7 @@ impl EngineEvents for Browser {
             }
             tab.info.title = title.to_string();
         }
+        self.record_history(id);
         self.announce();
     }
 
@@ -983,18 +1053,19 @@ impl EngineEvents for Browser {
     }
 
     fn popup(&self, from: TabId, url: &str) {
-        let (profile, by_agent) = {
+        let (profile, by_agent, workspace) = {
             let state = self.state.lock();
             match state.tabs.get(&from) {
                 Some(tab) => (
                     tab.info.profile,
                     tab.info.agent_control && tab.info.profile == Profile::Agent,
+                    tab.workspace,
                 ),
-                None => (Profile::User, false),
+                None => (Profile::User, false, None),
             }
         };
         // A page's new window is a tab of the same kind as the page that asked for it.
-        let _ = self.open(Some(url), profile, by_agent);
+        let _ = self.open_in_workspace(Some(url), profile, by_agent, workspace);
     }
 }
 
@@ -1853,6 +1924,106 @@ mod tests {
         assert!(
             engine.log().contains(&"clear Agent".to_string())
                 && engine.log().contains(&"devtools 1".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod workspace_history_tests {
+    use super::*;
+    use crate::adapters::sqlite::SqliteStore;
+    use crate::ports::Store;
+
+    #[test]
+    fn visits_stay_in_the_tabs_workspace_after_switching_and_survive_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.sqlite3");
+        let first = WorkspaceId::new();
+        let second = WorkspaceId::new();
+        {
+            let store = Arc::new(SqliteStore::open(&path).unwrap());
+            store
+                .set_preference("selected_workspace_id", &first.0.to_string())
+                .unwrap();
+            let history = BrowserHistory::new(store.clone());
+            let browser = Browser::with_history(
+                fake::FakeEngine::new(),
+                Arc::new(|_| {}),
+                Some(history.clone()),
+            );
+            let one = browser
+                .open(Some("https://one.test"), Profile::User, false)
+                .unwrap();
+            browser.page_load(one.id, "https://one.test/", true);
+            browser.title(one.id, "First site");
+            store
+                .set_preference("selected_workspace_id", &second.0.to_string())
+                .unwrap();
+            let two = browser
+                .open(Some("https://two.test"), Profile::User, false)
+                .unwrap();
+            browser.page_load(two.id, "https://two.test/", true);
+            browser.page_load(one.id, "https://one.test/next", true);
+            browser.popup(one.id, "https://popup.test");
+            let popup = browser.tabs().last().unwrap().id;
+            browser.page_load(popup, "https://popup.test/", true);
+            assert_eq!(history.list(first).unwrap().len(), 3);
+            assert_eq!(history.list(second).unwrap().len(), 1);
+            browser.close(one.id).unwrap();
+        }
+        let history = BrowserHistory::new(Arc::new(SqliteStore::open(path).unwrap()));
+        assert_eq!(history.list(first).unwrap().len(), 3);
+        assert_eq!(history.list(second).unwrap()[0].url, "https://two.test/");
+        history.clear(first).unwrap();
+        assert!(history.list(first).unwrap().is_empty());
+        assert_eq!(history.list(second).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn titles_do_not_duplicate_visits_or_restore_cleared_history() {
+        let history = BrowserHistory::new(Arc::new(SqliteStore::open_in_memory().unwrap()));
+        let browser = Browser::with_history(
+            fake::FakeEngine::new(),
+            Arc::new(|_| {}),
+            Some(history.clone()),
+        );
+        let workspace = WorkspaceId::new();
+        let tab = browser
+            .open_in_workspace(None, Profile::Agent, true, Some(workspace))
+            .unwrap();
+        browser.page_load(tab.id, "about:blank", true);
+        assert!(history.list(workspace).unwrap().is_empty());
+        browser.page_load(tab.id, "https://site.test/", true);
+        browser.title(tab.id, "A title");
+        browser.title(tab.id, "A better title");
+        let entries = history.list(workspace).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "A better title");
+        assert_eq!(entries[0].profile, Profile::Agent);
+        history.clear(workspace).unwrap();
+        browser.title(tab.id, "A changed title");
+        assert!(history.list(workspace).unwrap().is_empty());
+        browser.page_load(tab.id, "https://site.test/next", true);
+        assert_eq!(history.list(workspace).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn spa_routes_are_recorded_from_the_bridge_without_platform_navigation() {
+        let history = BrowserHistory::new(Arc::new(SqliteStore::open_in_memory().unwrap()));
+        let engine = fake::FakeEngine::new();
+        let browser =
+            Browser::with_history(engine.clone(), Arc::new(|_| {}), Some(history.clone()));
+        let workspace = WorkspaceId::new();
+        let tab = browser
+            .open_in_workspace(None, Profile::User, false, Some(workspace))
+            .unwrap();
+        *engine.script.lock() = Box::new(|_, _| {
+            Ok(json!(json!({"pageId":"p", "cursor":0, "meta":{"url":"https://spa.test/route", "title":"Route", "readyState":"complete"}}).to_string()).to_string())
+        });
+        browser.refresh(tab.id).unwrap();
+        assert_eq!(
+            history.list(workspace).unwrap()[0].url,
+            "https://spa.test/route"
         );
     }
 }

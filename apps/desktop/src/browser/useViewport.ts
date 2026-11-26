@@ -6,18 +6,26 @@ import { browserSetBounds, browserSetVisible } from "../lib/browser";
  * interface, so a dialog, a menu or a list that opens over it would be hidden behind it; while one
  * is open the page steps aside and the picture of it that was taken a moment ago stands in.
  */
-const OVER = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']";
+const OVER = "dialog, [role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']";
 
-/** A popover that is closed stays in the page (with its role), so being in the DOM is not being open. */
+/** Closed containers keep their descendants' roles in the DOM, even though none are on screen. */
 function isOpenOver(element: Element): boolean {
-  if (element.hasAttribute("popover")) {
-    try {
-      return element.matches(":popover-open");
-    } catch {
+  for (let container: Element | null = element; container; container = container.parentElement) {
+    if (container.hasAttribute("popover")) {
+      try {
+        if (!container.matches(":popover-open")) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (container.matches("dialog:not([open]), [hidden]")) return false;
+    const style = window.getComputedStyle(container);
+    if (style.display === "none" || style.contentVisibility === "hidden") {
       return false;
     }
   }
-  return true;
+  const visibility = window.getComputedStyle(element).visibility;
+  return visibility !== "hidden" && visibility !== "collapse";
 }
 
 export function useSomethingOver(enabled: boolean): boolean {
@@ -30,7 +38,7 @@ export function useSomethingOver(enabled: boolean): boolean {
     const look = () => setOver(Array.from(document.querySelectorAll(OVER)).some(isOpenOver));
     look();
     const observer = new MutationObserver(look);
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "open"] });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "open", "popover", "hidden", "class", "style"] });
     // A popover opens and closes without touching an attribute; the toggle event does not bubble.
     document.addEventListener("toggle", look, true);
     return () => {
