@@ -9,13 +9,18 @@ arrive as requests from the agent. The prompt text selects the scenario:
   mode  -> says the mode the session runs in
   other -> short streamed reply
 `--no-read-only` leaves the plan and ask modes out of the session's options.
+`--slow-session` answers `session/new` after a second, like the real CLI's first one.
+`--failing-session` answers `session/new` with an error.
 """
 import json
 import sys
+import time
 
 SESSION = "cur_mock"
 STATE = {"mode": "agent", "caps": None}
 NO_READ_ONLY = "--no-read-only" in sys.argv
+SLOW_SESSION = "--slow-session" in sys.argv
+FAILING_SESSION = "--failing-session" in sys.argv
 
 
 def send(frame):
@@ -90,6 +95,12 @@ for raw in sys.stdin:
             "protocolVersion": 1,
             "agentCapabilities": {"mcpCapabilities": {"http": True, "sse": True}}}})
     elif method == "session/new":
+        if SLOW_SESSION:
+            time.sleep(1)
+        if FAILING_SESSION:
+            send({"jsonrpc": "2.0", "id": ident, "error": {
+                "code": -32603, "message": "Internal error", "data": {"details": "no workspace"}}})
+            continue
         send({"jsonrpc": "2.0", "id": ident, "result": {
             "sessionId": SESSION, "configOptions": config_options()}})
     elif method == "session/set_config_option":

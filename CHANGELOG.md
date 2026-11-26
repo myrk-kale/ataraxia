@@ -6,6 +6,18 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- Cursor chats open right away instead of waiting out the agent's slow first handshake. The session is
+  opened in the background; the first message, the model and mode pickers, and setting changes wait for it
+  to be ready. A session that fails to open reports why and is started again on the next message.
+
+### Fixed
+
+- Signing in to a remote MCP server that issues an OAuth client secret but reports its authentication
+  method as "none" (such as Figma) no longer fails the token exchange with HTTP 400. The secret is now
+  sent whenever the server hands one out.
+
 ## [0.23.0] - 2026-11-26
 
 ### Added
