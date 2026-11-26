@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-26
+
 ### Changed
 
 - The welcome tour shows a looping animation on each slide, made with Remotion, instead of screenshots and
