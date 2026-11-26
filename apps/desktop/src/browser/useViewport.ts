@@ -8,6 +8,18 @@ import { browserSetBounds, browserSetVisible } from "../lib/browser";
  */
 const OVER = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']";
 
+/** A popover that is closed stays in the page (with its role), so being in the DOM is not being open. */
+function isOpenOver(element: Element): boolean {
+  if (element.hasAttribute("popover")) {
+    try {
+      return element.matches(":popover-open");
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function useSomethingOver(enabled: boolean): boolean {
   const [over, setOver] = useState(false);
   useEffect(() => {
@@ -15,11 +27,16 @@ export function useSomethingOver(enabled: boolean): boolean {
       setOver(false);
       return;
     }
-    const look = () => setOver(document.querySelector(OVER) !== null);
+    const look = () => setOver(Array.from(document.querySelectorAll(OVER)).some(isOpenOver));
     look();
     const observer = new MutationObserver(look);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "open"] });
-    return () => observer.disconnect();
+    // A popover opens and closes without touching an attribute; the toggle event does not bubble.
+    document.addEventListener("toggle", look, true);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("toggle", look, true);
+    };
   }, [enabled]);
   return over;
 }

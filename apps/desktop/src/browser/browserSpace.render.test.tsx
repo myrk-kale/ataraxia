@@ -155,6 +155,20 @@ describe("tabs", () => {
     expect(host.textContent).toContain("Paused while something is open over it");
   });
 
+  it("is not paused by a popover that is in the page but closed", async () => {
+    const closed = document.createElement("div");
+    closed.setAttribute("role", "dialog");
+    closed.setAttribute("popover", "auto");
+    document.body.append(closed);
+    try {
+      await render();
+      expect(sent("browser_set_visible").at(-1)?.args).toEqual({ visible: true });
+      expect(host.textContent).not.toContain("Paused while something is open over it");
+    } finally {
+      closed.remove();
+    }
+  });
+
   it("hands a tab of the person's to an agent, and takes it back, only when asked", async () => {
     await render();
     const share = button("Let agents use this tab");

@@ -1,39 +1,42 @@
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Button } from "../ui/Button";
 import { Dialog, Key } from "../ui/Overlay";
-import { Art } from "./Art";
 import { SLIDES, type Slide } from "./slides";
 import { markOnboardingSeen } from "./store";
 
-/** Light or dark, as the interface is now: the screenshot that matches it is the one shown. */
-function useThemeKind(): "light" | "dark" {
-  const read = (): "light" | "dark" => (document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark");
-  const [kind, setKind] = useState(read);
+const SlideScene = lazy(() => import("./scenes"));
+
+/** The animation is a still picture for whoever asks the system for less motion. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
   useEffect(() => {
-    const observer = new MutationObserver(() => setKind(read()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
-    return () => observer.disconnect();
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query) return;
+    const update = () => setReduced(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
   }, []);
-  return kind;
+  return reduced;
 }
 
-function Visual({ slide, kind }: { slide: Slide; kind: "light" | "dark" }) {
-  if (slide.visual.kind === "art") {
-    return <Art art={slide.visual.art} />;
-  }
-  return <img alt={slide.visual.alt} className="h-full w-full object-cover object-top" draggable={false} src={kind === "light" ? slide.visual.light : slide.visual.dark} />;
+function Visual({ slide }: { slide: Slide }) {
+  const reduced = useReducedMotion();
+  return (
+    <Suspense fallback={null}>
+      <SlideScene scene={slide.visual.scene} still={reduced} />
+    </Suspense>
+  );
 }
 
 /**
- * The welcome tour: a few short slides, each with a picture, the problem it solves and what to do
+ * The welcome tour: a few short slides, each with an animation, the problem it solves and what to do
  * with it, in a dialog in the middle of the screen with everything else dimmed. It is shown once
  * (the mark is kept when it is closed, finished or skipped), and can be opened again from the
  * keyboard shortcuts.
  */
 export function Onboarding({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [index, setIndex] = useState(0);
-  const kind = useThemeKind();
   const slide = SLIDES[index]!;
   const last = index === SLIDES.length - 1;
 
@@ -73,7 +76,7 @@ export function Onboarding({ isOpen, onClose }: { isOpen: boolean; onClose: () =
     <Dialog dim className="w-[min(940px,94vw)] max-w-none gap-0 overflow-hidden p-0" dismissable={false} isOpen={isOpen} label="Welcome to Ataraxia" size="lg" onClose={close}>
       <div className="flex max-h-[92vh] flex-col md:h-[min(560px,90vh)] md:flex-row">
         <div className="relative h-[220px] flex-none overflow-hidden border-b border-cg-line bg-cg-tint md:h-auto md:w-[56%] md:border-r md:border-b-0">
-          <Visual key={slide.id} kind={kind} slide={slide} />
+          <Visual key={slide.id} slide={slide} />
         </div>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex flex-none items-center justify-between px-6 pt-4">

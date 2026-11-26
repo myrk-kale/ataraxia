@@ -40,7 +40,7 @@ export type PetConfig = {
 };
 
 export const DEFAULT_PET: PetConfig = {
-  mode: "pet",
+  mode: "off",
   species: "blob",
   name: "Ata",
   color: COLORS[0],
@@ -67,7 +67,7 @@ export function sanitize(raw: unknown): PetConfig {
   const name = typeof source.name === "string" ? source.name.replace(/\s+/g, " ").trim().slice(0, NAME_MAX) : "";
   const image = typeof source.image === "string" && /^data:image\/(png|webp|gif|jpeg);base64,[A-Za-z0-9+/=]+$/.test(source.image) && source.image.length <= MAX_IMAGE_CHARS ? source.image : null;
   return {
-    mode: source.mode === "mini" || source.mode === "off" ? source.mode : "pet",
+    mode: source.mode === "pet" || source.mode === "mini" || source.mode === "off" ? source.mode : DEFAULT_PET.mode,
     species: pick(source.species, SPECIES, DEFAULT_PET.species),
     name: name || DEFAULT_PET.name,
     color: typeof source.color === "string" && /^#[0-9a-fA-F]{6}$/.test(source.color) ? source.color.toLowerCase() : DEFAULT_PET.color,

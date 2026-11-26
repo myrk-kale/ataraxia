@@ -6,6 +6,18 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Changed
+
+- The welcome tour shows a looping animation on each slide, made with Remotion, instead of screenshots and
+  drawings. The scenes use the interface's colours, so they follow the theme, and are a still picture when the
+  system asks for less motion.
+- The companion is off until you turn it on (`/pet` or Settings > Companion); a saved choice is kept.
+
+### Fixed
+
+- The built-in browser no longer stays on "Paused while something is open over it": the closed usage and context
+  popovers of the chat were counted as something open over the page.
+
 ## [0.21.0] - 2026-11-26
 
 ### Added

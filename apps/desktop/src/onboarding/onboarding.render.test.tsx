@@ -8,6 +8,9 @@ import { ONBOARDING_KEY, ONBOARDING_VERSION, shouldShowOnboarding } from "./stor
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// The animations are Remotion players; the dialog is tested with a stand-in, the scenes on their own below.
+vi.mock("./scenes", () => ({ default: ({ scene, still }: { scene: string; still: boolean }) => <div data-scene={scene} data-still={String(still)} /> }));
+
 let host: HTMLDivElement;
 let root: Root;
 const close = vi.fn();
@@ -39,7 +42,7 @@ afterEach(() => {
 });
 
 describe("the slides", () => {
-  it("are short, each with a title, the problem it solves and a few points, and a picture for each theme", () => {
+  it("are short, each with a title, the problem it solves, a few points and an animation of its own", () => {
     expect(SLIDES.length).toBeGreaterThanOrEqual(8);
     expect(new Set(SLIDES.map((slide) => slide.id)).size).toBe(SLIDES.length);
     for (const slide of SLIDES) {
@@ -48,13 +51,8 @@ describe("the slides", () => {
       expect(slide.points.length, slide.id).toBeGreaterThanOrEqual(2);
       expect(slide.points.length, slide.id).toBeLessThanOrEqual(4);
       slide.points.forEach((point) => expect(point.length, point).toBeLessThan(130));
-      if (slide.visual.kind === "shot") {
-        expect(slide.visual.light, slide.id).not.toBe(slide.visual.dark);
-        expect(slide.visual.alt.length).toBeGreaterThan(10);
-      }
     }
-    // The screenshots are of the real app; the others are drawings made for the tour.
-    expect(SLIDES.filter((slide) => slide.visual.kind === "shot").length).toBeGreaterThanOrEqual(5);
+    expect(new Set(SLIDES.map((slide) => slide.visual.scene)).size).toBe(SLIDES.length);
   });
 });
 
@@ -89,17 +87,20 @@ describe("the welcome tour", () => {
     expect(dialog()!.textContent).toContain(SLIDES.at(-1)!.title);
   });
 
-  it("shows a screenshot of the theme in use and another when the theme changes", async () => {
-    show();
-    act(() => button(`Go to ${SLIDES.find((slide) => slide.id === "chat")!.title}`).click());
-    const chat = SLIDES.find((slide) => slide.id === "chat")!;
-    if (chat.visual.kind !== "shot") throw new Error("chat is a screenshot");
-    expect(dialog()!.querySelector("img")?.getAttribute("src")).toBe(chat.visual.dark);
-    await act(async () => {
-      document.documentElement.setAttribute("data-theme", "light");
-      await Promise.resolve();
-    });
-    expect(dialog()!.querySelector("img")?.getAttribute("src")).toBe(chat.visual.light);
+  it("plays the animation of the slide it is on, and a still one when the system asks for less motion", async () => {
+    await act(async () => show());
+    expect(dialog()!.querySelector("[data-scene]")?.getAttribute("data-scene")).toBe("welcome");
+    expect(dialog()!.querySelector("[data-scene]")?.getAttribute("data-still")).toBe("false");
+    await act(async () => button("Next").click());
+    expect(dialog()!.querySelector("[data-scene]")?.getAttribute("data-scene")).toBe(SLIDES[1]!.visual.scene);
+    const matchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes("reduce"), addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      await act(async () => button("Next").click());
+      expect(dialog()!.querySelector("[data-scene]")?.getAttribute("data-still")).toBe("true");
+    } finally {
+      window.matchMedia = matchMedia;
+    }
   });
 
   it("can be skipped at any slide, and what was skipped is remembered", () => {
