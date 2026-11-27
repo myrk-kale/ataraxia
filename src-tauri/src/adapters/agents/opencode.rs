@@ -247,7 +247,17 @@ pub(super) fn launch_acp(
         opening: Mutex::new(Opening::Pending),
         opened: Condvar::new(),
         read_only: ctx.read_only,
+        auto_review: dialect == Dialect::Cursor
+            && !ctx.read_only
+            && super::cursor::auto_review_on(),
+        reviewer: ctx.reviewer.clone(),
+        session_id: ctx.session_id,
+        me: OnceLock::new(),
+        roots: std::iter::once(ctx.cwd.clone())
+            .chain(ctx.extra_dirs.iter().cloned())
+            .collect(),
     });
+    let _ = shared.me.set(Arc::downgrade(&shared));
     let handler_shared = Arc::clone(&shared);
     let mut client_capabilities = json!({
         "fs": { "readTextFile": false, "writeTextFile": false },
@@ -282,6 +292,12 @@ pub(super) fn launch_acp(
         }),
         Some(HANDSHAKE_TIMEOUT),
     );
+    if shared.auto_review
+        && let Some(reviewer) = shared.reviewer.clone()
+    {
+        let session_id = shared.session_id;
+        thread::spawn(move || reviewer.warm(session_id));
+    }
     let opener = hello.and_then(|hello| Opener::new(dialect, &hello, &ctx));
     let opener = match opener {
         Ok(opener) => opener,
@@ -549,6 +565,7 @@ fn opencode_config_mcp_servers(servers: &Map<String, Value>) -> Result<Map<Strin
 struct AcpOption {
     id: String,
     kind: String,
+    name: Option<String>,
 }
 
 /// Translates portable MCP entries into the active ACP v1 transport shapes.
@@ -912,6 +929,15 @@ struct AcpShared {
     opened: Condvar,
     /// Only investigates: it never runs in a mode that writes.
     read_only: bool,
+    /// Ataraxia answers the requests the rules call safe, since the harness cannot review its own.
+    auto_review: bool,
+    /// The directories the agent works in: its own and the workspace's other repositories.
+    roots: Vec<PathBuf>,
+    /// Vouches for the requests the rules leave in doubt, so they need not reach the person.
+    reviewer: Option<Arc<dyn crate::ports::PermissionReviewer>>,
+    session_id: crate::domain::ids::SessionId,
+    /// This value, for the threads that outlive a call.
+    me: OnceLock<std::sync::Weak<AcpShared>>,
 }
 
 /// Where opening the agent's session stands.
@@ -1187,6 +1213,7 @@ impl AcpShared {
             Incoming::Closed(info) => {
                 let message = info.describe(self.dialect.name());
                 *self.exit.lock() = Some(info);
+                self.close_reviewer();
                 // Ended because its session could not open, which the chat was told already.
                 if matches!(*self.opening.lock(), Opening::Failed(_)) {
                     return;
@@ -1512,7 +1539,7 @@ impl AcpShared {
             let input = raw_input_text(tool_call.get("rawInput"));
             self.announce_tool(&mut state, turn_id, &acp_id, title, input);
         }
-        let options = params
+        let options: Vec<AcpOption> = params
             .get("options")
             .and_then(Value::as_array)
             .map(|items| {
@@ -1522,6 +1549,7 @@ impl AcpShared {
                         Some(AcpOption {
                             id: item.get("optionId")?.as_str()?.to_string(),
                             kind: item.get("kind")?.as_str()?.to_string(),
+                            name: item.get("name").and_then(Value::as_str).map(str::to_owned),
                         })
                     })
                     .collect()
@@ -1531,17 +1559,100 @@ impl AcpShared {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or("tool");
-        state.queue.push_back(QueuedPermission {
+        let queued = QueuedPermission {
             request_id: PermissionRequestId::new(),
             turn_id,
             rpc_id,
-            tool_name: title.unwrap_or(kind).to_string(),
+            tool_name: if kind == "execute" {
+                "Shell"
+            } else {
+                title.unwrap_or(kind)
+            }
+            .to_string(),
             detail: permission_detail(kind, &tool_call),
             options,
             questions: Vec::new(),
             asked: None,
-        });
+        };
+        if self.auto_review {
+            let command = tool_call
+                .get("rawInput")
+                .and_then(|raw| raw.get("command"))
+                .and_then(Value::as_str);
+            let paths = request_paths(&tool_call);
+            let verdict = super::autoreview::review(
+                &super::autoreview::Request {
+                    kind,
+                    command,
+                    paths: &paths,
+                },
+                &self.roots,
+            );
+            let allow = pick_option(&queued.options, true);
+            match (verdict, allow) {
+                (super::autoreview::Verdict::Allow, Some(option)) => {
+                    self.allow_once(&queued.rpc_id, &option);
+                    return;
+                }
+                (super::autoreview::Verdict::Doubt, Some(option)) => {
+                    if let (Some(reviewer), Some(me)) = (
+                        self.reviewer.clone(),
+                        self.me.get().and_then(|me| me.upgrade()),
+                    ) {
+                        drop(state);
+                        std::thread::spawn(move || {
+                            let vouched = reviewer.review(
+                                me.session_id,
+                                &format!("{}\n{}", queued.tool_name, queued.detail),
+                            );
+                            me.finish_review(queued, vouched.then_some(option));
+                        });
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
+        state.queue.push_back(queued);
         self.pump_permissions(&mut state);
+    }
+
+    /// The agent is gone: the helper that reviewed its requests is no longer needed.
+    fn close_reviewer(&self) {
+        if self.auto_review
+            && let Some(reviewer) = self.reviewer.clone()
+        {
+            let session_id = self.session_id;
+            thread::spawn(move || reviewer.close(session_id));
+        }
+    }
+
+    fn allow_once(&self, rpc_id: &Value, option_id: &str) {
+        self.answer(
+            rpc_id,
+            json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+        );
+    }
+
+    /// The reviewer has spoken: a vouched request is allowed, any other goes to the person. A
+    /// turn that ended meanwhile no longer waits for an answer.
+    fn finish_review(&self, queued: QueuedPermission, allow: Option<String>) {
+        let mut state = self.state.lock();
+        if state.turn != Some(queued.turn_id) {
+            drop(state);
+            self.answer(
+                &queued.rpc_id,
+                json!({ "outcome": { "outcome": "cancelled" } }),
+            );
+            return;
+        }
+        match allow {
+            Some(option) => self.allow_once(&queued.rpc_id, &option),
+            None => {
+                state.queue.push_back(queued);
+                self.pump_permissions(&mut state);
+            }
+        }
     }
 
     /// Surfaces the next queued permission once the previous one is answered.
@@ -1555,6 +1666,14 @@ impl AcpShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
+                allow_always: (self.dialect == Dialect::Cursor)
+                    .then(|| {
+                        next.options
+                            .iter()
+                            .find(|option| option.kind == "allow_always")
+                    })
+                    .flatten()
+                    .map(|option| option.name.clone().unwrap_or_else(|| "Always allow".into())),
                 questions: next.questions.clone(),
             });
             state.active = Some(next);
@@ -1841,7 +1960,16 @@ impl BackendSession for AcpSession {
                 // A question's reply already carries its `outcome`.
                 Some(keep) => super::cursor::reply(keep, decision),
                 None => {
-                    let outcome = match pick_option(&active.options, decision.allow) {
+                    let option_id = if decision.allow && decision.remember {
+                        active
+                            .options
+                            .iter()
+                            .find(|option| option.kind == "allow_always")
+                            .map(|option| option.id.clone())
+                    } else {
+                        pick_option(&active.options, decision.allow)
+                    };
+                    let outcome = match option_id {
                         Some(option_id) => json!({ "outcome": "selected", "optionId": option_id }),
                         None => json!({ "outcome": "cancelled" }),
                     };
@@ -1871,6 +1999,7 @@ impl BackendSession for AcpSession {
         if let Some(client) = self.shared.client.get() {
             client.kill();
         }
+        self.shared.close_reviewer();
     }
 }
 
@@ -1895,6 +2024,26 @@ fn raw_input_text(raw: Option<&Value>) -> Option<String> {
         Some(Value::String(text)) => Some(text.clone()),
         Some(other) => serde_json::to_string_pretty(other).ok(),
     }
+}
+
+/// The files a tool call names: where it says it works, and the path its input carries.
+fn request_paths(tool_call: &Value) -> Vec<String> {
+    let mut paths: Vec<String> = tool_call
+        .get("locations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|location| location.get("path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if let Some(raw) = tool_call.get("rawInput") {
+        for key in ["filepath", "filePath", "path"] {
+            if let Some(path) = raw.get(key).and_then(Value::as_str) {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    paths
 }
 
 fn permission_detail(kind: &str, tool_call: &Value) -> String {
@@ -2168,6 +2317,7 @@ mod tests {
                     ..Launch::default()
                 }),
                 read_only: false,
+                reviewer: None,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: cwd.clone(),
                 extra_dirs: Vec::new(),
@@ -2243,6 +2393,7 @@ mod tests {
         let session = mock_backend()
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -2510,6 +2661,7 @@ mod tests {
             .resolve_permission(&PermissionDecision {
                 request_id,
                 allow,
+                remember: false,
                 answers: Default::default(),
             })
             .expect("resolve");
@@ -2596,6 +2748,7 @@ mod tests {
         let error = backend
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -2619,14 +2772,17 @@ mod tests {
             AcpOption {
                 id: "always".into(),
                 kind: "allow_always".into(),
+                name: None,
             },
             AcpOption {
                 id: "once".into(),
                 kind: "allow_once".into(),
+                name: None,
             },
             AcpOption {
                 id: "no".into(),
                 kind: "reject_once".into(),
+                name: None,
             },
         ];
         assert_eq!(pick_option(&options, true).as_deref(), Some("once"));

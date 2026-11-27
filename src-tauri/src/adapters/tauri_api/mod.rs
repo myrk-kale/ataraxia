@@ -737,7 +737,15 @@ pub fn agent_resolve_permission(
     request_id: PermissionRequestId,
     allow: bool,
     answers: Option<std::collections::BTreeMap<String, String>>,
+    remember: Option<bool>,
+    instruction: Option<String>,
 ) -> std::result::Result<(), String> {
+    if let Some(instruction) = instruction {
+        return state
+            .engine
+            .redirect_permission(session_id, request_id, &instruction)
+            .map_err(map_error);
+    }
     state
         .agent_runtime()
         .resolve_permission(
@@ -745,6 +753,7 @@ pub fn agent_resolve_permission(
             PermissionDecision {
                 request_id,
                 allow,
+                remember: remember.unwrap_or(false),
                 answers: answers.unwrap_or_default(),
             },
         )

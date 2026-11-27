@@ -1208,6 +1208,7 @@ fn a_btw_that_finishes_while_the_main_agent_is_busy_is_queued_without_waiting() 
             PermissionDecision {
                 request_id,
                 allow: true,
+                remember: false,
                 answers: Default::default(),
             },
         )
@@ -2006,6 +2007,7 @@ fn approve(w: &World, request: PermissionRequestId) {
             PermissionDecision {
                 request_id: request,
                 allow: true,
+                remember: false,
                 answers: Default::default(),
             },
         )
@@ -2019,6 +2021,32 @@ fn queued_texts(w: &World) -> Vec<String> {
         .into_iter()
         .map(|item| item.text)
         .collect()
+}
+
+#[test]
+fn redirecting_a_permission_stops_the_turn_and_sends_the_instruction_first() {
+    let w = world();
+    w.host.start_session(&w.session).unwrap();
+    w.host.prompt(&w.session.id, "first").unwrap();
+    let request = next_request(&w, None);
+    w.engine
+        .enqueue(w.session.id, "queued", Vec::new())
+        .unwrap();
+    w.engine
+        .redirect_permission(w.session.id, request, "Use a different command.")
+        .unwrap();
+    let next = next_request(&w, Some(request));
+    assert_eq!(
+        user_texts(&w),
+        [
+            "first",
+            "I declined the last permission request. Use a different command.",
+        ]
+    );
+    assert_eq!(queued_texts(&w), ["queued"]);
+    approve(&w, next);
+    let queued_request = next_request(&w, Some(next));
+    approve(&w, queued_request);
 }
 
 #[test]
@@ -2861,4 +2889,41 @@ fn a_chat_is_titled_by_opencode() {
         ProviderKind::OpenCode,
         Arc::new(crate::adapters::agents::OpenCodeBackend::new()),
     );
+}
+
+#[test]
+fn the_permission_reviewer_of_a_chat_is_one_helper_that_stays_until_the_chat_closes() {
+    use crate::ports::PermissionReviewer;
+    let w = world();
+    let reviewer = super::permission_review::EngineReviewer::new(&w.engine);
+    // Ready before the first request.
+    reviewer.warm(w.session.id);
+    let helper = w
+        .engine
+        .review_helpers
+        .lock()
+        .get(&w.session.id)
+        .map(|helper| helper.session_id())
+        .expect("warmed");
+    assert!(reviewer.review(w.session.id, "Shell\nAllow running: pnpm install"));
+    assert!(!reviewer.review(w.session.id, "Shell\nAllow running: make deploy"));
+    assert!(reviewer.review(w.session.id, "Shell\nAllow running: pnpm install"));
+    // The same helper answered all three, and it is still there.
+    assert_eq!(w.engine.review_helpers.lock().len(), 1);
+    assert_eq!(
+        w.engine
+            .review_helpers
+            .lock()
+            .get(&w.session.id)
+            .map(|helper| helper.session_id()),
+        Some(helper)
+    );
+    assert!(w.db.get_session(helper).unwrap().is_some());
+
+    reviewer.close(w.session.id);
+    assert!(w.engine.review_helpers.lock().is_empty());
+    assert!(w.db.get_session(helper).unwrap().is_none());
+    // Closing twice, or a chat that never had one, is harmless.
+    reviewer.close(w.session.id);
+    let _ = std::fs::remove_dir_all(&w.repo);
 }

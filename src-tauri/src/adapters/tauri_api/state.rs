@@ -80,6 +80,9 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
             .with_backend(ProviderKind::Codex, Arc::new(CodexBackend::new())),
     );
     let runtime: Arc<dyn AgentRuntime> = agents.clone();
+    if let Some(api) = &api {
+        api.set_runtime(&runtime);
+    }
     let git: Arc<dyn Git> = Arc::new(GitCli);
     let engine = Engine::new(
         Arc::clone(&git),
@@ -90,6 +93,9 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
         tauri_sink.clone(),
     );
     tee.attach(&engine);
+    agents.set_reviewer(Arc::new(
+        crate::app::permission_review::EngineReviewer::new(&engine),
+    ));
     if let Some(api) = &api {
         api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
         api.set_code_graph(Arc::clone(&engine) as Arc<dyn crate::api::CodeGraph>);

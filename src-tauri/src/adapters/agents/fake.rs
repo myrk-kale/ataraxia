@@ -354,6 +354,7 @@ impl TurnRun {
             request_id,
             tool_name: TOOL_NAME.into(),
             detail: "Allow reading README.md in the selected worktree?".into(),
+            allow_always: None,
             questions: Vec::new(),
         });
     }
@@ -372,6 +373,16 @@ fn scripted_answer(text: &str, read_only: bool) -> Option<String> {
 {\"type\":\"dependencies\",\"title\":\"Avoid a new dependency\",\"summary\":\"The helper is written locally.\",\
 \"files\":[]}]}\n```"
                 .to_string(),
+        );
+    }
+    if text.contains("Reply with one word: ALLOW or ASK.") {
+        return Some(
+            if text.contains("pnpm install") {
+                "ALLOW"
+            } else {
+                "ASK"
+            }
+            .to_string(),
         );
     }
     if text.contains("ATARAXIA_TASK:title") {

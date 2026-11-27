@@ -17,6 +17,7 @@ pub mod health;
 pub mod heuristics;
 pub mod lint;
 pub mod memory;
+pub mod permission_review;
 pub mod queue;
 pub mod review;
 pub mod schedule;

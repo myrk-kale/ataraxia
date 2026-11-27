@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   diffLines,
+  toolLabel,
   parseToolInput,
   toolSummary,
   unifiedDiffLines,
@@ -54,5 +55,20 @@ describe("diff helpers", () => {
       (line) => line.kind,
     );
     expect(kinds).toEqual(["context", "context", "context", "remove", "add"]);
+  });
+});
+
+describe("toolLabel", () => {
+  it("keeps a short name as it is", () => {
+    expect(toolLabel("Bash")).toBe("Bash");
+  });
+
+  it("keeps only the first line of a name that is a whole script, clipped", () => {
+    expect(toolLabel("cd /work && python3 - <<'PY'\nprint(1)\nPY")).toBe(
+      "cd /work && python3 - <<'PY'",
+    );
+    const clipped = toolLabel(`cd /Users/someone/dev/a-project && ${"x".repeat(80)}`);
+    expect(clipped).toHaveLength(32);
+    expect(clipped.endsWith("…")).toBe(true);
   });
 });

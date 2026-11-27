@@ -52,6 +52,7 @@ export type PendingPermission = {
   turnId: string;
   toolName: string;
   detail: string;
+  allowAlways?: string;
   /** Empty for an ordinary permission; set when the agent is asking something. */
   questions?: PermissionQuestion[];
 };
@@ -135,6 +136,7 @@ type AgentEventBody =
       requestId: string;
       toolName: string;
       detail: string;
+      allowAlways?: string;
       questions?: PermissionQuestion[];
     }
   | { type: "turnDone"; sessionId: SessionId; turnId: string; ok: boolean }
@@ -502,14 +504,22 @@ export function agentResolvePermission(
   requestId: string,
   allow: boolean,
   answers?: Record<string, string>,
+  options?: PermissionResponseOptions,
 ) {
   return invoke<void>("agent_resolve_permission", {
     sessionId,
     requestId,
     allow,
     answers: answers ?? null,
+    remember: options?.remember ?? null,
+    instruction: options?.instruction ?? null,
   });
 }
+
+export type PermissionResponseOptions = {
+  remember?: boolean;
+  instruction?: string;
+};
 
 export function agentGetSnapshot(sessionId: SessionId) {
   return invoke<ChatSnapshot>("agent_get_snapshot", { sessionId });
@@ -862,6 +872,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               turnId: event.turnId,
               toolName: event.toolName,
               detail: event.detail,
+              allowAlways: event.allowAlways,
               questions: event.questions ?? [],
             },
           };
