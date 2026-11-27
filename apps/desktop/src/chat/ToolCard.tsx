@@ -4,6 +4,7 @@ import type { ToolItem } from "../lib/agent";
 import {
   diffLines,
   parseToolInput,
+  toolLabel,
   toolSummary,
   unifiedDiffLines,
   type DiffLine,
@@ -48,7 +49,7 @@ function Label({ children }: { children: string }) {
 function Block({ text, className }: { text: string; className?: string }) {
   return (
     <pre
-      className={`max-h-64 overflow-auto rounded-cg-sm bg-cg-tint p-2.5 font-mono text-small leading-5 whitespace-pre-wrap ${className ?? ""}`}
+      className={`max-h-64 max-w-full overflow-auto rounded-cg-sm bg-cg-tint p-2.5 font-mono text-small leading-5 break-words whitespace-pre-wrap [overflow-wrap:anywhere] ${className ?? ""}`}
     >
       {text}
     </pre>
@@ -59,7 +60,7 @@ function DiffBlock({ lines }: { lines: DiffLine[] }) {
   return (
     <pre className="max-h-64 overflow-auto rounded-cg-md bg-cg-tint py-1.5 font-mono text-small leading-5">
       {lines.map((line, index) => (
-        <div key={index} className={`px-2 whitespace-pre-wrap ${DIFF_CLASS[line.kind]}`}>
+        <div key={index} className={`px-2 break-words whitespace-pre-wrap [overflow-wrap:anywhere] ${DIFF_CLASS[line.kind]}`}>
           {DIFF_MARK[line.kind]} {line.text}
         </div>
       ))}
@@ -146,6 +147,10 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// A name longer than this is clipped in the card and given in full, up to a limit, as a tooltip.
+const MAX_NAME_SHOWN = 32;
+const MAX_TOOLTIP = 200;
+
 // The cards the reader opened. A card scrolled out of the transcript is not kept in the page,
 // so which ones were open is remembered here and not in the page.
 const opened = new Set<string>();
@@ -165,7 +170,7 @@ export const ToolCard = memo(function ToolCard({
   const [open, setOpen] = useState(() => defaultOpen || opened.has(tool.callId));
   return (
     <details
-      className="group rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel"
+      className="group min-w-0 overflow-hidden rounded-cg-md border border-cg-line bg-cg-panel text-small hover:bg-cg-sidebar open:bg-cg-panel"
       open={open}
       onToggle={(event) => {
         const now = event.currentTarget.open;
@@ -177,18 +182,23 @@ export const ToolCard = memo(function ToolCard({
         setOpen(now);
       }}
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 [&::-webkit-details-marker]:hidden">
+      <summary
+        className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 [&::-webkit-details-marker]:hidden"
+        title={tool.name.length > MAX_NAME_SHOWN ? tool.name.slice(0, MAX_TOOLTIP) : undefined}
+      >
         <ChevronRight
           className="shrink-0 text-cg-muted transition-transform group-open:rotate-90"
           size={14}
         />
-        <span className="shrink-0 font-mono text-small font-semibold">{tool.name}</span>
+        <span className="max-w-[45%] min-w-0 truncate font-mono text-small font-semibold">
+          {toolLabel(tool.name)}
+        </span>
         {summary ? (
-          <span className="min-w-0 truncate font-mono text-small text-cg-muted">
+          <span className="min-w-0 flex-1 truncate font-mono text-small text-cg-muted">
             {summary}
           </span>
         ) : null}
-        <span className="ml-auto shrink-0">
+        <span className="ml-auto shrink-0 pl-1">
           <StatusIcon status={tool.status} />
         </span>
       </summary>

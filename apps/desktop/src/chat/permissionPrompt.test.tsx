@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
-import type { PendingPermission, PermissionQuestion } from "../lib/agent";
+import type { PendingPermission, PermissionQuestion, PermissionResponseOptions } from "../lib/agent";
 import { PermissionPrompt } from "./PermissionPrompt";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,7 +36,12 @@ const multi: PermissionQuestion = {
 
 let root: Root;
 let host: HTMLDivElement;
-let resolve: Mock<(allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>>;
+type Resolve = (
+  allow: boolean,
+  answers?: Record<string, string>,
+  options?: PermissionResponseOptions,
+) => void | Promise<boolean>;
+let resolve: Mock<Resolve>;
 
 function show(pending: PendingPermission) {
   act(() => root.render(<PermissionPrompt pending={pending} onResolve={resolve} />));
@@ -70,7 +75,7 @@ function write(value: string) {
 }
 
 beforeEach(() => {
-  resolve = vi.fn<(allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>>();
+  resolve = vi.fn<Resolve>();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -114,13 +119,52 @@ describe("a permission the agent asks for", () => {
     press("ArrowDown");
     expect(document.activeElement).toBe(row("No"));
     press("ArrowDown");
+    expect(document.activeElement).toBe(row("No, give instructions"));
+    press("ArrowDown");
     expect(document.activeElement).toBe(row("Yes"));
     press("ArrowUp");
-    expect(document.activeElement).toBe(row("No"));
+    expect(document.activeElement).toBe(row("No, give instructions"));
+  });
+
+  it("keeps a long command collapsed and offers a separate persistent approval", () => {
+    const command = "node -e '" + "x".repeat(4000) + "'";
+    show({ ...base, detail: command, allowAlways: "Allow always" });
+    expect(host.querySelector("details")?.open).toBe(false);
+    expect(host.querySelector("pre")?.textContent).toContain(command);
+    expect(document.activeElement).toBe(row("Yes"));
+    press("4");
+    expect(resolve).toHaveBeenCalledWith(true, undefined, { remember: true });
+  });
+
+  it("lets the user decline with instructions and sends the text to the agent", () => {
+    show(base);
+    press("3");
+    const field = host.querySelector("textarea")!;
+    expect(document.activeElement).toBe(field);
+    expect(row("Send instructions").disabled).toBe(true);
+    press("Escape");
+    expect(document.activeElement).toBe(row("No, give instructions"));
+    expect(resolve).not.toHaveBeenCalled();
+    press("3");
+    const textarea = host.querySelector("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(textarea, "Use the existing script.");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => row("Send instructions").click());
+    expect(resolve).toHaveBeenCalledWith(false, undefined, { instruction: "Use the existing script." });
   });
 });
 
 describe("questions the agent asks", () => {
+  it("shows a Send button for a question without choices", () => {
+    show(ask({ ...single, options: [] }));
+    expect(document.activeElement).toBe(input());
+    write("Use the cache");
+    act(() => row("Send").click());
+    expect(resolve).toHaveBeenCalledWith(true, { "Which approach?": "Use the cache" });
+  });
   it("shows the question and its options instead of an approval", () => {
     show(ask(single));
     expect(host.textContent).toContain("Which approach?");

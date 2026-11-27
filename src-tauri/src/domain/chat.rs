@@ -184,6 +184,8 @@ pub enum SubagentUpdate {
 pub struct PermissionDecision {
     pub request_id: PermissionRequestId,
     pub allow: bool,
+    #[serde(default)]
+    pub remember: bool,
     /// What the person answered to the agent's questions, by question text. Several choices of
     /// one question are joined with a comma. Empty when the request asked nothing.
     #[serde(default)]
@@ -269,6 +271,12 @@ pub enum AgentEvent {
         request_id: PermissionRequestId,
         tool_name: String,
         detail: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "allowAlways"
+        )]
+        allow_always: Option<String>,
         #[serde(default)]
         questions: Vec<PermissionQuestion>,
     },
@@ -299,6 +307,8 @@ pub struct PendingPermission {
     pub turn_id: TurnId,
     pub tool_name: String,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_always: Option<String>,
     #[serde(default)]
     pub questions: Vec<PermissionQuestion>,
 }

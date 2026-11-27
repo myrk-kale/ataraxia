@@ -428,6 +428,19 @@ impl ApiService {
         if self.chats_workspace().is_some() {
             listed.extend(chat_tools());
         }
+        if self.allow_write && self.runtime.is_some() {
+            listed.push(tool(
+                "ask_user",
+                "Ask the developer a question in the chat and wait for their answer. Use when a decision or missing detail blocks the task and your harness has no native question tool. The developer can pick an option or type an answer. A null answer means they skipped or cancelled.",
+                json!({
+                    "question": { "type": "string", "maxLength": 2000 },
+                    "options": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 200 } },
+                    "multiSelect": { "type": "boolean" }
+                }),
+                &["question"],
+                false,
+            ));
+        }
         // Driving a browser has effects outside Ataraxia, so only a chat that may write has it.
         if let (true, Some(browser)) = (self.allow_write, &self.browser) {
             listed.extend(browser.tools());
@@ -461,6 +474,17 @@ impl ApiService {
             .unwrap_or_else(|| Value::Object(Map::new()));
         if crate::app::browser_tools::is_browser_tool(name) {
             return self.call_browser_tool(name, &args);
+        }
+        if name == "ask_user" {
+            let outcome = self.ask_user(&args);
+            self.audit("MCP ask_user", true, &outcome);
+            return match outcome {
+                Ok(value) => json!({ "content": [{ "type": "text", "text": value.to_string() }] }),
+                Err(error) => json!({
+                    "content": [{ "type": "text", "text": error.message }],
+                    "isError": true
+                }),
+            };
         }
         let write = tools()
             .iter()

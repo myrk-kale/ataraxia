@@ -73,7 +73,7 @@ fn base_preamble(index: &Path) -> String {
          - The developer queues messages while you work; they are sent when your turn ends. If something you were asked to do is left undone (a blocker, a failure you could not fix, a question only they can answer), hold their queue before you end your turn, so the next message does not run on top of it: `curl -sS -X POST \"$ATARAXIA_API_URL/v1/queue/pause\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\" -H 'Content-Type: application/json' -d '{{\"reason\": \"what is pending\"}}'`. Then say what is pending. Do not pause when the work is done. {} has details.\n\
          - A file for the developer to see or download: share it on Ataraxia's file server; {} says how.\n\
          - For web pages (reading, acting, their HTTP calls, debugging) use the browser_* tools, never a browser of your own; read {} first.\n\
-         - Use the local HTTP API from bash with curl as the guide explains, with $ATARAXIA_API_URL, $ATARAXIA_API_TOKEN and $ATARAXIA_SESSION_ID from your environment.\n\
+         - Without native questions, use Ataraxia's `ask_user` MCP tool or `POST /v1/questions`. See {} for curl with $ATARAXIA_API_URL and $ATARAXIA_API_TOKEN.\n\
          - {}\n\
          - The developer keeps numbered tasks in Ataraxia. When they name one (\"#12\", \"task 12\"), fetch it with `curl -sS \"$ATARAXIA_API_URL/v1/tasks/12\" -H \"Authorization: Bearer $ATARAXIA_API_TOKEN\"` and work from its title and notes; {} has details. Do not guess a task from its number.\n\
          The developer's message follows.\n\n",
@@ -83,6 +83,7 @@ fn base_preamble(index: &Path) -> String {
         index.with_file_name("queue.md").display(),
         index.with_file_name("files.md").display(),
         index.with_file_name("browser.md").display(),
+        index.with_file_name("api.md").display(),
         crate::api::CODE_GRAPH_INSTRUCTIONS,
         index.with_file_name("tasks.md").display()
     )

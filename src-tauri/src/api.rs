@@ -14,8 +14,8 @@ pub(crate) use mcp::CODE_GRAPH_INSTRUCTIONS;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,10 +27,10 @@ use crate::domain::ids::{CheckpointId, SessionId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     ArtifactId, ArtifactKind, CodeRef, Decision, DecisionId, DecisionKind, DecisionMessage,
-    DecisionState, Error, ErrorCode, InsightEvent, Result,
+    DecisionState, Error, ErrorCode, InsightEvent, PermissionQuestion, QuestionOption, Result,
 };
 use crate::files::FileServer;
-use crate::ports::{ApiAccess, ApiGateway, Database, Git, InsightSink};
+use crate::ports::{AgentRuntime, ApiAccess, ApiGateway, Database, Git, InsightSink};
 
 // ------------------------------------------------------------------ errors
 
@@ -133,6 +133,7 @@ pub enum Endpoint {
     AddSchedule,
     CancelSchedule,
     PauseQueue,
+    AskUser,
     ListTasks,
     GetTask,
     ShareFile,
@@ -157,6 +158,14 @@ impl Route {
 }
 
 pub const ROUTES: &[Route] = &[
+    Route {
+        endpoint: Endpoint::AskUser,
+        method: "POST",
+        path: "/v1/questions",
+        status: 200,
+        description: "Ask the developer in the chat and wait for their answer. Body: question, options? [string], multiSelect? (boolean).",
+        write: true,
+    },
     Route {
         endpoint: Endpoint::Index,
         method: "GET",
@@ -504,6 +513,7 @@ pub struct ApiService {
     scheduler: Option<Arc<dyn Scheduling>>,
     files: Option<Arc<dyn FileSharing>>,
     browser: Option<Arc<dyn Browsing>>,
+    runtime: Option<Weak<dyn AgentRuntime>>,
     /// Tells the window what a write changed, so an open tab shows it without being reloaded.
     sink: Option<Arc<dyn InsightSink>>,
 }
@@ -519,6 +529,7 @@ impl ApiService {
             scheduler: None,
             files: None,
             browser: None,
+            runtime: None,
             sink: None,
         }
     }
@@ -848,7 +859,68 @@ impl ApiService {
                 let queue = self.scheduler()?.pause_queue(session, reason)?;
                 Ok(json!({ "paused": true, "queued": queue.items.len() }))
             }
+            Endpoint::AskUser => self.ask_user(args),
         }
+    }
+
+    fn ask_user(&self, args: &Value) -> ApiResult<Value> {
+        self.require_write()?;
+        let session = self.session_arg(args)?;
+        let runtime = self
+            .runtime
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| ApiError::invalid("chat questions are unavailable here"))?;
+        let question = args
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|question| !question.is_empty() && question.chars().count() <= 2000)
+            .ok_or_else(|| ApiError::invalid("`question` must contain 1–2000 characters"))?;
+        let mut options: Vec<QuestionOption> = Vec::new();
+        if let Some(given) = args.get("options") {
+            let given = given
+                .as_array()
+                .filter(|options| options.len() <= 8)
+                .ok_or_else(|| {
+                    ApiError::invalid("`options` must be an array of up to eight labels")
+                })?;
+            for option in given {
+                let label = option
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|label| !label.is_empty() && label.chars().count() <= 200)
+                    .ok_or_else(|| {
+                        ApiError::invalid("each option must contain 1–200 characters")
+                    })?;
+                if options.iter().any(|option| option.label == label) {
+                    return Err(ApiError::invalid("option labels must be unique"));
+                }
+                options.push(QuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                });
+            }
+        }
+        let multi_select = args
+            .get("multiSelect")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| ApiError::invalid("`multiSelect` must be a boolean"))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let answer = runtime.ask_user(
+            session,
+            PermissionQuestion {
+                question: question.into(),
+                header: String::new(),
+                options,
+                multi_select,
+            },
+        )?;
+        Ok(json!({ "answer": answer }))
     }
 
     /// The file a chat may put on the local server: inside one of its own folders (its working
@@ -1272,6 +1344,7 @@ struct ServerInner {
     scheduler: std::sync::OnceLock<Arc<dyn Scheduling>>,
     files: std::sync::OnceLock<Arc<dyn FileSharing>>,
     browser: std::sync::OnceLock<Arc<dyn Browsing>>,
+    runtime: std::sync::OnceLock<Weak<dyn AgentRuntime>>,
     sink: std::sync::OnceLock<Arc<dyn InsightSink>>,
     port: u16,
     stop: AtomicBool,
@@ -1329,6 +1402,7 @@ impl ApiServer {
             scheduler: std::sync::OnceLock::new(),
             files: std::sync::OnceLock::new(),
             browser: std::sync::OnceLock::new(),
+            runtime: std::sync::OnceLock::new(),
             sink: std::sync::OnceLock::new(),
             port,
             stop: AtomicBool::new(false),
@@ -1364,6 +1438,10 @@ impl ApiServer {
     /// Lets agents drive the built-in browser.
     pub fn set_browser(&self, browser: Arc<dyn Browsing>) {
         let _ = self.inner.browser.set(browser);
+    }
+
+    pub fn set_runtime(&self, runtime: &Arc<dyn AgentRuntime>) {
+        let _ = self.inner.runtime.set(Arc::downgrade(runtime));
     }
 
     /// Lets agents put files on the local file server.
@@ -1775,6 +1853,7 @@ fn respond(
         .with_browser(inner.browser.get().cloned())
         .with_sink(inner.sink.get().cloned());
     service.code_graph = inner.code_graph.get().cloned();
+    service.runtime = inner.runtime.get().cloned();
     let target = head.target.clone();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     if path.trim_end_matches('/') == "/mcp" {
@@ -2772,6 +2851,112 @@ mod tests {
     }
 
     #[test]
+    fn cursor_can_ask_through_mcp_and_http_and_receive_the_chat_answer() {
+        use crate::adapters::agents::{AgentHost, CursorBackend};
+        use crate::domain::{AgentEvent, PermissionDecision};
+
+        struct Events(std::sync::mpsc::Sender<AgentEvent>);
+        impl crate::ports::EventSink for Events {
+            fn emit_agent(&self, event: AgentEvent) {
+                let _ = self.0.send(event);
+            }
+        }
+
+        let cwd = tempfile::tempdir().unwrap();
+        let (db, chat, other, _) = seeded_at(cwd.path().to_owned());
+        let server = start(&db);
+        let (send, events) = std::sync::mpsc::channel();
+        let backend = CursorBackend::with_command(
+            "python3".into(),
+            vec![
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/mock_cursor_agent.py"
+                )
+                .into(),
+            ],
+        );
+        let host = Arc::new(
+            AgentHost::new(db.clone(), Arc::new(Events(send)))
+                .with_api(server.clone())
+                .with_backend(ProviderKind::Cursor, Arc::new(backend)),
+        );
+        let runtime: Arc<dyn AgentRuntime> = host.clone();
+        server.set_runtime(&runtime);
+        let mut session = db.get_session(chat).unwrap().unwrap();
+        session.provider = ProviderKind::Cursor;
+        host.start_session(&session).unwrap();
+
+        for (prompt, answer) in [("ask-mcp", Some("SQLite")), ("ask-http", None)] {
+            let turn = host.prompt(&chat, prompt).unwrap();
+            let request_id = loop {
+                let event = events.recv_timeout(Duration::from_secs(5)).unwrap();
+                if let AgentEvent::Permission {
+                    session_id,
+                    turn_id,
+                    request_id,
+                    questions,
+                    ..
+                } = event
+                {
+                    assert_eq!((session_id, turn_id), (chat, turn));
+                    assert_eq!(questions[0].question, "Which database?");
+                    assert!(questions[0].options.is_empty());
+                    break request_id;
+                }
+            };
+            assert_eq!(
+                host.status(&chat).unwrap(),
+                SessionStatus::WaitingPermission
+            );
+            assert!(
+                host.resolve_permission(
+                    &other,
+                    PermissionDecision {
+                        request_id,
+                        allow: false,
+                        remember: false,
+                        answers: Default::default(),
+                    }
+                )
+                .is_err()
+            );
+            host.resolve_permission(
+                &chat,
+                PermissionDecision {
+                    request_id,
+                    allow: answer.is_some(),
+                    remember: false,
+                    answers: answer
+                        .into_iter()
+                        .map(|text| ("Which database?".into(), text.into()))
+                        .collect(),
+                },
+            )
+            .unwrap();
+            let mut seen = String::new();
+            loop {
+                match events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    AgentEvent::Delta {
+                        turn_id,
+                        role: crate::domain::ChatRole::Assistant,
+                        text,
+                        ..
+                    } if turn_id == turn => seen.push_str(&text),
+                    AgentEvent::TurnDone { turn_id, ok, .. } if turn_id == turn => {
+                        assert!(ok);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(seen, format!("answer: {}", answer.unwrap_or("None")));
+            assert!(host.snapshot(&chat).unwrap().pending_permission.is_none());
+        }
+        host.shutdown_all();
+    }
+
+    #[test]
     fn the_code_graph_uses_the_current_worktree_even_when_memory_is_off() {
         use crate::adapters::{
             agents::AgentHost, fs::StdFs, git::GitCli, syntax::TreeSitterSyntax,
@@ -3496,7 +3681,7 @@ mod tests {
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body["version"], 1);
         let endpoints = answer.body["endpoints"].as_array().unwrap();
-        assert_eq!(endpoints.len(), 18);
+        assert_eq!(endpoints.len(), 19);
         assert!(
             endpoints
                 .iter()
@@ -3523,6 +3708,7 @@ mod tests {
         assert!(has("POST", "/v1/comments", true));
         assert!(has("PUT", "/v1/priority", true));
         assert!(has("POST", "/v1/flows", true));
+        assert!(has("POST", "/v1/questions", true));
         assert!(has("POST", "/v1/shares", true));
         assert!(has("DELETE", "/v1/shares/{share_id}", true));
         assert!(has("GET", "/v1/tasks", false));

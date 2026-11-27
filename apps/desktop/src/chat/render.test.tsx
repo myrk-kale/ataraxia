@@ -49,6 +49,17 @@ describe("ToolCard", () => {
     expect(html).toContain("Waiting for the result");
   });
 
+  it("keeps a name that is a whole script inside the card", () => {
+    const script = `cd /Users/someone/dev/a-project && python3 - <<'PY'\n${"print(1)\n".repeat(40)}PY`;
+    const html = renderToStaticMarkup(
+      <ToolCard tool={tool({ name: script, input: '{"command":"ls"}' })} />,
+    );
+    // The tooltip is clipped too: a script of any length does not weigh down the page.
+    expect(html.length).toBeLessThan(1500);
+    expect(html).toContain("truncate");
+    expect(html).toContain("overflow-hidden");
+  });
+
   it("puts neither the input nor the output in the page while it is closed", () => {
     const html = renderToStaticMarkup(
       <ToolCard

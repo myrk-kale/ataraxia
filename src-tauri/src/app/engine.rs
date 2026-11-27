@@ -51,6 +51,8 @@ pub struct Engine {
     /// Held while a chat's schedules are read, changed and written back.
     pub(crate) schedule_lock: Mutex<()>,
     pub(crate) autocomplete: super::autocomplete::AutocompleteState,
+    /// The helper chat that reviews permission requests, one per chat, kept running.
+    pub(crate) review_helpers: Mutex<HashMap<SessionId, Arc<super::permission_review::Helper>>>,
     task_timeout: Duration,
 }
 
@@ -94,6 +96,7 @@ impl Engine {
             sending: Mutex::new(()),
             schedule_lock: Mutex::new(()),
             autocomplete: Default::default(),
+            review_helpers: Mutex::new(HashMap::new()),
             task_timeout: TASK_TIMEOUT,
         })
     }
@@ -584,18 +587,43 @@ impl Engine {
 
     /// Sends one prompt to a hidden session and waits for its answer text.
     pub(crate) fn ask_and_wait(&self, session: &ChatSession, prompt: &str) -> Result<String> {
+        self.ask_and_wait_within(session, prompt, self.task_timeout)
+    }
+
+    /// Like [`Self::ask_and_wait`], giving up after `timeout`.
+    pub(crate) fn ask_and_wait_within(
+        &self,
+        session: &ChatSession,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        self.ask_session(session, prompt, timeout, false)
+    }
+
+    /// Asks a hidden session and leaves its process running for the next question, unless this
+    /// one failed. `keep` says whether the session outlives the answer.
+    pub(crate) fn ask_session(
+        &self,
+        session: &ChatSession,
+        prompt: &str,
+        timeout: Duration,
+        keep: bool,
+    ) -> Result<String> {
         let (sender, receiver) = mpsc::channel();
         self.waiters.lock().insert(session.id, sender);
         let outcome = (|| -> Result<bool> {
             self.runtime.start_session(session)?;
             self.runtime.prompt(&session.id, prompt)?;
             receiver
-                .recv_timeout(self.task_timeout)
+                .recv_timeout(timeout)
                 .map_err(|_| Error::new(ErrorCode::Agent, "the agent took too long to answer"))
         })();
         self.waiters.lock().remove(&session.id);
         let answer = self.last_answer(&session.id);
-        self.runtime.stop_session(&session.id);
+        // A session that did not answer cleanly is not trusted with the next question.
+        if !keep || !matches!(outcome, Ok(true)) {
+            self.runtime.stop_session(&session.id);
+        }
         match outcome? {
             true => answer
                 .filter(|text| !text.trim().is_empty())

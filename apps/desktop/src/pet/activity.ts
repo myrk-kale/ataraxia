@@ -67,7 +67,7 @@ export function applyEvent(now: ChatActivity, event: { type: string; status?: Se
     case "status":
       // New work starts clean: what was unread or failed is old news.
       return event.status === "working"
-        ? { ...now, status: event.status, unread: false, failed: false }
+        ? { ...now, status: event.status, needsInput: false, unread: false, failed: false }
         : { ...now, status: event.status ?? now.status, failed: now.failed || event.status === "failed" };
     case "permission":
       return { ...now, needsInput: true };

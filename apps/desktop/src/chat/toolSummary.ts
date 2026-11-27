@@ -41,6 +41,17 @@ function clip(text: string): string {
     : firstLine;
 }
 
+const MAX_NAME = 32;
+
+/**
+ * The name a card shows. Most harnesses name a tool ("Bash"), but Cursor names a call by what it
+ * runs, which can be a whole script: only its first line, clipped, goes in the card.
+ */
+export function toolLabel(name: string): string {
+  const firstLine = name.trim().split("\n", 1)[0] ?? "";
+  return firstLine.length > MAX_NAME ? `${firstLine.slice(0, MAX_NAME - 1)}…` : firstLine;
+}
+
 /** One line describing what a tool call is doing, shown while the card is collapsed. */
 export function toolSummary(input: string): string {
   const parsed = parseToolInput(input);

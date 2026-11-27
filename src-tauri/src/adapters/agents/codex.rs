@@ -1190,6 +1190,7 @@ impl CodexShared {
                 request_id: next.request_id,
                 tool_name: next.tool_name.clone(),
                 detail: next.detail.clone(),
+                allow_always: None,
                 questions: Vec::new(),
             });
             state.active = Some(next);
@@ -2270,6 +2271,7 @@ mod tests {
         let session = backend
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -2336,6 +2338,7 @@ mod tests {
                     ..Launch::default()
                 }),
                 read_only: true,
+                reviewer: None,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: cwd.clone(),
                 extra_dirs: Vec::new(),
@@ -2391,6 +2394,7 @@ mod tests {
         let session = CodexBackend::new()
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only: true,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -2505,6 +2509,7 @@ mod tests {
             .resolve_permission(&PermissionDecision {
                 request_id,
                 allow,
+                remember: false,
                 answers: Default::default(),
             })
             .expect("resolve");
