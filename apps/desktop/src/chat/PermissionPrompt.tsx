@@ -1,9 +1,13 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import type { PendingPermission, PermissionQuestion } from "../lib/agent";
+import type { PendingPermission, PermissionQuestion, PermissionResponseOptions } from "../lib/agent";
 import { Button } from "../ui/Button";
 
 /** Answers the agent. A promise settles to `false` when the answer did not go through. */
-type Resolve = (allow: boolean, answers?: Record<string, string>) => void | Promise<boolean>;
+type Resolve = (
+  allow: boolean,
+  answers?: Record<string, string>,
+  options?: PermissionResponseOptions,
+) => void | Promise<boolean>;
 
 const FIELD = "cg-field rounded-cg-lg bg-cg-tint px-4 py-3.5";
 
@@ -28,8 +32,8 @@ function useRowKeys(onSkip: () => void) {
     }
     const rows = rowsOf(root.current);
     const at = rows.indexOf(document.activeElement as HTMLElement);
-    const typing = event.target instanceof HTMLInputElement;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+    if (!typing && at !== -1 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault();
       const step = event.key === "ArrowDown" ? 1 : -1;
       rows[(at + step + rows.length) % rows.length]?.focus();
@@ -55,10 +59,31 @@ function Digit({ n }: { n: number }) {
 }
 
 function Approval({ pending, onResolve }: { pending: PendingPermission; onResolve: Resolve }) {
-  const keys = useRowKeys(() => onResolve(false));
+  const [editing, setEditing] = useState(false);
+  const [instruction, setInstruction] = useState("");
   const first = useRef<HTMLButtonElement>(null);
+  const redirect = useRef<HTMLButtonElement>(null);
+  const instructionField = useRef<HTMLTextAreaElement>(null);
+  const keys = useRowKeys(editing ? closeInstruction : () => onResolve(false));
+  const detail = pending.detail.includes(pending.toolName) ? pending.detail
+    : `${pending.toolName}\n${pending.detail}`;
+  const longDetail = detail.length > 220 || detail.split("\n", 4).length > 3;
+  const detailClass = "max-h-[min(9rem,25vh)] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-small text-cg-muted-strong";
 
   useEffect(() => first.current?.focus(), []);
+  useEffect(() => {
+    if (editing) instructionField.current?.focus();
+  }, [editing]);
+
+  function closeInstruction() {
+    setEditing(false);
+    redirect.current?.focus();
+  }
+
+  function sendInstruction() {
+    const text = instruction.trim();
+    if (text) onResolve(false, undefined, { instruction: text });
+  }
 
   return (
     <div
@@ -69,10 +94,21 @@ function Approval({ pending, onResolve }: { pending: PendingPermission; onResolv
       onKeyDown={keys.onKeyDown}
     >
       <p className="text-small font-semibold text-cg-muted-strong">Permission needed</p>
-      <p className="mt-1.5 text-body leading-snug font-semibold">{pending.detail}</p>
-      <p className="mt-2 rounded-cg-md bg-cg-panel px-3 py-2 font-mono text-small text-cg-muted-strong">
-        {pending.toolName}
-      </p>
+      {longDetail ? (
+        <details className="mt-2 rounded-cg-md bg-cg-panel px-3 py-2">
+          <summary className="cursor-pointer text-small text-cg-ink">
+            Request details
+            <span className="mt-1 line-clamp-2 [overflow-wrap:anywhere] font-mono text-cg-muted-strong">
+              {detail.slice(0, 160)}…
+            </span>
+          </summary>
+          <pre className={`mt-2 ${detailClass}`} tabIndex={0} aria-label="Permission request details">
+            {detail}
+          </pre>
+        </details>
+      ) : (
+        <pre className={`mt-2 rounded-cg-md bg-cg-panel px-3 py-2 ${detailClass}`}>{detail}</pre>
+      )}
       <div className="mt-2.5 space-y-0.5">
         <button
           ref={first}
@@ -95,8 +131,61 @@ function Approval({ pending, onResolve }: { pending: PendingPermission; onResolv
           <Digit n={2} />
           <span className="font-medium">No</span>
         </button>
+        <button
+          ref={redirect}
+          className={ROW}
+          data-number="3"
+          data-row
+          aria-expanded={editing}
+          type="button"
+          onClick={() => setEditing(true)}
+        >
+          <Digit n={3} />
+          <span className="font-medium">No, give instructions</span>
+        </button>
+        {pending.allowAlways ? (
+          <button
+            className={ROW}
+            data-number="4"
+            data-row
+            type="button"
+            onClick={() => onResolve(true, undefined, { remember: true })}
+          >
+            <Digit n={4} />
+            <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere] font-medium">
+              {pending.allowAlways}
+            </span>
+          </button>
+        ) : null}
       </div>
-      <p className="mt-2 px-2.5 text-small text-cg-muted">↑↓ to move · Enter to choose · Esc to decline</p>
+      {editing ? (
+        <form
+          className="mt-2 flex flex-col gap-2 px-2.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            sendInstruction();
+          }}
+        >
+          <label className="flex flex-col gap-1 text-small text-cg-muted-strong">
+            What should the agent do instead?
+            <textarea
+              ref={instructionField}
+              className="w-full rounded-cg-md border border-cg-control bg-cg-panel px-2.5 py-2 text-ui text-cg-ink"
+              rows={2}
+              value={instruction}
+              onChange={(event) => setInstruction(event.target.value)}
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" onClick={closeInstruction}>Back</Button>
+            <Button size="sm" variant="primary" type="submit" disabled={!instruction.trim()}>
+              Send instructions
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <p className="mt-2 px-2.5 text-small text-cg-muted">↑↓ to move · Enter to choose · Esc to decline</p>
+      )}
     </div>
   );
 }
@@ -146,7 +235,7 @@ function Question({
       .map((option) => option.label)
       .filter((label) => chosen.includes(label));
     if (picked.length > 0 || written) {
-      onAnswer({ picked, written });
+      onAnswer({ picked: multi ? picked : [], written });
     }
   }
 
@@ -251,7 +340,7 @@ function Question({
           <Button size="sm" onClick={onSkip}>
             Skip
           </Button>
-          {multi ? (
+          {multi || count === 0 || written ? (
             <Button
               disabled={chosen.length === 0 && !written}
               size="sm"
@@ -285,13 +374,10 @@ function Questions({
   const question = questions[step];
 
   function finish(all: Record<number, Draft>) {
-    const answers: Record<string, string> = {};
-    questions.forEach((item, index) => {
+    const answers = Object.fromEntries<string>(questions.flatMap((item, index) => {
       const draft = all[index];
-      if (draft) {
-        answers[item.question] = answerOf(draft);
-      }
-    });
+      return draft ? [[item.question, answerOf(draft)]] : [];
+    }));
     if (Object.keys(answers).length > 0) {
       onResolve(true, answers);
     } else {

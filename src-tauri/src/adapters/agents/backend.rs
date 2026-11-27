@@ -57,6 +57,7 @@ pub enum BackendEvent {
         request_id: PermissionRequestId,
         tool_name: String,
         detail: String,
+        allow_always: Option<String>,
         /// Questions the tool puts to the person; empty for an ordinary permission.
         questions: Vec<crate::domain::PermissionQuestion>,
     },
@@ -119,6 +120,8 @@ pub struct BackendContext {
     pub config: AgentConfiguration,
     /// How the chosen launch profile starts the harness; `None` is the default way.
     pub launch: Option<Launch>,
+    /// Reviews the requests the rules leave in doubt (a harness that cannot do it itself).
+    pub reviewer: Option<Arc<dyn crate::ports::PermissionReviewer>>,
     pub emit: Emitter,
 }
 

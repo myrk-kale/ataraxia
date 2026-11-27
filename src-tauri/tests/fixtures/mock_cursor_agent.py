@@ -14,8 +14,10 @@ arrive as requests from the agent. The prompt text selects the scenario:
 `--failing-session` answers `session/new` with an error.
 """
 import json
+import os
 import sys
 import time
+import urllib.request
 
 SESSION = "cur_mock"
 STATE = {"mode": "agent", "caps": None, "model": "auto", "reasoning": {}}
@@ -114,6 +116,56 @@ def prompt(ident, text):
     elif text == "plan":
         result = request("p1", "cursor/create_plan", {"plan": "Ship the feature"})
         say("plan %s" % result["outcome"]["outcome"])
+    elif text in ("ask-http", "ask-mcp"):
+        args = {"question": "Which database?"}
+        url = os.environ["ATARAXIA_API_URL"]
+        headers = {
+            "Authorization": "Bearer " + os.environ["ATARAXIA_API_TOKEN"],
+            "Content-Type": "application/json",
+        }
+        body = args
+        if text == "ask-mcp":
+            server = next(server for server in STATE["mcpServers"] if server["name"] == "ataraxia")
+            url = server["url"]
+            headers = {header["name"]: header["value"] for header in server["headers"]}
+            headers["Content-Type"] = "application/json"
+            body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "ask_user", "arguments": args}}
+        else:
+            url += "/v1/questions"
+        req = urllib.request.Request(url, json.dumps(body).encode(), headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            answer = json.load(response)
+        if text == "ask-mcp":
+            answer = json.loads(answer["result"]["content"][0]["text"])
+        say("answer: " + str(answer["answer"]))
+    elif text == "permission":
+        result = request("permission-1", "session/request_permission", {
+            "sessionId": SESSION,
+            "toolCall": {"toolCallId": "shell-1", "title": "echo " + "x" * 4000, "kind": "execute"},
+            "options": [
+                {"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"},
+                {"optionId": "allow-always", "kind": "allow_always", "name": "Allow always"},
+                {"optionId": "reject-once", "kind": "reject_once", "name": "Reject"},
+            ],
+        })
+        say(result["outcome"].get("optionId", "cancelled"))
+    elif text.startswith("perm|"):
+        _, kind, command = text.split("|", 2)
+        tool_call = {"toolCallId": "tool-1", "title": command, "kind": kind}
+        if kind == "execute":
+            tool_call["rawInput"] = {"command": command}
+        else:
+            tool_call["locations"] = [{"path": command}]
+        result = request("permission-2", "session/request_permission", {
+            "sessionId": SESSION,
+            "toolCall": tool_call,
+            "options": [
+                {"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"},
+                {"optionId": "reject-once", "kind": "reject_once", "name": "Reject"},
+            ],
+        })
+        say(result["outcome"].get("optionId", "cancelled"))
     elif text == "mode":
         say("mode=%s" % STATE["mode"])
     elif text == "settings":
@@ -137,6 +189,7 @@ for raw in sys.stdin:
             "protocolVersion": 1,
             "agentCapabilities": {"mcpCapabilities": {"http": True, "sse": True}}}})
     elif method == "session/new":
+        STATE["mcpServers"] = params.get("mcpServers", [])
         if SLOW_SESSION:
             time.sleep(1)
         if FAILING_SESSION:

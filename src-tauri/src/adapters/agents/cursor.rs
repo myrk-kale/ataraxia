@@ -36,6 +36,20 @@ const REPORTS: [&str; 3] = [
 /// that means "skip it".
 const QUESTION_FALLBACK_SKIP: &str = "__ask_question_skip__";
 
+const AUTO_REVIEW_ENV: &str = "ATARAXIA_CURSOR_AUTO_REVIEW";
+
+/// Whether Ataraxia answers the permission requests its rules call safe. On unless
+/// `ATARAXIA_CURSOR_AUTO_REVIEW` is `off`, `0`, `false`, `no` or `user`: Cursor's ACP server has
+/// no Smart Auto of its own (see `docs/reference.md`).
+pub(super) fn auto_review_on() -> bool {
+    !std::env::var(AUTO_REVIEW_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false" | "no" | "user" | ""
+        )
+    })
+}
+
 enum Launcher {
     Resolve,
     Fixed { program: PathBuf, args: Vec<String> },
@@ -399,6 +413,7 @@ mod tests {
         PermissionDecision {
             request_id: PermissionRequestId::new(),
             allow,
+            remember: false,
             answers: answers
                 .iter()
                 .map(|(question, answer)| (question.to_string(), answer.to_string()))
@@ -623,6 +638,7 @@ mod tests {
         let session =
             CursorBackend::with_command(PathBuf::from("python3"), args).start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: std::env::temp_dir(),
@@ -638,6 +654,118 @@ mod tests {
                 }),
             })?;
         Ok(Harness { session, events })
+    }
+
+    struct Vouch(bool, Mutex<Vec<String>>);
+
+    impl crate::ports::PermissionReviewer for Vouch {
+        fn review(&self, _session: crate::domain::ids::SessionId, request: &str) -> bool {
+            self.1.lock().push(request.to_string());
+            self.0
+        }
+    }
+
+    /// Runs one `perm|kind|subject` request against the mock and says what the person saw and
+    /// what Cursor was answered.
+    fn permission_outcome(
+        kind: &str,
+        subject: &str,
+        reviewer: Option<Arc<dyn crate::ports::PermissionReviewer>>,
+    ) -> (bool, String) {
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let args: Vec<String> = vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/mock_cursor_agent.py"
+            )
+            .into(),
+        ];
+        let session = CursorBackend::with_command(PathBuf::from("python3"), args)
+            .start(BackendContext {
+                launch: None,
+                reviewer,
+                read_only: false,
+                session_id: crate::domain::ids::SessionId::new(),
+                cwd: std::env::temp_dir(),
+                extra_dirs: Vec::new(),
+                model: None,
+                effort: None,
+                agent: None,
+                resume: None,
+                api: None,
+                config: super::super::config::AgentConfiguration::default(),
+                emit: Arc::new(move |event| {
+                    let _ = sender.lock().send(event);
+                }),
+            })
+            .expect("start");
+        let h = Harness { session, events };
+        h.session
+            .prompt(TurnId::new(), &format!("perm|{kind}|{subject}"))
+            .expect("prompt");
+        let asked = std::cell::Cell::new(false);
+        let seen = h.until("turn done", |event| {
+            if let BackendEvent::Permission { request_id, .. } = event {
+                asked.set(true);
+                let _ = h.session.resolve_permission(&PermissionDecision {
+                    request_id: *request_id,
+                    allow: false,
+                    remember: false,
+                    answers: BTreeMap::new(),
+                });
+            }
+            done(event)
+        });
+        h.session.shutdown();
+        let answer: String = seen
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Delta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        (asked.get(), answer)
+    }
+
+    #[test]
+    fn a_safe_request_is_allowed_without_asking_the_person() {
+        let (asked, answer) = permission_outcome("execute", "git status --short", None);
+        assert!(!asked);
+        assert_eq!(answer, "allow-once");
+        let (asked, answer) = permission_outcome("edit", "src/a.rs", None);
+        assert!(!asked);
+        assert_eq!(answer, "allow-once");
+    }
+
+    #[test]
+    fn a_dangerous_request_reaches_the_person_and_never_the_reviewer() {
+        let reviewer = Arc::new(Vouch(true, Mutex::new(Vec::new())));
+        let (asked, answer) =
+            permission_outcome("execute", "git push --force", Some(reviewer.clone()));
+        assert!(asked);
+        assert_eq!(answer, "reject-once");
+        let (asked, _) = permission_outcome("read", ".env", Some(reviewer.clone()));
+        assert!(asked);
+        assert!(reviewer.1.lock().is_empty());
+    }
+
+    #[test]
+    fn a_doubtful_request_waits_for_the_reviewer_and_goes_to_the_person_without_its_vouch() {
+        let yes = Arc::new(Vouch(true, Mutex::new(Vec::new())));
+        let (asked, answer) = permission_outcome("execute", "pnpm install", Some(yes.clone()));
+        assert!(!asked);
+        assert_eq!(answer, "allow-once");
+        assert_eq!(yes.1.lock().len(), 1);
+        assert!(yes.1.lock()[0].contains("pnpm install"));
+
+        let no = Arc::new(Vouch(false, Mutex::new(Vec::new())));
+        let (asked, answer) = permission_outcome("execute", "pnpm install", Some(no));
+        assert!(asked);
+        assert_eq!(answer, "reject-once");
+
+        let (asked, _) = permission_outcome("execute", "pnpm install", None);
+        assert!(asked);
     }
 
     fn done(event: &BackendEvent) -> bool {
@@ -664,6 +792,43 @@ mod tests {
     }
 
     #[test]
+    fn persistent_approval_selects_the_cursor_allowlist_option() {
+        let h = start(false).expect("start");
+        h.session
+            .prompt(TurnId::new(), "permission")
+            .expect("prompt");
+        let seen = h.until("permission", |event| {
+            matches!(event, BackendEvent::Permission { .. })
+        });
+        let Some(BackendEvent::Permission {
+            request_id,
+            tool_name,
+            detail,
+            allow_always,
+            ..
+        }) = seen.last()
+        else {
+            panic!("expected permission");
+        };
+        assert_eq!(tool_name, "Shell");
+        assert_eq!(detail, &format!("Allow running: echo {}", "x".repeat(4000)));
+        assert_eq!(allow_always.as_deref(), Some("Allow always"));
+        h.session
+            .resolve_permission(&PermissionDecision {
+                request_id: *request_id,
+                allow: true,
+                remember: true,
+                answers: BTreeMap::new(),
+            })
+            .expect("resolve");
+        let seen = h.until("turn done", done);
+        assert!(seen.iter().any(
+            |event| matches!(event, BackendEvent::Delta { text, .. } if text == "allow-always")
+        ));
+        h.session.shutdown();
+    }
+
+    #[test]
     fn a_question_waits_for_the_person_and_the_answer_reaches_cursor() {
         let h = start(false).expect("start");
         h.session.prompt(TurnId::new(), "ask").expect("prompt");
@@ -684,6 +849,7 @@ mod tests {
             .resolve_permission(&PermissionDecision {
                 request_id: *request_id,
                 allow: true,
+                remember: false,
                 answers: BTreeMap::from([("Which database?".to_string(), "SQLite".to_string())]),
             })
             .expect("resolve");
@@ -903,6 +1069,7 @@ mod tests {
         let session = CursorBackend::new()
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: cwd.to_path_buf(),
@@ -957,6 +1124,7 @@ mod tests {
         let session = CursorBackend::new()
             .start(BackendContext {
                 launch: None,
+                reviewer: None,
                 read_only: false,
                 session_id: crate::domain::ids::SessionId::new(),
                 cwd: dir.path().canonicalize().unwrap(),
@@ -1056,6 +1224,7 @@ mod tests {
                 let _ = h.session.resolve_permission(&PermissionDecision {
                     request_id: *request_id,
                     allow: false,
+                    remember: false,
                     answers: BTreeMap::new(),
                 });
             }
@@ -1149,6 +1318,7 @@ mod tests {
                     Some(PermissionDecision {
                         request_id: *request_id,
                         allow: true,
+                        remember: false,
                         answers: BTreeMap::new(),
                     })
                 }
@@ -1189,6 +1359,7 @@ mod tests {
                     Some(PermissionDecision {
                         request_id: *request_id,
                         allow: false,
+                        remember: false,
                         answers: BTreeMap::new(),
                     })
                 }

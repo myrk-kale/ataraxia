@@ -32,7 +32,7 @@ export function useSessionActivity(sessionId: SessionId | null): SessionActivity
         return;
       }
       if (event.type === "status") {
-        setActivity((now) => ({ ...now, status: event.status }));
+        setActivity({ status: event.status, needsApproval: event.status === "waiting-permission" });
       } else if (event.type === "permission") {
         setActivity((now) => ({ ...now, needsApproval: true }));
       } else if (event.type === "turnDone" || event.type === "error") {

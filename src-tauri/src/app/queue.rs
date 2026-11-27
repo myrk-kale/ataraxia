@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 use crate::domain::ids::SessionId;
 use crate::domain::image::decode_uploads;
 use crate::domain::{
-    Error, ErrorCode, ImageUpload, InsightEvent, MessageQueue, QueuedMessage, Result, SessionKind,
-    SessionStatus,
+    Error, ErrorCode, ImageUpload, InsightEvent, MessageQueue, PermissionRequestId, QueuedMessage,
+    Result, SessionKind, SessionStatus,
 };
 
 use super::engine::Engine;
@@ -165,6 +165,42 @@ impl Engine {
         };
         self.emit_queue(session_id, view.clone());
         view
+    }
+
+    pub fn redirect_permission(
+        &self,
+        session_id: SessionId,
+        request_id: PermissionRequestId,
+        instruction: &str,
+    ) -> Result<()> {
+        let instruction = instruction.trim();
+        if instruction.is_empty() || self.session(session_id)?.kind != SessionKind::Chat {
+            return Err(Error::new(
+                ErrorCode::Invalid,
+                "a chat instruction is required",
+            ));
+        }
+        {
+            // A turn may finish as it is cancelled. Hold dispatch until the instruction is first.
+            let _sending = self.sending.lock();
+            self.runtime.cancel_permission(&session_id, request_id)?;
+            let view = {
+                let mut queues = self.queues.lock();
+                let state = queues.entry(session_id).or_default();
+                state.items.push_front(Entry {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: format!("I declined the last permission request. {instruction}"),
+                    images: Vec::new(),
+                });
+                state.force = true;
+                state.view()
+            };
+            self.emit_queue(session_id, view);
+        }
+        if !self.is_working(session_id) {
+            self.queue_advance(session_id, true);
+        }
+        Ok(())
     }
 
     /// The agent says something it was asked to do is left undone: what is queued must not run on

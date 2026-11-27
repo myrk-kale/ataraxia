@@ -64,6 +64,7 @@ out. `{...}` in a path is an id taken from an earlier response.
 | `POST /v1/schedules` | yes | be sent a message later: `prompt` (required), `in_minutes` or `at`, `every_minutes`; see `schedule.md` |
 | `DELETE /v1/schedules/{schedule_id}` | yes | cancels a schedule (the id or its first characters) |
 | `POST /v1/queue/pause` | yes | holds the developer's message queue because something is left undone: `reason` (optional); see `queue.md` |
+| `POST /v1/questions` | yes | asks the developer a question in the chat and waits for their answer |
 | `POST /v1/shares` | yes | puts a file of this chat on the local file server so the chat can show it and the developer download it: `path` (required), `name`; see `files.md` |
 | `DELETE /v1/shares/{share_id}` | yes | stops offering a shared file |
 | `PUT /v1/priority` | yes | changes or resets a component's priority |
@@ -74,6 +75,23 @@ When in doubt about what exists, read it.
 
 The example responses below show the shape; ids and texts are made up, and a response can carry
 more fields than shown.
+
+### POST /v1/questions
+
+During an active chat turn, prefer the `ask_user` MCP tool if the harness has no native question tool.
+Use this endpoint with the same arguments when MCP is unavailable:
+
+```bash
+curl -sS --max-time 130 "$ATARAXIA_API_URL/v1/questions" \
+  -H "Authorization: Bearer $ATARAXIA_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary '{"question":"Which environment should I use?","options":["Local","Staging"]}'
+```
+
+`question` is required. Omit `options` for an open question, or send up to eight labels. Set
+`multiSelect` to `true` to allow multiple choices. Free text is always available. The answer
+is returned as `{"answer":"Local"}`, with multiple choices joined by commas. A skipped question
+or cancelled turn returns `{"answer":null}`. The request expires after two minutes.
 
 ### POST /v1/decisions
 

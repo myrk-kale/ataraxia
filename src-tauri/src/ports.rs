@@ -34,6 +34,17 @@ impl std::fmt::Debug for ApiAccess {
     }
 }
 
+/// Decides a permission request the rules could not settle, for a harness with no reviewer of
+/// its own. It may only vouch for a request: anything else goes to the person.
+pub trait PermissionReviewer: Send + Sync {
+    /// Whether the request is safe to allow without asking. Blocks until it has an answer.
+    fn review(&self, session_id: SessionId, request: &str) -> bool;
+    /// Gets the reviewer of a chat ready, so its first request is not the one that waits for it.
+    fn warm(&self, _session_id: SessionId) {}
+    /// The chat's agent is gone: the reviewer of that chat goes with it.
+    fn close(&self, _session_id: SessionId) {}
+}
+
 /// Hands out the tokens agent processes use against the local API, one per process.
 pub trait ApiGateway: Send + Sync {
     /// A fresh token bound to one chat session, read-write or read-only.
@@ -105,11 +116,25 @@ pub trait AgentRuntime: Send + Sync {
         let _ = session_id;
     }
     fn cancel(&self, session_id: &SessionId, turn_id: Option<&TurnId>) -> Result<()>;
+    fn cancel_permission(
+        &self,
+        _session_id: &SessionId,
+        _request_id: crate::domain::PermissionRequestId,
+    ) -> Result<()> {
+        unsupported("cancel_permission")
+    }
     fn resolve_permission(
         &self,
         session_id: &SessionId,
         decision: PermissionDecision,
     ) -> Result<()>;
+    fn ask_user(
+        &self,
+        _session_id: SessionId,
+        _question: crate::domain::PermissionQuestion,
+    ) -> Result<Option<String>> {
+        unsupported("ask_user")
+    }
     fn snapshot(&self, session_id: &SessionId) -> Result<ChatSnapshot>;
     /// Whether the agent is at work. Cheaper than a snapshot where the runtime can tell.
     fn status(&self, session_id: &SessionId) -> Result<SessionStatus> {

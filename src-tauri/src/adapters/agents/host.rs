@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -33,9 +35,9 @@ use crate::domain::ids::{SessionId, TurnId, WorkspaceId};
 use crate::domain::time::now_rfc3339;
 use crate::domain::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSession, ChatSnapshot, Error, ErrorCode,
-    ImageAttachment, ImageUpload, PROFILES_KEY, PendingPermission, PermissionDecision, Profiles,
-    ProviderUsage, Result, SessionStatus, SubagentRecord, SubagentStatus, SubagentUpdate,
-    ToolCallRecord, ToolStatus, UsageWindow, parse_command,
+    ImageAttachment, ImageUpload, PROFILES_KEY, PendingPermission, PermissionDecision,
+    PermissionQuestion, Profiles, ProviderUsage, Result, SessionStatus, SubagentRecord,
+    SubagentStatus, SubagentUpdate, ToolCallRecord, ToolStatus, UsageWindow, parse_command,
 };
 use crate::ports::{AgentRuntime, ApiGateway, EventSink, InsightStore, Store};
 
@@ -58,6 +60,8 @@ struct Live {
     context_usage: Option<crate::domain::chat::ContextUsage>,
     active_turn: Option<TurnId>,
     pending: Option<PendingPermission>,
+    api_question: Option<Sender<Option<String>>>,
+    deferred_permission: Option<PendingPermission>,
     /// Leading transcript items from before this agent process started.
     restored_count: usize,
     /// Investigation-only session: every permission request is refused.
@@ -105,6 +109,8 @@ struct Inner {
     guide: Mutex<Option<PathBuf>>,
     /// Issues the local API tokens that agent processes start with.
     api: Mutex<Option<Arc<dyn ApiGateway>>>,
+    /// Reviews permission requests for the harnesses that cannot (set once the engine exists).
+    reviewer: std::sync::OnceLock<Arc<dyn crate::ports::PermissionReviewer>>,
     /// The latest report of each provider's limits. Also kept in the preferences, so the last
     /// known state is there when the app opens, before any agent has spoken.
     usage: Mutex<HashMap<(ProviderKind, Option<String>), ProviderUsage>>,
@@ -130,6 +136,7 @@ impl AgentHost {
                 handoffs: Mutex::new(HashMap::new()),
                 guide: Mutex::new(None),
                 api: Mutex::new(None),
+                reviewer: std::sync::OnceLock::new(),
                 usage: Mutex::new(HashMap::new()),
             }),
             backends: HashMap::new(),
@@ -146,6 +153,11 @@ impl AgentHost {
     pub fn with_api(self, api: Arc<dyn ApiGateway>) -> Self {
         *self.inner.api.lock() = Some(api);
         self
+    }
+
+    /// Lets a harness with no approval reviewer of its own ask this one about doubtful requests.
+    pub fn set_reviewer(&self, reviewer: Arc<dyn crate::ports::PermissionReviewer>) {
+        let _ = self.inner.reviewer.set(reviewer);
     }
 
     /// Where to write the conversation when the user switches a chat to another harness.
@@ -198,6 +210,31 @@ impl AgentHost {
 }
 
 impl Inner {
+    fn show_permission(&self, session_id: SessionId, live: &mut Live, pending: PendingPermission) {
+        self.sink.emit_agent(AgentEvent::Permission {
+            session_id,
+            turn_id: pending.turn_id,
+            request_id: pending.request_id,
+            tool_name: pending.tool_name.clone(),
+            detail: pending.detail.clone(),
+            allow_always: pending.allow_always.clone(),
+            questions: pending.questions.clone(),
+        });
+        live.pending = Some(pending);
+        live.status = SessionStatus::WaitingPermission;
+        self.publish_status(session_id, SessionStatus::WaitingPermission);
+    }
+
+    fn close_permission(&self, session_id: SessionId, live: &mut Live) {
+        live.pending = None;
+        if let Some(next) = live.deferred_permission.take() {
+            self.show_permission(session_id, live, next);
+        } else {
+            live.status = SessionStatus::Working;
+            self.publish_status(session_id, SessionStatus::Working);
+        }
+    }
+
     /// Stops a live agent process and takes its API token away.
     fn retire(&self, live: &Live) {
         live.current.store(false, Ordering::SeqCst);
@@ -615,6 +652,7 @@ impl Inner {
                 request_id,
                 tool_name,
                 detail,
+                allow_always,
                 questions,
             } => {
                 if live.active_turn != Some(turn_id) {
@@ -627,28 +665,26 @@ impl Inner {
                         let _ = backend.resolve_permission(&PermissionDecision {
                             request_id,
                             allow: false,
+                            remember: false,
                             answers: Default::default(),
                         });
                     });
                     return;
                 }
-                live.pending = Some(PendingPermission {
+                let pending = PendingPermission {
                     request_id,
                     turn_id,
-                    tool_name: tool_name.clone(),
-                    detail: detail.clone(),
-                    questions: questions.clone(),
-                });
-                live.status = SessionStatus::WaitingPermission;
-                self.sink.emit_agent(AgentEvent::Permission {
-                    session_id,
-                    turn_id,
-                    request_id,
                     tool_name,
                     detail,
+                    allow_always,
                     questions,
-                });
-                self.publish_status(session_id, SessionStatus::WaitingPermission);
+                };
+                if live.api_question.is_some() {
+                    // The harness has one native permission in flight at a time.
+                    live.deferred_permission = Some(pending);
+                } else {
+                    self.show_permission(session_id, live, pending);
+                }
             }
             BackendEvent::TurnDone { turn_id, ok } => {
                 if live.active_turn != Some(turn_id) {
@@ -913,6 +949,8 @@ fn finish_turn(live: &mut Live, turn_id: TurnId, ok: bool) {
     }
     live.active_turn = None;
     live.pending = None;
+    live.api_question = None;
+    live.deferred_permission = None;
     live.status = SessionStatus::Ready;
 }
 
@@ -1809,6 +1847,7 @@ impl AgentRuntime for AgentHost {
             api,
             config: agent_config,
             launch,
+            reviewer: self.inner.reviewer.get().cloned(),
             emit,
         }) {
             Ok(started) => started,
@@ -1850,6 +1889,8 @@ impl AgentRuntime for AgentHost {
                 context_usage: None,
                 active_turn: None,
                 pending: None,
+                api_question: None,
+                deferred_permission: None,
                 read_only: session.kind.read_only(),
                 chat: session.kind == crate::domain::SessionKind::Chat,
                 // A resumed conversation was told about Ataraxia when it began.
@@ -2309,15 +2350,44 @@ impl AgentRuntime for AgentHost {
         }
     }
 
-    fn cancel(&self, session_id: &SessionId, _turn_id: Option<&TurnId>) -> Result<()> {
+    fn cancel(&self, session_id: &SessionId, turn_id: Option<&TurnId>) -> Result<()> {
         let backend = {
-            let sessions = self.inner.sessions.lock();
+            let mut sessions = self.inner.sessions.lock();
             let live = sessions
-                .get(session_id)
+                .get_mut(session_id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
-            if live.active_turn.is_none() {
+            if live.active_turn.is_none() || turn_id.is_some_and(|id| live.active_turn != Some(*id))
+            {
                 return Ok(());
             }
+            if live.api_question.take().is_some() {
+                live.deferred_permission = None;
+                self.inner.close_permission(*session_id, live);
+            }
+            Arc::clone(&live.backend)
+        };
+        backend.cancel()
+    }
+
+    fn cancel_permission(
+        &self,
+        session_id: &SessionId,
+        request_id: crate::domain::PermissionRequestId,
+    ) -> Result<()> {
+        let backend = {
+            let mut sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
+            if !live.pending.as_ref().is_some_and(|pending| {
+                pending.request_id == request_id && pending.questions.is_empty()
+            }) {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "no pending approval to redirect",
+                ));
+            }
+            self.inner.close_permission(*session_id, live);
             Arc::clone(&live.backend)
         };
         backend.cancel()
@@ -2333,8 +2403,8 @@ impl AgentRuntime for AgentHost {
             let live = sessions
                 .get_mut(session_id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
-            match &live.pending {
-                Some(pending) if pending.request_id == decision.request_id => {}
+            let pending = match &live.pending {
+                Some(pending) if pending.request_id == decision.request_id => pending,
                 Some(_) => {
                     return Err(Error::new(
                         ErrorCode::Invalid,
@@ -2344,14 +2414,87 @@ impl AgentRuntime for AgentHost {
                 None => {
                     return Err(Error::new(ErrorCode::Invalid, "no pending permission"));
                 }
+            };
+            if decision.remember && (!decision.allow || pending.allow_always.is_none()) {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "this request cannot be remembered",
+                ));
             }
-            live.pending = None;
-            live.status = SessionStatus::Working;
-            self.inner
-                .publish_status(*session_id, SessionStatus::Working);
+            if let Some(reply) = live.api_question.take() {
+                let answer = decision
+                    .allow
+                    .then(|| decision.answers.get(&pending.detail).cloned())
+                    .flatten();
+                // Send while holding the lock so a response racing the timeout has one winner.
+                let _ = reply.send(answer);
+                self.inner.close_permission(*session_id, live);
+                return Ok(());
+            }
+            self.inner.close_permission(*session_id, live);
             Arc::clone(&live.backend)
         };
         backend.resolve_permission(&decision)
+    }
+
+    fn ask_user(
+        &self,
+        session_id: SessionId,
+        question: PermissionQuestion,
+    ) -> Result<Option<String>> {
+        let request_id = crate::domain::PermissionRequestId::new();
+        let (send, receive) = mpsc::channel();
+        {
+            let mut sessions = self.inner.sessions.lock();
+            let live = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| Error::new(ErrorCode::NotFound, "agent session not started"))?;
+            if !live.chat || live.read_only || live.pending.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Invalid,
+                    "this chat cannot accept a question now",
+                ));
+            }
+            let turn_id = live
+                .active_turn
+                .ok_or_else(|| Error::new(ErrorCode::Invalid, "no active turn"))?;
+            live.api_question = Some(send);
+            self.inner.show_permission(
+                session_id,
+                live,
+                PendingPermission {
+                    request_id,
+                    turn_id,
+                    tool_name: "Question".into(),
+                    detail: question.question.clone(),
+                    allow_always: None,
+                    questions: vec![question],
+                },
+            );
+        }
+        match receive.recv_timeout(Duration::from_secs(120)) {
+            Ok(answer) => Ok(answer),
+            Err(RecvTimeoutError::Disconnected) => Ok(None),
+            Err(RecvTimeoutError::Timeout) => {
+                let mut sessions = self.inner.sessions.lock();
+                if let Ok(answer) = receive.try_recv() {
+                    return Ok(answer);
+                }
+                if let Some(live) = sessions.get_mut(&session_id)
+                    && live
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.request_id == request_id)
+                {
+                    live.api_question = None;
+                    self.inner.close_permission(session_id, live);
+                }
+                Err(Error::new(
+                    ErrorCode::Invalid,
+                    "the question expired before the user answered",
+                ))
+            }
+        }
     }
 
     fn live_statuses(&self) -> Vec<SessionStatus> {
@@ -3133,6 +3276,7 @@ mod tests {
                         PermissionDecision {
                             request_id,
                             allow: true,
+                            remember: false,
                             answers: Default::default(),
                         },
                     )
@@ -3927,6 +4071,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: false,
+                    remember: false,
                     answers: Default::default(),
                 },
             )
@@ -4445,6 +4590,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: true,
+                    remember: false,
                     answers: Default::default(),
                 },
             )
@@ -4477,6 +4623,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: false,
+                    remember: false,
                     answers: Default::default(),
                 },
             )
@@ -4520,6 +4667,7 @@ mod tests {
                 PermissionDecision {
                     request_id: PermissionRequestId::new(),
                     allow: true,
+                    remember: false,
                     answers: Default::default(),
                 },
             )
@@ -4550,6 +4698,7 @@ mod tests {
                 PermissionDecision {
                     request_id,
                     allow: true,
+                    remember: false,
                     answers: Default::default(),
                 },
             )

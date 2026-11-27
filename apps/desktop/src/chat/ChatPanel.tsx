@@ -38,6 +38,7 @@ import {
   waitingFor,
   withLocal,
   type ImageAttachment,
+  type PermissionResponseOptions,
   type ProviderDescriptor,
   type QueuedLocally,
   type RepositoryMcpApproval,
@@ -955,13 +956,17 @@ export function ChatPanel({
   }
 
   /** Whether the answer went through; the prompt lets it be given again when it did not. */
-  async function resolve(allow: boolean, answers?: Record<string, string>): Promise<boolean> {
+  async function resolve(
+    allow: boolean,
+    answers?: Record<string, string>,
+    options?: PermissionResponseOptions,
+  ): Promise<boolean> {
     const pending = state.pending;
     if (!pending) {
       return true;
     }
     try {
-      await agentResolvePermission(sessionId, pending.requestId, allow, answers);
+      await agentResolvePermission(sessionId, pending.requestId, allow, answers, options);
       dispatch({ type: "permissionResolved", requestId: pending.requestId });
       return true;
     } catch (err) {
