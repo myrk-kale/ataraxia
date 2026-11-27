@@ -6,6 +6,29 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-27
+
+### Added
+
+- Cursor chats can ask you questions in the app, and so can any agent that has no way to ask: the local
+  API has a questions call (`/v1/questions`) and an `ask_user` MCP tool, and the answer comes back in the
+  same turn.
+- Cursor has its own review of permission requests. Cursor's ACP server ignores `--auto-review`, so
+  Ataraxia does it: clearly safe requests (reads and edits inside the chat's repositories, read-only and
+  check commands such as `git status`, `cargo test`, `pnpm run typecheck`) are allowed without asking;
+  secrets, `git push`, `reset --hard`, `sudo`, `curl | sh` and the like always reach you; whatever is left
+  in doubt goes to a read-only helper chat of the same harness, started with the Cursor chat and kept
+  running while it lives, which can only vouch for a request (if it takes over 45 seconds you are asked).
+  Set `ATARAXIA_CURSOR_AUTO_REVIEW=off` to be asked for everything.
+- Permission prompts have a third answer: refuse and say what to do instead. Cursor's "Always allow" is
+  offered when Cursor has a rule to remember.
+
+### Fixed
+
+- A very long command in a permission prompt no longer pushes the buttons away: it folds.
+- A tool card whose name is a whole command (Cursor names a call by what it runs) no longer spills out of
+  its box; long words in an opened card wrap instead of stretching it.
+
 ## [0.25.0] - 2026-11-26
 
 ### Added
