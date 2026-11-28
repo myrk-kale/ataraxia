@@ -1,6 +1,7 @@
 // Browser-only stand-in for the Tauri IPC so the UI can be reviewed with `pnpm dev`.
 // Never loaded inside the real app (main.tsx checks for __TAURI_INTERNALS__).
 import { handleInsights, removeFile, searchableInsights } from "./insightsMock";
+import { handleWorkbench } from "./workbenchMock";
 import type { SearchRequest, SearchResult } from "../lib/search";
 
 export {};
@@ -826,6 +827,10 @@ function handle(cmd: string, args?: Record<string, unknown>): unknown {
     case "agent_stop_mcp_process": return null;
     case "terminal_ensure": return { sessionId: "p1", created: true };
     default: {
+      const board = handleWorkbench(cmd, args, emit);
+      if (board.handled) {
+        return board.value;
+      }
       const result = handleInsights(cmd, args, emit);
       return result.handled ? result.value : null;
     }

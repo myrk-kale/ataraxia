@@ -7,6 +7,7 @@ export type ShortcutAction =
   | { type: "tasks" }
   | { type: "memory" }
   | { type: "browser" }
+  | { type: "workbench" }
   | { type: "search" }
   | { type: "branch" }
   | { type: "artifacts" }
@@ -132,6 +133,10 @@ export function resolveShortcut(event: KeyLike, context: ShortcutContext): Short
   if (mod && event.shiftKey && !event.altKey && key === "l" && !inEditor && !event.repeat) {
     return { type: "browser" };
   }
+  // The workbench, where the agents working side by side post what they decide: from anywhere but the editor.
+  if (mod && event.shiftKey && !event.altKey && key === "e" && !inEditor && !event.repeat) {
+    return { type: "workbench" };
+  }
   // Go to a branch from a link or a name, from anywhere (not inside the editor, where Monaco has its own).
   if (mod && event.shiftKey && !event.altKey && key === "b" && !inEditor && !event.repeat) {
     return { type: "branch" };
@@ -190,6 +195,7 @@ export const SHORTCUT_LEGEND: readonly { keys: string[]; label: string; scope: s
   { keys: ["Ctrl/⌘", "T"], label: "Tasks panel", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "Shift", "G"], label: "Memory graph: what the agents remember", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "Shift", "L"], label: "Browser: open it, or go back to the chat", scope: "Everywhere" },
+  { keys: ["Ctrl/⌘", "Shift", "E"], label: "Workbench: follow the agents working side by side, or go back to the chat", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "B"], label: "Global search", scope: "Everywhere" },
   { keys: ["Ctrl/⌘", "Shift", "B"], label: "Go to a branch by name or URL", scope: "Everywhere" },
   { keys: ["Shift", "A"], label: "Artifacts of this chat", scope: "Everywhere" },

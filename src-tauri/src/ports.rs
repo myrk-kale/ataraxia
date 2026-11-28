@@ -45,6 +45,14 @@ pub trait PermissionReviewer: Send + Sync {
     fn close(&self, _session_id: SessionId) {}
 }
 
+/// What goes in front of a message on its way to a chat's agent: news the agent could not have
+/// read for itself (what the other agents on the workbench have done since it last looked).
+pub trait PromptPreface: Send + Sync {
+    /// The text to put before the message, or `None` for nothing. It is not part of what the
+    /// chat shows as the user's message.
+    fn preface(&self, session_id: SessionId) -> Option<String>;
+}
+
 /// Hands out the tokens agent processes use against the local API, one per process.
 pub trait ApiGateway: Send + Sync {
     /// A fresh token bound to one chat session, read-write or read-only.
@@ -638,6 +646,74 @@ pub trait Store: Send + Sync {
             ErrorCode::Invalid,
             "memories are not available here",
         ))
+    }
+
+    // ---- the workbench
+
+    fn workbench_member(
+        &self,
+        _session: SessionId,
+    ) -> Result<Option<crate::domain::WorkbenchMember>> {
+        Ok(None)
+    }
+    /// The chats on a workspace's workbench, in the order they joined.
+    fn workbench_members(
+        &self,
+        _workspace: WorkspaceId,
+    ) -> Result<Vec<crate::domain::WorkbenchMember>> {
+        Ok(Vec::new())
+    }
+    /// Adds a chat to the workbench, or replaces what is stored about it.
+    fn workbench_member_put(&self, _member: &crate::domain::WorkbenchMember) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "the workbench is not available here",
+        ))
+    }
+    fn workbench_member_remove(&self, _session: SessionId) -> Result<bool> {
+        Ok(false)
+    }
+    /// What the agent of a member has been handed: the newest entry, when, and whether it has
+    /// been told how the board works.
+    fn workbench_member_progress(
+        &self,
+        _session: SessionId,
+        _cursor: i64,
+        _seen_at: &str,
+        _briefed: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Stores an entry and answers with it as stored, its place in the order filled in.
+    fn workbench_entry_add(
+        &self,
+        _entry: &crate::domain::WorkbenchEntry,
+    ) -> Result<crate::domain::WorkbenchEntry> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "the workbench is not available here",
+        ))
+    }
+    fn workbench_entry(&self, _id: &str) -> Result<Option<crate::domain::WorkbenchEntry>> {
+        Ok(None)
+    }
+    /// The entries of a workspace, oldest first (the newest few thousand).
+    fn workbench_entries(
+        &self,
+        _workspace: WorkspaceId,
+    ) -> Result<Vec<crate::domain::WorkbenchEntry>> {
+        Ok(Vec::new())
+    }
+    /// Rewrites what an entry says and where it stands (a claim renewed, a decision superseded).
+    fn workbench_entry_update(&self, _entry: &crate::domain::WorkbenchEntry) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Invalid,
+            "the workbench is not available here",
+        ))
+    }
+    /// Empties a workspace's board; how many entries went.
+    fn workbench_clear(&self, _workspace: WorkspaceId) -> Result<usize> {
+        Ok(0)
     }
 }
 

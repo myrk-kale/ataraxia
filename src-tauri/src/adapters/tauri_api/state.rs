@@ -96,10 +96,14 @@ pub fn build_app_state(app: &AppHandle) -> Result<AppState> {
     agents.set_reviewer(Arc::new(
         crate::app::permission_review::EngineReviewer::new(&engine),
     ));
+    agents.set_preface(Arc::new(crate::app::workbench::EngineWorkbench::new(
+        &engine,
+    )));
     if let Some(api) = &api {
         api.set_anchor(Arc::clone(&engine) as Arc<dyn crate::api::Anchor>);
         api.set_code_graph(Arc::clone(&engine) as Arc<dyn crate::api::CodeGraph>);
         api.set_scheduler(Arc::clone(&engine) as Arc<dyn crate::api::Scheduling>);
+        api.set_workbench(Arc::clone(&engine) as Arc<dyn crate::api::Workbench>);
         // Without its own server the files simply cannot be offered: the rest of the app works.
         match crate::files::FileServer::start() {
             Ok(files) => api.set_files(files as Arc<dyn crate::api::FileSharing>),

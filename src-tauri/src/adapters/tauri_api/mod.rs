@@ -12,6 +12,7 @@ mod state;
 mod tasks;
 mod updater;
 mod wake;
+mod workbench;
 
 use base64::Engine as _;
 
@@ -38,6 +39,7 @@ pub use state::{AppState, build_app_state, follow_git};
 pub use tasks::*;
 pub use updater::*;
 pub use wake::*;
+pub use workbench::*;
 
 fn map_error(error: Error) -> String {
     error.to_string()

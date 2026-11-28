@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::ids::{CheckpointId, RepositoryId, SessionId, WorktreeId};
+use super::ids::{CheckpointId, RepositoryId, SessionId, WorkspaceId, WorktreeId};
 
 macro_rules! uuid_id {
     ($name:ident) => {
@@ -541,6 +541,10 @@ pub enum InsightEvent {
     },
     /// An agent changed what is remembered: an open memory view reloads.
     Memories,
+    /// Something changed on a workspace's workbench: an entry was posted or settled, or a chat
+    /// joined or left. An open workbench reads it again.
+    #[serde(rename_all = "camelCase")]
+    Workbench { workspace_id: WorkspaceId },
     /// A chat was given a title once its first exchange was over.
     #[serde(rename_all = "camelCase")]
     SessionTitle {

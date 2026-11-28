@@ -453,6 +453,17 @@ pub trait Scheduling: Send + Sync {
     }
 }
 
+/// The workbench the agents of a workspace share, as the tools an agent calls.
+pub trait Workbench: Send + Sync {
+    /// Whether this chat may use a workbench at all: it is a chat of a workspace.
+    fn available(&self, session: SessionId) -> bool;
+    /// Whether the chat is on the workbench now.
+    fn joined(&self, session: SessionId) -> bool;
+    fn check(&self, session: SessionId, args: &Value) -> Result<Value>;
+    fn claim(&self, session: SessionId, args: &Value) -> Result<Value>;
+    fn post(&self, session: SessionId, args: &Value) -> Result<Value>;
+}
+
 /// The built-in browser, as the tools an agent calls.
 pub trait Browsing: Send + Sync {
     fn tools(&self) -> Vec<Value>;
@@ -511,6 +522,7 @@ pub struct ApiService {
     anchor: Option<Arc<dyn Anchor>>,
     code_graph: Option<Arc<dyn CodeGraph>>,
     scheduler: Option<Arc<dyn Scheduling>>,
+    workbench: Option<Arc<dyn Workbench>>,
     files: Option<Arc<dyn FileSharing>>,
     browser: Option<Arc<dyn Browsing>>,
     runtime: Option<Weak<dyn AgentRuntime>>,
@@ -527,11 +539,17 @@ impl ApiService {
             anchor: None,
             code_graph: None,
             scheduler: None,
+            workbench: None,
             files: None,
             browser: None,
             runtime: None,
             sink: None,
         }
+    }
+
+    pub fn with_workbench(mut self, workbench: Option<Arc<dyn Workbench>>) -> Self {
+        self.workbench = workbench;
+        self
     }
 
     pub fn with_browser(mut self, browser: Option<Arc<dyn Browsing>>) -> Self {
@@ -1342,6 +1360,7 @@ struct ServerInner {
     anchor: std::sync::OnceLock<Arc<dyn Anchor>>,
     code_graph: std::sync::OnceLock<Arc<dyn CodeGraph>>,
     scheduler: std::sync::OnceLock<Arc<dyn Scheduling>>,
+    workbench: std::sync::OnceLock<Arc<dyn Workbench>>,
     files: std::sync::OnceLock<Arc<dyn FileSharing>>,
     browser: std::sync::OnceLock<Arc<dyn Browsing>>,
     runtime: std::sync::OnceLock<Weak<dyn AgentRuntime>>,
@@ -1400,6 +1419,7 @@ impl ApiServer {
             anchor: std::sync::OnceLock::new(),
             code_graph: std::sync::OnceLock::new(),
             scheduler: std::sync::OnceLock::new(),
+            workbench: std::sync::OnceLock::new(),
             files: std::sync::OnceLock::new(),
             browser: std::sync::OnceLock::new(),
             runtime: std::sync::OnceLock::new(),
@@ -1433,6 +1453,11 @@ impl ApiServer {
     /// Lets agents schedule messages to themselves.
     pub fn set_scheduler(&self, scheduler: Arc<dyn Scheduling>) {
         let _ = self.inner.scheduler.set(scheduler);
+    }
+
+    /// Lets the agents of a workspace share a workbench.
+    pub fn set_workbench(&self, workbench: Arc<dyn Workbench>) {
+        let _ = self.inner.workbench.set(workbench);
     }
 
     /// Lets agents drive the built-in browser.
@@ -1849,6 +1874,7 @@ fn respond(
     let mut service = ApiService::new(Arc::clone(&inner.db), session, write)
         .with_anchor(inner.anchor.get().cloned())
         .with_scheduler(inner.scheduler.get().cloned())
+        .with_workbench(inner.workbench.get().cloned())
         .with_files(inner.files.get().cloned())
         .with_browser(inner.browser.get().cloned())
         .with_sink(inner.sink.get().cloned());
@@ -2715,6 +2741,172 @@ mod tests {
             serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into())),
             result["isError"] == true,
         )
+    }
+
+    /// A workbench that records what the tools asked of it.
+    struct FakeBoard {
+        calls: Mutex<Vec<(SessionId, String, Value)>>,
+        joined: AtomicBool,
+    }
+
+    impl Workbench for FakeBoard {
+        fn available(&self, _session: SessionId) -> bool {
+            true
+        }
+
+        fn joined(&self, _session: SessionId) -> bool {
+            self.joined.load(Ordering::SeqCst)
+        }
+
+        fn check(&self, session: SessionId, args: &Value) -> Result<Value> {
+            self.calls
+                .lock()
+                .push((session, "check".into(), args.clone()));
+            Ok(json!({ "workbench": "Nothing new." }))
+        }
+
+        fn claim(&self, session: SessionId, args: &Value) -> Result<Value> {
+            self.calls
+                .lock()
+                .push((session, "claim".into(), args.clone()));
+            Ok(json!({ "granted": true }))
+        }
+
+        fn post(&self, session: SessionId, args: &Value) -> Result<Value> {
+            self.calls
+                .lock()
+                .push((session, "post".into(), args.clone()));
+            if args["kind"] == "claim" {
+                return Err(Error::new(ErrorCode::Invalid, "claims have their own tool"));
+            }
+            Ok(json!({ "posted": true }))
+        }
+    }
+
+    #[test]
+    fn the_workbench_tools_are_offered_to_a_chat_and_a_read_only_one_may_only_read() {
+        let (db, a, ..) = seeded();
+        let (chat, _) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let server = start(&db);
+        let board = Arc::new(FakeBoard {
+            calls: Mutex::new(Vec::new()),
+            joined: AtomicBool::new(false),
+        });
+        server.set_workbench(board.clone());
+        let writer = server.issue_token(chat, true).token;
+        let reader = server.issue_token(chat, false).token;
+        let names = |token: &str| -> Vec<String> {
+            rpc(&server, token, 1, "tools/list", json!({})).body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .filter(|name| name.starts_with("workbench_"))
+                .collect()
+        };
+        assert_eq!(
+            names(&writer),
+            ["workbench_check", "workbench_claim", "workbench_post"]
+        );
+        assert_eq!(names(&reader), ["workbench_check"]);
+
+        let (read, failed) =
+            tool_call(&server, &reader, "workbench_check", json!({ "full": true }));
+        assert!(!failed);
+        assert_eq!(read["workbench"], "Nothing new.");
+        let (message, denied) = tool_call(
+            &server,
+            &reader,
+            "workbench_post",
+            json!({ "kind": "note", "text": "hi" }),
+        );
+        assert!(denied);
+        assert!(message.as_str().unwrap().contains("read-only"));
+
+        // A write goes to the board as the chat of the token, whatever the arguments say.
+        let (posted, failed) = tool_call(
+            &server,
+            &writer,
+            "workbench_post",
+            json!({ "kind": "decision", "topic": "type:Money", "text": "cents" }),
+        );
+        assert!(!failed);
+        assert_eq!(posted["posted"], true);
+        let (claimed, _) = tool_call(
+            &server,
+            &writer,
+            "workbench_claim",
+            json!({ "what": "money", "paths": ["src/money.rs"] }),
+        );
+        assert_eq!(claimed["granted"], true);
+        // What the board refuses comes back as a reason the agent can act on.
+        let (reason, failed) = tool_call(
+            &server,
+            &writer,
+            "workbench_post",
+            json!({ "kind": "claim" }),
+        );
+        assert!(failed);
+        assert!(reason.as_str().unwrap().contains("own tool"));
+
+        let calls = board.calls.lock();
+        assert_eq!(calls.len(), 4);
+        assert!(calls.iter().all(|(session, ..)| *session == chat));
+        assert_eq!(calls[1].2["topic"], "type:Money");
+        // Every call is in the audit trail, the writes marked as such.
+        assert_eq!(db.audit_count(), 5);
+    }
+
+    #[test]
+    fn the_workbench_is_explained_to_the_agent_only_once_its_chat_is_on_it() {
+        let (db, a, ..) = seeded();
+        let (chat, _) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let server = start(&db);
+        let board = Arc::new(FakeBoard {
+            calls: Mutex::new(Vec::new()),
+            joined: AtomicBool::new(false),
+        });
+        server.set_workbench(board.clone());
+        let token = server.issue_token(chat, true).token;
+        let told = |token: &str| -> String {
+            rpc(
+                &server,
+                token,
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18" }),
+            )
+            .body["result"]["instructions"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(!told(&token).contains("workbench"));
+        board.joined.store(true, Ordering::SeqCst);
+        let after = told(&token);
+        assert!(
+            after.contains("workbench_check")
+                && after.contains("The first decision on a topic stands")
+        );
+    }
+
+    #[test]
+    fn a_chat_with_no_workbench_behind_the_server_is_offered_none_of_its_tools() {
+        let (db, a, ..) = seeded();
+        let (chat, _) = chat_in_workspace(&db, a, SessionKind::Chat, None);
+        let server = start(&db);
+        let token = server.issue_token(chat, true).token;
+        let listed = rpc(&server, &token, 1, "tools/list", json!({}));
+        assert!(
+            listed.body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| !tool["name"].as_str().unwrap().starts_with("workbench_"))
+        );
+        let (message, failed) = tool_call(&server, &token, "workbench_check", json!({}));
+        assert!(failed);
+        assert!(message.as_str().unwrap().contains("not available"));
     }
 
     /// A browser that answers a snapshot with text and a screenshot with a picture.

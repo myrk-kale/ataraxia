@@ -53,6 +53,8 @@ pub struct Engine {
     pub(crate) autocomplete: super::autocomplete::AutocompleteState,
     /// The helper chat that reviews permission requests, one per chat, kept running.
     pub(crate) review_helpers: Mutex<HashMap<SessionId, Arc<super::permission_review::Helper>>>,
+    /// What the workbench keeps between calls: its write lock and what each worktree last showed.
+    pub(crate) workbench: super::workbench::State,
     task_timeout: Duration,
 }
 
@@ -97,6 +99,7 @@ impl Engine {
             schedule_lock: Mutex::new(()),
             autocomplete: Default::default(),
             review_helpers: Mutex::new(HashMap::new()),
+            workbench: Default::default(),
             task_timeout: TASK_TIMEOUT,
         })
     }

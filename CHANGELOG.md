@@ -6,6 +6,24 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+### Added
+
+- The Workbench: a shared board for agents working side by side, each in its own worktree, with no plan
+  or contract written beforehand. Put chats on it (Workbench in the space dots, the header, or
+  Ctrl/⌘ Shift E) and their agents get three tools, `workbench_check`, `workbench_claim` and
+  `workbench_post`, to say what they decided, what they are about to change, what they ask and what they
+  finished. The first decision on a topic stands; a different one by another agent is only a proposal
+  for you to settle. Every message sent to an agent on the board starts with what the others did since
+  it last looked, so it needs no habit of checking.
+- What each agent changed is read from its own worktree, so who touches which file is true whether or
+  not anybody reports it, and two agents on the same lines show up at once, to them and to you.
+- The screen to follow them: one card per agent (working, what it said it is doing, what it holds, how
+  much it changed, whether it has read the latest posts), what needs you kept apart from the stream
+  (a question put to you, two agents who disagree, the same lines, an approval), a timeline, the
+  decisions by topic (copyable as Markdown) and a table of who touches which file. You can answer,
+  adopt a proposal, release a claim, and tell every agent, one agent or a topic what you want: what you
+  write wins. The space dot and the header button show how many things wait for you.
+
 ## [0.26.0] - 2026-11-27
 
 ### Added

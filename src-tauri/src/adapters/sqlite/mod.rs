@@ -4,6 +4,7 @@ mod insights;
 mod memory;
 mod migrations;
 mod search;
+mod workbench;
 
 pub use search::{SearchRequest, SearchResult};
 
@@ -844,6 +845,64 @@ impl Store for SqliteStore {
 
     fn memory_merge(&self, into: &crate::domain::Memory, absorbed: &[String]) -> Result<()> {
         self.with_conn(|conn| memory::merge(conn, into, absorbed))
+    }
+
+    fn workbench_member(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<crate::domain::WorkbenchMember>> {
+        self.with_conn(|conn| workbench::member(conn, session))
+    }
+
+    fn workbench_members(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<Vec<crate::domain::WorkbenchMember>> {
+        self.with_conn(|conn| workbench::members(conn, workspace))
+    }
+
+    fn workbench_member_put(&self, member: &crate::domain::WorkbenchMember) -> Result<()> {
+        self.with_conn(|conn| workbench::member_put(conn, member))
+    }
+
+    fn workbench_member_remove(&self, session: SessionId) -> Result<bool> {
+        self.with_conn(|conn| workbench::member_remove(conn, session))
+    }
+
+    fn workbench_member_progress(
+        &self,
+        session: SessionId,
+        cursor: i64,
+        seen_at: &str,
+        briefed: bool,
+    ) -> Result<()> {
+        self.with_conn(|conn| workbench::member_progress(conn, session, cursor, seen_at, briefed))
+    }
+
+    fn workbench_entry_add(
+        &self,
+        entry: &crate::domain::WorkbenchEntry,
+    ) -> Result<crate::domain::WorkbenchEntry> {
+        self.with_conn(|conn| workbench::entry_add(conn, entry))
+    }
+
+    fn workbench_entry(&self, id: &str) -> Result<Option<crate::domain::WorkbenchEntry>> {
+        self.with_conn(|conn| workbench::entry(conn, id))
+    }
+
+    fn workbench_entries(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<Vec<crate::domain::WorkbenchEntry>> {
+        self.with_conn(|conn| workbench::entries(conn, workspace))
+    }
+
+    fn workbench_entry_update(&self, entry: &crate::domain::WorkbenchEntry) -> Result<()> {
+        self.with_conn(|conn| workbench::entry_update(conn, entry))
+    }
+
+    fn workbench_clear(&self, workspace: WorkspaceId) -> Result<usize> {
+        self.with_conn(|conn| workbench::clear(conn, workspace))
     }
 
     fn autocomplete_load(&self, scope: &str) -> Result<Vec<GramRow>> {

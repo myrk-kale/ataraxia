@@ -13,6 +13,7 @@ import {
   ShieldAlert,
   Sun,
   TerminalSquare,
+  Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -29,6 +30,8 @@ import { ChatPanel } from "../chat/ChatPanel";
 import { CodeSpace } from "../code/CodeSpace";
 import { DecisionsReview } from "../decisions/DecisionsReview";
 import { FlowSpace } from "../flow/FlowSpace";
+import { useWorkbench } from "../workbench/useWorkbench";
+import { WorkbenchSpace } from "../workbench/WorkbenchSpace";
 import { BrowserNotice } from "../browser/BrowserNotice";
 import { BrowserPictureInPicture } from "../browser/BrowserPictureInPicture";
 import { browserActivate } from "../lib/browser";
@@ -236,6 +239,13 @@ export function AppShell() {
     () => [...workspace.sessions.filter((item) => !drafts.has(item.id)), ...(workspace.other_sessions ?? [])].map((item) => ({ id: item.id, title: item.title })),
     [workspace.sessions, workspace.other_sessions, drafts],
   );
+  // The agents on the workbench, read here so the nav can say when something waits for the developer.
+  const board = useWorkbench(workspace.selected_workspace_id, space === "workbench");
+  const workbenchNeeds = board.view?.needsYou.length ?? 0;
+  const workbenchChats = useMemo(
+    () => workspace.sessions.filter((item) => (item.kind ?? "chat") === "chat"),
+    [workspace.sessions],
+  );
   const [boot, setBoot] = useState<LoadState>({ kind: "loading" });
   const [providers, setProviders] = useState<ProviderDescriptor[] | null>(null);
   const [preferredProvider, setPreferredProvider] = useState<ProviderKind | null>(readStoredProvider);
@@ -332,6 +342,9 @@ export function AppShell() {
         case "browser":
           setSpace((current) => (current === "browser" ? "chat" : "browser"));
           break;
+        case "workbench":
+          setSpace((current) => (current === "workbench" ? "chat" : "workbench"));
+          break;
         case "search":
           setSearchOpen(true);
           break;
@@ -416,6 +429,15 @@ export function AppShell() {
     }
     setCodeRequest((current) => ({ path: target.path, line, endLine, n: (current?.n ?? 0) + 1 }));
     setSpace("code");
+  }
+
+  // A chat the workbench names: open it in the chat space.
+  function openChat(id: string) {
+    void runWorkspace(async () => {
+      const snapshot = await workspaceOpenSession(id);
+      setSpace("chat");
+      return snapshot;
+    });
   }
 
   // Files named in the chat open through a function that never changes, so messages are not
@@ -1138,6 +1160,26 @@ export function AppShell() {
               <Network aria-hidden="true" size={16} />
             </Button>
           </Tip>
+          <Tip label={workbenchNeeds > 0 ? `Workbench, ${workbenchNeeds} waiting for you (Ctrl/⌘ Shift E)` : "Workbench: agents side by side (Ctrl/⌘ Shift E)"}>
+            <Button
+              aria-label={workbenchNeeds > 0 ? `Workbench, ${workbenchNeeds} waiting for you` : "Workbench"}
+              aria-pressed={space === "workbench"}
+              className="relative"
+              disabled={!workspace.selected_workspace_id}
+              variant="icon"
+              onClick={() => setSpace((current) => (current === "workbench" ? "chat" : "workbench"))}
+            >
+              <Users aria-hidden="true" size={16} />
+              {workbenchNeeds > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute -top-1 -right-1 grid h-4 min-w-4 place-items-center rounded-full border border-cg-amber bg-cg-panel px-1 text-small leading-none font-semibold text-cg-amber-text"
+                >
+                  {workbenchNeeds}
+                </span>
+              ) : null}
+            </Button>
+          </Tip>
           <Tip label="Terminal (Ctrl `)">
             <Button
               aria-label="Toggle terminal"
@@ -1201,6 +1243,23 @@ export function AppShell() {
             </ErrorBoundary>
           </div>
         ) : null}
+        {visited.has("workbench") ? (
+          <div className={space === "workbench" ? "h-full" : "hidden"}>
+            <ErrorBoundary label="Workbench">
+              <WorkbenchSpace
+                board={board}
+                chats={workbenchChats}
+                visible={space === "workbench"}
+                workspaceId={workspace.selected_workspace_id}
+                workspaceName={inWorkspace?.workspace.name ?? ""}
+                worktrees={workspace.worktrees}
+                onError={setError}
+                onOpenChat={openChat}
+                onOpenFile={(path, line, endLine) => void openInCode(path, line, endLine)}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : null}
         {visited.has("flow") ? (
           <div className={space === "flow" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Flow">
@@ -1254,7 +1313,7 @@ export function AppShell() {
         />
       ) : null}
 
-      <EdgeNav space={space} onSelect={setSpace} />
+      <EdgeNav attention={{ workbench: workbenchNeeds }} space={space} onSelect={setSpace} />
       <BtwPalette
         isOpen={btwOpen}
         item={activeItem(bridges, space)}

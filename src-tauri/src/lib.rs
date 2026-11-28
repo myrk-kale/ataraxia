@@ -193,6 +193,13 @@ pub fn run() {
             tauri_api::memory_delete,
             tauri_api::memory_link,
             tauri_api::memory_unlink,
+            tauri_api::workbench_view,
+            tauri_api::workbench_join,
+            tauri_api::workbench_leave,
+            tauri_api::workbench_direct,
+            tauri_api::workbench_reply,
+            tauri_api::workbench_resolve,
+            tauri_api::workbench_clear,
             tauri_api::update_check,
             tauri_api::update_install,
         ])

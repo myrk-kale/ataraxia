@@ -46,6 +46,9 @@ hand over, even if nobody asked for decisions or a flow.
   call behind a page and automate through it instead of clicking; `browser-debug.md` how to debug a
   web app from its console, requests and elements. Read them when you have a web page to work with,
   without waiting for a yes to anything.
+- `workbench.md`: the board shared by agents working side by side, each in its own worktree, and its
+  `workbench_*` tools: claim before you start, post what you decide, ask, say what you finished. Read
+  it when your chat is on a workbench and you need the details, without waiting for a yes to anything.
 - `queue.md`: how to hold the developer's message queue when something you were asked to do is left
   undone. The preamble already says when; read it for the details.
 - `api.md`: the environment variables, the authentication, every endpoint with its fields, the
