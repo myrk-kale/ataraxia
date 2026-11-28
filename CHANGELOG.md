@@ -6,6 +6,8 @@ are the section of this file for its version.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-27
+
 ### Added
 
 - The Workbench: a shared board for agents working side by side, each in its own worktree, with no plan
