@@ -16,6 +16,21 @@ pub fn in_days(days: i64) -> Result<String> {
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
 }
 
+/// The moment `minutes` from now.
+pub fn in_minutes(minutes: i64) -> Result<String> {
+    (OffsetDateTime::now_utc() + time::Duration::minutes(minutes))
+        .format(&Rfc3339)
+        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))
+}
+
+/// Whole minutes since an RFC 3339 moment (negative if it is ahead); `None` for a text that is
+/// not one.
+pub fn minutes_since(moment: &str) -> Option<i64> {
+    OffsetDateTime::parse(moment, &Rfc3339)
+        .ok()
+        .map(|moment| (OffsetDateTime::now_utc() - moment).whole_minutes())
+}
+
 /// Whether an RFC 3339 moment has gone by. A text that is not one is never in the past.
 pub fn is_past(moment: &str) -> bool {
     OffsetDateTime::parse(moment, &Rfc3339).is_ok_and(|moment| moment <= OffsetDateTime::now_utc())

@@ -62,6 +62,15 @@ describe("shortcuts", () => {
     expect(resolveShortcut(press("l", { metaKey: true, shiftKey: true }, editor.firstElementChild), idle)).toBeNull();
   });
 
+  it("opens the workbench with Ctrl/Cmd+Shift+E, except inside the editor and with a dialog open", () => {
+    expect(resolveShortcut(press("e", { metaKey: true, shiftKey: true }), idle)).toEqual({ type: "workbench" });
+    expect(resolveShortcut(press("E", { ctrlKey: true, shiftKey: true }, el("<input>")), idle)).toEqual({ type: "workbench" });
+    expect(resolveShortcut(press("e", { metaKey: true }), idle)).toBeNull();
+    expect(resolveShortcut(press("e", { metaKey: true, shiftKey: true }), { ...idle, overlay: true })).toBeNull();
+    const editor = el('<div class="monaco-editor"><textarea></textarea></div>');
+    expect(resolveShortcut(press("e", { metaKey: true, shiftKey: true }, editor.firstElementChild), idle)).toBeNull();
+  });
+
   it("opens the memory graph with Ctrl/Cmd+Shift+G, except inside the editor and with a dialog open", () => {
     expect(resolveShortcut(press("g", { metaKey: true, shiftKey: true }), idle)).toEqual({ type: "memory" });
     expect(resolveShortcut(press("G", { ctrlKey: true, shiftKey: true }, el("<textarea></textarea>")), idle)).toEqual({ type: "memory" });

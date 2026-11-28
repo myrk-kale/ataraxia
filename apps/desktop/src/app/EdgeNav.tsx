@@ -5,11 +5,14 @@ function Dot({
   label,
   active,
   small,
+  attention = 0,
   onSelect,
 }: {
   label: string;
   active: boolean;
   small: boolean;
+  /** How many things wait for the person in this space: an amber mark says so. */
+  attention?: number;
   onSelect: () => void;
 }) {
   // Artifact spaces are a size smaller than workspaces; both idle dots keep 3:1 against the panel.
@@ -18,7 +21,7 @@ function Dot({
   return (
     <button
       aria-current={active ? "page" : undefined}
-      aria-label={label}
+      aria-label={attention > 0 ? `${label}, ${attention} waiting for you` : label}
       className="group relative flex h-7 w-7 items-center justify-center rounded-full"
       type="button"
       onClick={onSelect}
@@ -30,8 +33,11 @@ function Dot({
             : `${idle} group-hover:bg-cg-muted-strong`
         }`}
       />
+      {attention > 0 ? (
+        <span aria-hidden="true" className="absolute top-0 right-0 h-2 w-2 rounded-full bg-cg-amber ring-2 ring-cg-float" />
+      ) : null}
       <span className="pointer-events-none absolute top-1/2 right-[34px] translate-x-[3px] -translate-y-1/2 rounded-cg-sm bg-cg-tip-bg px-3 py-2 text-small font-medium whitespace-nowrap text-cg-tip-fg opacity-0 shadow-lg transition-all group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100">
-        {label}
+        {attention > 0 ? `${label} · ${attention} waiting for you` : label}
       </span>
     </button>
   );
@@ -39,9 +45,12 @@ function Dot({
 
 export function EdgeNav({
   space,
+  attention = {},
   onSelect,
 }: {
   space: SpaceId;
+  /** Spaces with something waiting for the person, and how many things. */
+  attention?: Partial<Record<SpaceId, number>>;
   onSelect: (space: SpaceId) => void;
 }) {
   const nav = useRef<HTMLElement>(null);
@@ -89,6 +98,7 @@ export function EdgeNav({
           <Dot
             key={item.id}
             active={item.id === space}
+            attention={attention[item.id]}
             label={item.label}
             small={false}
             onSelect={() => onSelect(item.id)}

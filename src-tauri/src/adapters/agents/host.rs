@@ -111,6 +111,8 @@ struct Inner {
     api: Mutex<Option<Arc<dyn ApiGateway>>>,
     /// Reviews permission requests for the harnesses that cannot (set once the engine exists).
     reviewer: std::sync::OnceLock<Arc<dyn crate::ports::PermissionReviewer>>,
+    /// What is put in front of a chat's message: the news of the workbench it is on.
+    preface: std::sync::OnceLock<Arc<dyn crate::ports::PromptPreface>>,
     /// The latest report of each provider's limits. Also kept in the preferences, so the last
     /// known state is there when the app opens, before any agent has spoken.
     usage: Mutex<HashMap<(ProviderKind, Option<String>), ProviderUsage>>,
@@ -137,6 +139,7 @@ impl AgentHost {
                 guide: Mutex::new(None),
                 api: Mutex::new(None),
                 reviewer: std::sync::OnceLock::new(),
+                preface: std::sync::OnceLock::new(),
                 usage: Mutex::new(HashMap::new()),
             }),
             backends: HashMap::new(),
@@ -158,6 +161,11 @@ impl AgentHost {
     /// Lets a harness with no approval reviewer of its own ask this one about doubtful requests.
     pub fn set_reviewer(&self, reviewer: Arc<dyn crate::ports::PermissionReviewer>) {
         let _ = self.inner.reviewer.set(reviewer);
+    }
+
+    /// Lets what a chat has not been able to read for itself be put in front of its messages.
+    pub fn set_preface(&self, preface: Arc<dyn crate::ports::PromptPreface>) {
+        let _ = self.inner.preface.set(preface);
     }
 
     /// Where to write the conversation when the user switches a chat to another harness.
@@ -1095,7 +1103,7 @@ impl AgentHost {
         self.follow_profile(session_id)?;
         self.ensure_running(session_id)?;
         let guide_index = self.inner.guide.lock().clone();
-        let (backend, guide_intro, config_intro, config_preamble) = {
+        let (backend, guide_intro, config_intro, config_preamble, is_chat) = {
             let mut sessions = self.inner.sessions.lock();
             let live = sessions
                 .get_mut(session_id)
@@ -1134,6 +1142,7 @@ impl AgentHost {
                 guide_intro,
                 config_intro,
                 live.agent_config_preamble.clone(),
+                live.chat,
             )
         };
 
@@ -1160,6 +1169,18 @@ impl AgentHost {
         }
         if let Some(path) = &handoff {
             sent.push_str(&handoff::preamble(path));
+        }
+        // What the other agents of the chat's workbench did while this one was not looking. It
+        // goes with the message and is not part of what the chat shows as the person's words.
+        if is_chat
+            && split_command(text).is_none()
+            && let Some(preface) = self
+                .inner
+                .preface
+                .get()
+                .and_then(|preface| preface.preface(*session_id))
+        {
+            sent.push_str(&preface);
         }
         sent.push_str(text);
         let files: Vec<ImageFile> = images
@@ -4040,6 +4061,55 @@ mod tests {
             _ => true,
         }));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// News for a chat, as the workbench gives it: something the first time, nothing after.
+    struct OneBriefing(Mutex<Vec<String>>);
+
+    impl crate::ports::PromptPreface for OneBriefing {
+        fn preface(&self, _session_id: SessionId) -> Option<String> {
+            let mut left = self.0.lock();
+            (!left.is_empty()).then(|| left.remove(0))
+        }
+    }
+
+    #[test]
+    fn news_from_the_workbench_goes_with_the_message_and_not_into_what_the_chat_shows() {
+        let mut h = harness();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        h.host
+            .backends
+            .insert(ProviderKind::Fake, Arc::new(Recorder(Arc::clone(&prompts))));
+        h.host.set_preface(Arc::new(OneBriefing(Mutex::new(vec![
+            "[Workbench] Agent A decided type:Money.\n\n".to_string(),
+        ]))));
+        h.host.shutdown_all();
+        h.host.start_session(&h.session).expect("restart");
+
+        h.host
+            .prompt(&h.session.id, "now the tests")
+            .expect("prompt");
+        h.sink
+            .wait_for("permission", |events| pending_request(events).is_some());
+        h.host.cancel(&h.session.id, None).expect("cancel");
+        h.sink
+            .wait_for("turn done", |events| turn_done(events).is_some());
+        h.host
+            .prompt(&h.session.id, "and the lint")
+            .expect("prompt");
+
+        let sent = prompts.lock().clone();
+        assert_eq!(
+            sent[0],
+            "[Workbench] Agent A decided type:Money.\n\nnow the tests"
+        );
+        assert_eq!(sent[1], "and the lint", "nothing new, nothing added");
+        // What the developer sees is what they typed.
+        let shown = h.host.snapshot(&h.session.id).expect("snapshot");
+        assert!(shown.items.iter().all(|item| match item {
+            ChatItem::Message(message) => !message.text.contains("[Workbench]"),
+            _ => true,
+        }));
     }
 
     #[test]

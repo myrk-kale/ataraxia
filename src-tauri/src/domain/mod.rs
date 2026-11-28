@@ -18,6 +18,7 @@ pub mod session;
 pub mod task;
 pub mod time;
 pub mod usage;
+pub mod workbench;
 
 pub use chat::{
     AgentEvent, ChatItem, ChatMessage, ChatRole, ChatSnapshot, ImageAttachment, ImageUpload,
@@ -40,3 +41,4 @@ pub use schedule::{SCHEDULED_PREFIX, Schedule};
 pub use session::{ChatSession, SessionKind, SessionStatus};
 pub use task::{Task, TaskPatch, TaskStatus};
 pub use usage::{ProviderUsage, UsageWindow, UsageWindowKind};
+pub use workbench::{Anchor, EntryKind, EntryState, WorkbenchEntry, WorkbenchMember};

@@ -51,6 +51,20 @@
   --cg-mark-demo-bg: #ecece8;
   --cg-mark-demo-fg: #50534e;
   --cg-backdrop: rgba(33, 35, 33, 0.18);
+  /* One tint per agent on the workbench, so each is told apart by more than its name. Measured
+     against 4.5:1 for the initial on its tint, in both themes. */
+  --cg-agent-1-bg: #f6e9e2;
+  --cg-agent-1-fg: #8a4a2f;
+  --cg-agent-2-bg: #e3efe9;
+  --cg-agent-2-fg: #2a6a52;
+  --cg-agent-3-bg: #e6eaf5;
+  --cg-agent-3-fg: #41528a;
+  --cg-agent-4-bg: #f4edd6;
+  --cg-agent-4-fg: #77581a;
+  --cg-agent-5-bg: #f6e6ec;
+  --cg-agent-5-fg: #8a3d57;
+  --cg-agent-6-bg: #e0eeee;
+  --cg-agent-6-fg: #2d6366;
 }
 
 :root.dark {
@@ -94,6 +108,18 @@
   --cg-mark-demo-bg: #2a2c28;
   --cg-mark-demo-fg: #b5b8b1;
   --cg-backdrop: rgba(0, 0, 0, 0.45);
+  --cg-agent-1-bg: #3a2a22;
+  --cg-agent-1-fg: #e8b79f;
+  --cg-agent-2-bg: #1f3329;
+  --cg-agent-2-fg: #8fcfae;
+  --cg-agent-3-bg: #252b40;
+  --cg-agent-3-fg: #a9b8ee;
+  --cg-agent-4-bg: #36301c;
+  --cg-agent-4-fg: #e1c77f;
+  --cg-agent-5-bg: #3b2630;
+  --cg-agent-5-fg: #eaa7bf;
+  --cg-agent-6-bg: #1d3335;
+  --cg-agent-6-fg: #8fcdd0;
 }
 
 

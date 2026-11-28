@@ -26,6 +26,7 @@ pub mod titles;
 pub mod triage;
 pub mod units;
 pub mod wake;
+pub mod workbench;
 pub mod workspace;
 
 pub use engine::Engine;
@@ -34,3 +35,5 @@ pub use workspace::{WorkspaceService, WorkspaceSnapshot};
 
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod workbench_tests;

@@ -29,6 +29,7 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../guide/browser-debug.md"),
     ),
     ("memory.md", include_str!("../../../guide/memory.md")),
+    ("workbench.md", include_str!("../../../guide/workbench.md")),
     ("api.md", include_str!("../../../guide/api.md")),
 ];
 
